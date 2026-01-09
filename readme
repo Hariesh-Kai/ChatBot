@@ -1,24 +1,141 @@
-Step 1: Find the Zombie Process
-Run this command in your command prompt to find the "Process ID" (PID) that is holding onto port 9000.
+# 🚀 KavinBase - Enterprise RAG System
 
-DOS
+**KavinBase** is a robust Retrieval-Augmented Generation (RAG) system built to parse, index, and query complex technical documents. It is specifically optimized for engineering PDFs containing dense tables, specific identifiers, and structured metadata.
 
-netstat -ano | findstr :9000
-You will see an output like this: TCP 127.0.0.1:9000 0.0.0.0:0 LISTENING 1234
+The system features a **Hybrid Search** engine (Vector + Keyword), a **Self-Healing Database**, and a modern **Next.js Frontend** that renders complex data tables directly in the chat.
 
-The number at the far right (e.g., 1234) is the PID.
+---
 
-Step 2: Kill it
-Take that PID number (replace 1234 with your actual number) and run this command:
+## 🌟 Key Features
 
-DOS
+### 🧠 Advanced RAG Capabilities
+* **Hybrid Retrieval:** Combines **Vector Similarity** (`pgvector` with `all-MiniLM-L6-v2`) and **Keyword Search** (SQL `ILIKE`) to capture both semantic meaning and exact matches (e.g., "Table 8-4", "NDU-101").
+* **Table-Aware Chunking:** Uses `unstructured` to detect tables in PDFs, converts them to Markdown, and preserves row-level context during chunking.
+* **Confidence Scoring:** Calculates a confidence score for every answer based on retrieval density and similarity.
 
-taskkill /PID 1234 /F
-(Note: If netstat shows nothing, open Task Manager, go to Details, look for minio.exe, and End Task.)
+### 🛡️ Robust Backend
+* **Self-Healing Database:** The system automatically detects missing PostgreSQL tables and recreates them on the fly without crashing.
+* **Multi-Model Support:**
+    * **Lite:** CPU-optimized local inference (`llama.cpp` / GGUF).
+    * **Base:** GPU-accelerated local inference (HuggingFace Transformers).
+    * **Net:** Cloud-based inference via Groq or xAI (Grok).
+* **Job Management:** Async document processing with status tracking and metadata validation steps.
 
-Step 3: Start your Server Again
-Now that the port is free, run your command again:
+### 💻 Modern Frontend
+* **Real-time Streaming:** Smooth text generation with typing indicators.
+* **Rich Rendering:** Automatically renders Markdown tables, code blocks, and technical data grids using `remark-gfm`.
+* **Thought Disclosure:** UI component to toggle visibility of the LLM's "Chain of Thought" reasoning.
 
-DOS
+---
 
-.\minio.exe server C:\minio_data
+## 🏗️ Tech Stack
+
+### **Backend**
+* **Framework:** Python (FastAPI)
+* **Database:** PostgreSQL (`pgvector`) & Redis (Session caching)
+* **Storage:** MinIO (S3-compatible object storage)
+* **AI/ML:** LangChain, HuggingFace, Llama.cpp, Unstructured.io
+
+### **Frontend**
+* **Framework:** Next.js 14 (App Router)
+* **Styling:** Tailwind CSS
+* **Language:** TypeScript
+* **State:** React Hooks & Custom Event Parsers
+
+---
+
+## 🛠️ Setup & Installation
+
+### **1. Prerequisites**
+* **Python 3.10+**
+* **Node.js 18+**
+* **PostgreSQL 15+** (Must have `vector` extension installed)
+* **Redis** (Optional, but recommended for abort signals)
+* **MinIO** (Or any S3-compatible storage)
+* **System Tools:** `Poppler` and `Tesseract` (Required for PDF parsing)
+
+### **2. Backend Setup**
+Navigate to the backend directory:
+```bash
+cd backend
+
+### Create and activate a virtual environment
+
+```bash
+python -m venv venv
+
+# Windows:
+venv\Scripts\activate
+
+# Mac/Linux:
+source venv/bin/activate
+Install dependencies
+Bash
+
+pip install -r requirements.txt
+Set up environment variables
+Create a .env file in the root directory:
+
+Code snippet
+
+DB_CONNECTION="postgresql+psycopg2://postgres:password@localhost:5432/rag_db"
+CHAT_DB_URL="postgresql://postgres:password@localhost:5432/chat_memory_db"
+REDIS_URL="redis://localhost:6379/0"
+MINIO_ENDPOINT="localhost:9000"
+MINIO_ACCESS_KEY="minioadmin"
+MINIO_SECRET_KEY="minioadmin"
+ADVANCED_REASONING="true"
+Run the server
+Bash
+
+uvicorn backend.api.main:app --reload --port 8000
+3. Frontend Setup
+Navigate to the frontend directory:
+
+Bash
+
+cd frontend
+Install dependencies:
+
+Bash
+
+npm install
+Run the development server:
+
+Bash
+
+npm run dev
+Open http://localhost:3000 in your browser.
+
+📂 Project Structure
+Plaintext
+
+chat-ui/
+├── backend/
+│   ├── api/             # FastAPI routers (chat, upload, metadata)
+│   ├── contracts/       # UI Event definitions
+│   ├── llm/             # Model loaders, prompts, generation logic
+│   ├── memory/          # Postgres & Redis memory managers
+│   ├── rag/             # PDF chunking, embedding, ingestion pipeline
+│   ├── secrets/         # API key management
+│   ├── state/           # Job & Abort signal management
+│   └── storage/         # MinIO client
+├── frontend/
+│   ├── app/             # Next.js App Router pages
+│   ├── components/      # React components (ChatWindow, Sidebar, etc.)
+│   └── lib/             # API clients, types, utils
+└── models/              # Local LLM weights (GGUF) - ignored by Git
+🔍 Usage Guide
+Upload: Use the sidebar to upload a technical PDF (e.g., "Basis of Design").
+
+Metadata Check: The system will extract metadata. Confirm or edit fields like "Revision Number".
+
+Chat: Ask questions about the document.
+
+Example: "Give me the inlet composition table for Agogo."
+
+Debug: Developers can view the exact chunks retrieved by navigating to the debug endpoint or enabling debug mode in the UI.
+
+📄 License
+This project is licensed under the MIT License.
+

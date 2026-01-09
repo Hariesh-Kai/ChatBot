@@ -1,6 +1,7 @@
 import json
 import sys
 import re
+import uuid
 import pandas as pd
 from io import StringIO
 from unstructured.staging.base import elements_from_json
@@ -29,7 +30,7 @@ def normalize_numbers(text: str) -> str:
 
 
 # ============================================================
-# CONTEXT-AWARE CHUNKER
+# CONTEXT-AWARE CHUNKER (PARENT-CHILD)
 # ============================================================
 
 class ContextAwareChunker:
@@ -51,67 +52,26 @@ class ContextAwareChunker:
         return ""
 
     # --------------------------------------------------------
-    # TABLE → ROW-LEVEL CHUNKS
+    # TEXT FLUSHER (HELPER)
     # --------------------------------------------------------
 
-    def split_table(self, markdown_text: str, section_title: str):
-        """
-        Each table row becomes ONE chunk with header context.
-        """
-        lines = markdown_text.split("\n")
-        if len(lines) < 3:
-            return []
-
-        headers = lines[:2]        # column names + separator
-        rows = lines[2:]
-        chunks = []
-
-        for row in rows:
-            if not row.strip():
-                continue
-
-            content = "\n".join(headers + [row])
-            content = normalize_numbers(content)
-
-            enriched = (
-                f"FACT CONTEXT:\n"
-                f"This table lists parameters related to {section_title}.\n\n"
-                f"### Section: {section_title}\n"
-                f"{content}"
-            )
-
-            chunks.append(enriched)
-
-        return chunks
-
-    # --------------------------------------------------------
-    # TEXT BUFFER → DOCUMENT
-    # --------------------------------------------------------
-
-    def flush_text_buffer(self):
+    def _flush_text_buffer(self, docs_list):
         if not self.text_buffer:
-            return None
+            return
 
         content = "\n".join(self.text_buffer).strip()
         content = normalize_numbers(content)
-
-        enriched_content = (
-            f"FACT CONTEXT:\n"
-            f"This section discusses {self.current_section}.\n\n"
-            f"### Section: {self.current_section}\n"
-            f"{content}"
-        )
-
-        doc = Document(
-            page_content=enriched_content,
+        
+        # Standard text chunk (Direct indexing)
+        docs_list.append(Document(
+            page_content=f"### Section: {self.current_section}\n{content}",
             metadata={
-                "type": "text",
-                "section": self.current_section,
-            },
-        )
-
+                "type": "text", 
+                "section": self.current_section, 
+                "is_parent": False
+            }
+        ))
         self.text_buffer = []
-        return doc
 
     # --------------------------------------------------------
     # MAIN PROCESSOR
@@ -122,7 +82,7 @@ class ContextAwareChunker:
         elements = elements_from_json(filename=input_file)
 
         final_documents = []
-        print("⚙️ Processing elements with improved chunking...")
+        print("⚙️ Processing elements with Parent-Child chunking...")
 
         for element in elements:
             category = element.category
@@ -132,47 +92,59 @@ class ContextAwareChunker:
             # 1️⃣ SECTION TITLES
             # ------------------------------------------------
             if category == "Title":
-                if self.text_buffer:
-                    doc = self.flush_text_buffer()
-                    if doc:
-                        final_documents.append(doc)
-
+                self._flush_text_buffer(final_documents)
                 self.current_section = text.strip()
                 self.text_buffer.append(text)
                 continue
 
             # ------------------------------------------------
-            # 2️⃣ TABLES
+            # 2️⃣ TABLES (PARENT-CHILD LOGIC)
             # ------------------------------------------------
             if category == "Table":
-                if self.text_buffer:
-                    doc = self.flush_text_buffer()
-                    if doc:
-                        final_documents.append(doc)
+                self._flush_text_buffer(final_documents)
 
-                html = (
-                    element.metadata.text_as_html
-                    if hasattr(element.metadata, "text_as_html")
-                    else ""
+                html = getattr(element.metadata, "text_as_html", "")
+                markdown = self.html_to_markdown(html) if html else text
+                
+                # --- A. CREATE PARENT CHUNK (The Whole Table) ---
+                # This chunk is what we will send to the LLM if a match is found.
+                parent_id = str(uuid.uuid4())
+                
+                parent_doc = Document(
+                    page_content=f"### Table: {self.current_section}\n{markdown}",
+                    metadata={
+                        "type": "parent",
+                        "section": self.current_section,
+                        "doc_id": parent_id,  # Unique ID for linking
+                        "is_parent": True     # Flag to identify parent
+                    }
                 )
+                final_documents.append(parent_doc)
 
-                markdown = (
-                    self.html_to_markdown(html)
-                    if html else text
-                )
-
-                table_chunks = self.split_table(markdown, self.current_section)
-
-                for chunk in table_chunks:
-                    final_documents.append(
-                        Document(
-                            page_content=chunk,
+                # --- B. CREATE CHILD CHUNKS (The Rows) ---
+                # These chunks are what we search against in the database.
+                rows = markdown.split("\n")
+                
+                # Check if we have headers + separator + data (at least 3 lines)
+                if len(rows) > 2:
+                    headers = rows[:2]
+                    for row in rows[2:]:
+                        if not row.strip():
+                            continue
+                            
+                        # Reconstruct row with headers for context
+                        row_content = "\n".join(headers + [row])
+                        
+                        child_doc = Document(
+                            page_content=f"Context: {self.current_section}\n{row_content}",
                             metadata={
-                                "type": "table",
+                                "type": "child",
                                 "section": self.current_section,
-                            },
+                                "parent_id": parent_id,  # Link back to parent
+                                "is_parent": False
+                            }
                         )
-                    )
+                        final_documents.append(child_doc)
                 continue
 
             # ------------------------------------------------
@@ -183,27 +155,20 @@ class ContextAwareChunker:
 
                 # Semantic boundary: paragraph/list end
                 if text.endswith(".") or text.endswith(":"):
-                    doc = self.flush_text_buffer()
-                    if doc:
-                        final_documents.append(doc)
+                    self._flush_text_buffer(final_documents)
 
-        # ----------------------------------------------------
-        # FINAL FLUSH
-        # ----------------------------------------------------
-        if self.text_buffer:
-            doc = self.flush_text_buffer()
-            if doc:
-                final_documents.append(doc)
+        # Final flush
+        self._flush_text_buffer(final_documents)
 
-        print(f"\n✅ Created {len(final_documents)} high-quality chunks.")
-
+        print(f"\n✅ Created {len(final_documents)} chunks (Parents + Children).")
+        
         # ----------------------------------------------------
         # SAVE OUTPUT
         # ----------------------------------------------------
         output_data = [
             {
                 "content": d.page_content,
-                "metadata": d.metadata,
+                "metadata": d.metadata
             }
             for d in final_documents
         ]
@@ -212,22 +177,6 @@ class ContextAwareChunker:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
 
         print(f"💾 Saved chunks to: {output_file}")
-
-
-# ============================================================
-# PIPELINE WRAPPER
-# ============================================================
-
-def chunk_pdf(pdf_path: str, output_path: str):
-    """
-    Pipeline-compatible wrapper for ContextAwareChunker.
-
-    NOTE:
-    pdf_path must point to a filtered_elements.json file,
-    NOT a raw PDF.
-    """
-    chunker = ContextAwareChunker()
-    chunker.process(pdf_path, output_path)
 
 
 # ============================================================

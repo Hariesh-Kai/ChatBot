@@ -35,9 +35,13 @@ def _normalize_conn(conn: str) -> str:
 
 
 def _get_embeddings() -> HuggingFaceEmbeddings:
+    # 🔥 UPGRADE: Use BGE-M3 (Support 8192 tokens)
+    # This prevents cutoff issues with large table chunks.
     return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_name="BAAI/bge-m3",
         cache_folder=HF_CACHE_DIR,
+        model_kwargs={"device": "cpu"}, # Change to "cuda" if you have a GPU
+        encode_kwargs={"normalize_embeddings": True}
     )
 
 

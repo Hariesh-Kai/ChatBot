@@ -1,0 +1,474 @@
+🔴 PHASE 1 — CHAT-BREAKING BUGS (DO FIRST)
+✅📁 backend/state/abort_signals.py
+
+☐ Replace unsafe env parsing
+
+_USE_REDIS = os.getenv("USE_ABORT_REDIS", "0").lower() in ("1", "true", "yes")
+
+
+☐ When Redis reports abort → set in-memory event (cache it)
+
+☐ On job/session reset → call _cleanup_session_event(session_id)
+
+☐ Ensure abort is reset before starting any new generation
+
+✅📁 backend/state/job_state.py
+
+☐ On clear_job_for_session(session_id) → call:
+
+reset_abort_signal(session_id)
+
+
+☐ Prevent orphan jobs when same session creates new job:
+
+if session_id in _SESSION_JOB_MAP:
+    old_job = _SESSION_JOB_MAP[session_id]
+    _JOB_STORE.pop(old_job, None)
+
+
+☐ Document or enforce single-worker requirement
+
+☐ (Optional) Add debug log on job transitions
+
+🔴 PHASE 2 — EMPTY / MISSING RESPONSES
+✅ 📁 backend/llm/generate.py
+
+☐ After final apply_response_policy(...) → YIELD IT
+
+yield apply_response_policy(draft, verbosity=style.verbosity)
+
+
+☐ Ensure at least one token is yielded in every path
+
+☐ Remove silent return after response policy
+
+☐ Ensure conversational intent routes to lite correctly
+
+✅ 📁  backend/llm/answer_policy.py
+
+☐ Do NOT mark greetings as needs_clarification=True
+
+☐ Ensure verbosity="one_line" for greetings
+
+✅ 📁  backend/llm/loader.py
+
+☐ After abort → try short thread.join(timeout=0.2)
+
+☐ Ensure GGUF wrapper always yields normalized dict
+
+🔴 PHASE 3 — RAG FAILURES & SQL ERRORS
+✅ 📁  backend/rag/ingest.py
+
+☐ Replace ALL SQL references:
+
+metadata -> cmetadata
+
+
+☐ Fix delete query:
+
+WHERE cmetadata->>'document_id' = %s
+
+
+☐ Fix update query:
+
+SET cmetadata = cmetadata || %s::jsonb
+
+
+☐ Ensure connection string normalization everywhere
+
+✅ 📁  backend/rag/keyword_search.py
+
+☐ Replace wrong column name:
+
+document → page_content
+
+
+☐ Ensure metadata filter uses cmetadata
+
+☐ Limit keyword search results to ≤10
+
+✅ 📁  backend/rag/confidence.py
+
+☐ Guard against empty similarity scores AFTER sanitization
+
+☐ Ensure confidence always ∈ [0,1]
+
+🟠 PHASE 4 — MEMORY CONSISTENCY
+✅ 📁  backend/memory/pg_memory.py
+
+☐ Make ensure_session + insert message atomic
+
+☐ Skip saving message if session aborted
+
+☐ Cap limit in get_chat_messages() (≤200)
+
+✅ 📁  backend/memory/redis_memory.py
+
+☐ Store topic text, not hash only
+
+☐ Wrap Redis calls in try/except with logs
+
+☐ Reset used chunks when topic changes
+
+🟠 PHASE 5 — STORAGE & SECURITY
+✅ 📁  backend/storage/minio_client.py
+
+☐ Remove default credentials ❌
+☐ Fail fast if creds missing
+☐ Make secure configurable via env
+☐ Handle bucket creation race
+☐ Prevent overwrite (use UUID or revision path)
+
+✅ 📁  backend/secrets/net_keys.py
+
+☐ Fix misleading “encrypted-at-rest” comment
+☐ Remove unused NET_API_KEY_ENV
+☐ Set file permission chmod 600
+☐ Log corrupted key file instead of silent pass
+
+🟢 PHASE 6 — FRONTEND (FINAL STEP)
+✅ 📁 frontend/lib/stream-parser.ts
+
+☐ Never drop partial chunks
+☐ Flush buffer on stream end
+☐ Handle final chunk without newline
+
+📁 frontend/lib/job-manager.ts
+
+☐ Reset abort before new request
+☐ Clear stale job on error
+☐ Ensure only one active job per session
+
+📁 ChatWindow.tsx
+
+☐ UI must accept single-token responses
+☐ Remove dependency on min length checks
+☐ Ensure typing indicator stops on stream end
+
+
+
+
+ ✅ 📁 upload.py
+
+  Split pipeline:
+
+  metadata phase
+
+ chunking phase
+
+ ✅ 📁 rag.pipeline
+
+ Add skip_embedding=True
+
+ 📁 ingest.py
+
+Ingest ONLY after metadata confirmation
+
+Retrieval query
+
+Filter by latest revision
+
+Frontend
+
+Metadata popup (already exists ✅)
+
+Warning modal on duplicate metadata 
+Explicit “Proceed anyway” button
+
+
+
+
+
+TIER-1 — CRITICAL (Backend must not crash)
+
+Goal:
+
+Stop runtime crashes
+
+Stop zombie streams
+
+Fix broken routing
+
+Make chat + abort reliable
+
+Files (fixed in this order)
+
+backend/api/chat.py
+
+backend/api/metadata.py → remove / neutralize
+
+backend/api/update.py
+
+backend/state/abort_signals.py
+
+backend/state/abort_signals (1).py → delete
+
+🟠 TIER-2 — RAG CORRECTNESS
+
+Goal:
+
+Prevent old revision leakage
+
+Fix chunk identity
+
+Fix retrieval consistency
+
+Files
+
+backend/rag/metadata.py
+
+backend/rag/keyword_search.py
+
+backend/rag/ingest.py
+
+backend/rag/pipeline.py
+
+🟡 TIER-3 — STATE & MEMORY CONSISTENCY
+
+Goal:
+
+Stop silent corruption
+
+Make behavior predictable
+
+Files
+
+backend/state/job_state.py
+
+backend/memory/redis_memory.py
+
+backend/memory/pg_memory.py
+
+🟢 TIER-4 — HARDENING (Optional but recommended)
+
+Goal:
+
+Production safety
+
+Net & storage reliability
+
+Files
+
+backend/api/net.py
+
+backend/secrets/net_keys.py
+
+backend/storage/minio_client.py
+
+
+Metadata:
+Company Document ID ✅ 
+Revision Number ✅
+Revision Code ✅
+Validity Status ✅
+PDF Name:
+Date of Revision✅ 
+
+backend/rag/metadata.py
+
+✅ backend/rag/chunk.py
+
+✅ backend/rag/ingest.py
+
+✅ backend/rag/keyword_search.py
+
+✅ backend/api/chat.py
+
+retrieve.py
+2️⃣ upload.py
+3️⃣ update.py
+4️⃣ metadata.py
+5️⃣ chat.py
+
+
+File	Alignment	Needs Metadata?
+metadata.py	🟡 1 fix needed	✅ Yes
+ingest.py	✅ Correct	✅ Yes
+keyword_search.py	✅ Correct	✅ Yes
+
+
+pipeline.py still uses old document_id / revision logic
+
+chunk_id is generated but not stored correctly
+
+Add checksum-based PDF skip
+
+Add element cache to prevent reparse
+
+Add ingest verification endpoint
+
+Fix progress bar sync
+
+
+
+
+✅ FILES YOU MUST CHANGE (AUTHORITATIVE LIST)
+🔴 MUST CHANGE (Core – without this RAG will break)
+1️⃣ backend/state/job_state.py
+
+Problem:
+Job state is RAM-only → lost on reload.
+
+Fix:
+Add persistent active-document storage (Redis or Postgres).
+
+Add:
+
+save_active_document(session_id, company_document_id, revision_number)
+
+get_active_document(session_id)
+
+This makes the document survive reloads.
+
+📌 Why this file?
+
+It is the single source of truth for session ↔ document binding.
+
+2️⃣ backend/api/chat.py
+
+Problem:
+If job_state == None, chat silently falls back to non-RAG.
+
+Fix:
+Restore document from persistent storage when job_state is missing.
+
+Change required in chat():
+
+job_state = get_job_state(session_id)
+
+if not job_state:
+    active_doc = get_active_document(session_id)
+    if active_doc:
+        job_state = JobState(
+            job_id="restored",
+            status=STATUS_READY,
+            session_id=session_id,
+            metadata=active_doc,
+        )
+
+
+📌 Why this file?
+
+This is where RAG is enabled or silently disabled.
+
+3️⃣ backend/api/upload.py
+
+Problem:
+After commit, nothing persists document ownership.
+
+Fix:
+After successful commit, persist active document.
+
+Add after mark_job_ready():
+
+save_active_document(
+    session_id=job.session_id,
+    company_document_id=final_metadata["company_document_id"],
+    revision_number=final_metadata["revision_number"],
+)
+
+
+📌 Why this file?
+
+Upload is where the document becomes “active”.
+
+4️⃣ backend/api/update.py
+
+Problem:
+Metadata commit succeeds, but document ownership isn’t persisted.
+
+Fix:
+Same as upload commit — persist active document.
+
+📌 Why this file?
+
+Metadata flow is an alternate commit path.
+
+5️⃣ frontend/app/lib/api.ts
+
+Problem (CRITICAL BUG):
+You send sessionId as job_id.
+
+updateMetadata({ job_id: sessionId }) // ❌ wrong
+
+
+Fix:
+Store and use the real job_id returned by upload.
+
+updateMetadata({
+  job_id: uploadResponse.job_id, // ✅ correct
+  metadata: values,
+});
+
+
+📌 Why this file?
+
+Backend metadata update randomly fails without this.
+
+🟠 SHOULD CHANGE (Strongly recommended – prevents confusion)
+6️⃣ backend/api/chat.py (UX safety)
+
+Prevent hallucination when no document exists.
+
+Replace:
+
+if not job_state:
+    normal chat
+
+
+With:
+
+if not job_state:
+    return StreamingResponse(
+        [emit_event(system_message_event("📄 No active document. Please upload a PDF."))],
+        media_type="text/plain",
+    )
+
+
+📌 Result:
+
+No fake answers
+
+User always knows document state
+
+7️⃣ frontend/components/chat/ChatWindow.tsx
+
+Problem:
+UI gives no indication whether RAG is active.
+
+Fix:
+Display active document info (from debug or API).
+
+Example:
+
+Active document: Basis of Design.pdf (Rev 1)
+
+
+📌 Why?
+
+Prevents “is RAG working?” confusion forever.
+
+🟡 OPTIONAL BUT EXCELLENT (Enterprise-grade)
+8️⃣ backend/memory/pg_memory.py or Redis
+
+Store:
+
+session_id → {
+  company_document_id,
+  revision_number,
+  filename,
+  committed_at
+}
+
+
+This allows:
+
+multi-session recovery
+
+audit
+
+analytics
+
+document switching
+
+✅ SUMMARY TABLE (C

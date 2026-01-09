@@ -1,0 +1,24 @@
+Step 1: Find the Zombie Process
+Run this command in your command prompt to find the "Process ID" (PID) that is holding onto port 9000.
+
+DOS
+
+netstat -ano | findstr :9000
+You will see an output like this: TCP 127.0.0.1:9000 0.0.0.0:0 LISTENING 1234
+
+The number at the far right (e.g., 1234) is the PID.
+
+Step 2: Kill it
+Take that PID number (replace 1234 with your actual number) and run this command:
+
+DOS
+
+taskkill /PID 1234 /F
+(Note: If netstat shows nothing, open Task Manager, go to Details, look for minio.exe, and End Task.)
+
+Step 3: Start your Server Again
+Now that the port is free, run your command again:
+
+DOS
+
+.\minio.exe server C:\minio_data

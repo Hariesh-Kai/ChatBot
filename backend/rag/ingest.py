@@ -10,7 +10,6 @@ from langchain_postgres import PGVector
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 
-
 # ============================================================
 # GLOBAL CONFIG
 # ============================================================
@@ -23,7 +22,6 @@ HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
 COLLECTION_NAME = "rag_documents"
 
-
 # ============================================================
 # INTERNAL HELPERS
 # ============================================================
@@ -33,17 +31,15 @@ def _normalize_conn(conn: str) -> str:
         raise RuntimeError("DB connection string is required")
     return conn.replace("postgresql+psycopg2://", "postgresql://")
 
-
 def _get_embeddings() -> HuggingFaceEmbeddings:
-    # 🔥 UPGRADE: Use BGE-M3 (Support 8192 tokens)
-    # This prevents cutoff issues with large table chunks.
+    # 🔥 CRITICAL FIX: Matches backend/api/chat.py
+    # Using BGE-M3 allows the system to read massive tables without truncation.
     return HuggingFaceEmbeddings(
         model_name="BAAI/bge-m3",
         cache_folder=HF_CACHE_DIR,
-        model_kwargs={"device": "cpu"}, # Change to "cuda" if you have a GPU
+        model_kwargs={"device": "cpu"}, # Set to "cuda" if you have a GPU
         encode_kwargs={"normalize_embeddings": True}
     )
-
 
 def _get_vector_store(connection_string: str) -> PGVector:
     return PGVector.from_existing_index(
@@ -51,7 +47,6 @@ def _get_vector_store(connection_string: str) -> PGVector:
         collection_name=COLLECTION_NAME,
         connection=connection_string,
     )
-
 
 # ============================================================
 # LOAD DOCUMENTS (FIXED: CAPTURE CHUNK ID)

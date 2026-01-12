@@ -1,135 +1,92 @@
-// app/components/chat/TypingIndicator.tsx
 "use client";
 
+import { Loader2, HardDrive, Search, Cpu, AlertCircle } from "lucide-react";
 import Avatar from "../ui/Avatar";
 
 /* ================= PROPS ================= */
 
 interface TypingIndicatorProps {
-  /** Model label shown to user (e.g. "KavinBase Lite") */
+  /** "KavinBase", "System", etc. */
   modelLabel?: string;
-
-  /** Activity text (e.g. "is typing", "embedding chunks") */
+  
+  /** "is thinking...", "Uploading...", "Searching..." */
   label?: string;
-
-  /** Determinate progress (0–100). If undefined → typing dots */
+  
+  /** 0-100. If present, shows progress ring/bar. */
   progress?: number;
-
-  /** Error state (halts animation & progress) */
-  error?: boolean;
-
-  /** Cancelled / aborted state */
-  cancelled?: boolean;
+  
+  /** "typing" | "uploading" | "searching" | "processing" | "error" */
+  type?: "typing" | "uploading" | "searching" | "processing" | "error";
 }
 
 /* ================= COMPONENT ================= */
 
 export default function TypingIndicator({
   modelLabel = "KAVIN",
-  label = "is typing",
+  label = "is thinking...",
   progress,
-  error = false,
-  cancelled = false,
+  type = "typing",
 }: TypingIndicatorProps) {
-  /* ---------------- STATE DERIVATION ---------------- */
 
-  const hasProgress = typeof progress === "number";
-  const isDeterminate = hasProgress && !error && !cancelled;
-  const isTyping = !hasProgress && !error && !cancelled;
+  // --- 1. Choose Icon based on Type ---
+  const renderIcon = () => {
+    switch (type) {
+      case "uploading":
+        return <HardDrive size={14} className="text-blue-400 animate-pulse" />;
+      case "searching":
+        return <Search size={14} className="text-yellow-400 animate-bounce" />;
+      case "processing":
+        return <Cpu size={14} className="text-purple-400 animate-pulse" />;
+      case "error":
+        return <AlertCircle size={14} className="text-red-500" />;
+      default: // typing
+        return (
+          <div className="flex gap-1 items-center h-full">
+            <span className="h-1 w-1 animate-bounce rounded-full bg-gray-400 [animation-delay:0ms]" />
+            <span className="h-1 w-1 animate-bounce rounded-full bg-gray-400 [animation-delay:150ms]" />
+            <span className="h-1 w-1 animate-bounce rounded-full bg-gray-400 [animation-delay:300ms]" />
+          </div>
+        );
+    }
+  };
 
-  const safeProgress = hasProgress
-    ? Math.min(100, Math.max(0, progress!))
-    : 0;
-
-  /* ---------------- SVG PROGRESS MATH ---------------- */
-
-  const radius = 10;
-  const circumference = 2 * Math.PI * radius;
-  const dashOffset =
-    circumference * (1 - safeProgress / 100);
-
-  /* ---------------- LABEL RESOLUTION ---------------- */
-
-  const resolvedLabel = error
-    ? "encountered an error"
-    : cancelled
-    ? "stopped"
-    : label;
-
-  /* ================= RENDER ================= */
+  // --- 2. Compact Progress Bar ---
+  const renderProgress = () => {
+    if (progress === undefined) return null;
+    const safe = Math.min(100, Math.max(0, progress));
+    
+    return (
+      <div className="mt-1.5 h-1 w-32 overflow-hidden rounded-full bg-white/10">
+        <div 
+            className="h-full bg-blue-500 transition-all duration-300 ease-out" 
+            style={{ width: `${safe}%` }} 
+        />
+      </div>
+    );
+  };
 
   return (
-    <div
-      className={`flex items-center gap-3 transition-opacity duration-200 ${
-        error || cancelled ? "opacity-80" : "opacity-100"
-      }`}
-      aria-live="polite"
-    >
+    <div className="flex items-start gap-3 animate-fade-in py-2">
+      {/* Avatar (Left) */}
+      <Avatar role="assistant" />
 
-      {/* Content */}
-      <div className="flex items-center gap-3 text-sm">
-        {/* ================= DETERMINATE PROGRESS ================= */}
-        {isDeterminate && (
-          <div className="relative h-6 w-6 shrink-0">
-            <svg
-              className="h-full w-full -rotate-90"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              {/* Track */}
-              <circle
-                cx="12"
-                cy="12"
-                r={radius}
-                stroke="rgba(255,255,255,0.15)"
-                strokeWidth="3"
-                fill="none"
-              />
-
-              {/* Progress */}
-              <circle
-                cx="12"
-                cy="12"
-                r={radius}
-                stroke="#3b82f6"
-                strokeWidth="3"
-                fill="none"
-                strokeDasharray={circumference}
-                strokeDashoffset={dashOffset}
-                strokeLinecap="round"
-                className="transition-all duration-300 ease-out"
-              />
-            </svg>
-          </div>
-        )}
-
-        {/* ================= TEXT ================= */}
-        <div
-          className={`flex items-center gap-2 ${
-            error
-              ? "text-red-400"
-              : cancelled
-              ? "text-gray-500"
-              : "text-gray-400"
-          }`}
-        >
-          <span>
-            <span className="font-medium text-gray-300">
-              {modelLabel}
-            </span>{" "}
-            {resolvedLabel}
-            {isDeterminate && ` (${safeProgress}%)`}
-          </span>
-
-          {/* ================= TYPING DOTS ================= */}
-          {isTyping && (
-            <span className="flex gap-1">
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:0ms]" />
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:150ms]" />
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:300ms]" />
+      {/* Content (Right) */}
+      <div className="flex flex-col justify-center pt-0.5">
+        <div className="flex items-center gap-2 text-xs">
+          <span className="font-semibold text-gray-200">{modelLabel}</span>
+          
+          <span className="text-gray-600">•</span>
+          
+          <span className="flex items-center gap-2 text-gray-400">
+            {renderIcon()}
+            <span className={type === "error" ? "text-red-400" : "italic"}>
+              {label}
             </span>
-          )}
+          </span>
         </div>
+
+        {/* Progress Bar (Optional) */}
+        {renderProgress()}
       </div>
     </div>
   );

@@ -332,6 +332,28 @@ export async function fetchNetStatus(): Promise<NetStatusResponse> {
 }
 
 /* =========================================================
+   AUTO-TITLING
+========================================================= */
+
+export async function generateChatTitle(question: string): Promise<string> {
+  try {
+    const res = await fetch(`${API_BASE}/chat/title`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+
+    if (!res.ok) return "New Chat";
+    
+    const data = await res.json();
+    return data.title || "New Chat";
+  } catch {
+    return "New Chat";
+  }
+}
+
+
+/* =========================================================
    SAFE JSON
 ========================================================= */
 

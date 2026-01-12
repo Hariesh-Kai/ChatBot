@@ -6,28 +6,17 @@ import ChatInput from "./ChatInput";
 import EmptyState from "../EmptyState";
 import InlineMetadataPrompt from "./InlineMetadataPrompt";
 import RagDebugPanel from "@/app/components/debug/RagDebugPanel";
-
-import { Message } from "@/app/lib/types";
+import SourceViewerModal from "./SourceViewerModal";
+import { Message, RagSource } from "@/app/lib/types";
 import { KAVIN_MODELS, KavinModelId } from "@/app/lib/kavin-models";
-
-import {
-  LLMUIEvent,
-  MetadataRequestField,
-} from "@/app/lib/llm-ui-events";
+import { LLMUIEvent, MetadataRequestField } from "@/app/lib/llm-ui-events";
 import { StreamParser } from "@/app/lib/stream-parser";
-import { updateMetadata  } from "@/app/lib/api";
-import { logEvent } from "@/app/lib/analytics";
-import {
-  startJob,
-  abortJob,
-  finishJob,
-} from "@/app/lib/job-manager";
-
-
+import { updateMetadata, generateChatTitle, commitUpload } from "@/app/lib/api";
+import { startJob, abortJob, finishJob } from "@/app/lib/job-manager";
 import { API_BASE } from "@/app/lib/config";
-
 import NetKeyModal from "@/app/components/net/NetKeyModal";
 import { hasNetApiKey } from "@/app/lib/net-key-store";
+import { UploadStatus } from "@/app/hooks/useSmartUpload";
 
 /* =========================================================
    SAFE UTILS
@@ -59,6 +48,15 @@ const SAFE_MODELS: SafeModel[] = [
   { id: KAVIN_MODELS.net.id, label: KAVIN_MODELS.net.label },
 ];
 
+// ✅ NEW: Labels to simulate backend steps while waiting on CPU
+const THINKING_LABELS = [
+    "Initializing Model...",
+    "Loading Context...", 
+    "Classifying Intent...",
+    "Reranking Results...",
+    "Generating Response..."
+];
+
 /* ================= PROPS ================= */
 
 interface ChatWindowProps {
@@ -68,6 +66,7 @@ interface ChatWindowProps {
   ) => void;
   model: KavinModelId;
   sessionId: string | null;
+  onRenameSession?: (title: string) => void;
 }
 
 /* ================= COMPONENT ================= */
@@ -77,6 +76,7 @@ export default function ChatWindow({
   onUpdateMessages,
   model,
   sessionId,
+  onRenameSession,
 }: ChatWindowProps) {
   const [input, setInput] = useState("");
   const hasStarted = messages.length > 0;
@@ -87,6 +87,16 @@ export default function ChatWindow({
   const [metadataFields, setMetadataFields] =
     useState<MetadataRequestField[] | null>(null);
   const [metadataPending, setMetadataPending] = useState(false);
+  
+  // Track upload state to lock UI
+  const [isUploading, setIsUploading] = useState(false);
+  
+  // Track the ID of the current upload message to update it
+  const [currentUploadMsgId, setCurrentUploadMsgId] = useState<string | null>(null);
+
+  // Source Viewer State
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [activeSources, setActiveSources] = useState<RagSource[]>([]);
 
   const [debugOpen, setDebugOpen] = useState(false);
 
@@ -97,6 +107,9 @@ export default function ChatWindow({
   const textBufferRef = useRef("");
   const rafRef = useRef<number | null>(null);
   const pendingQuestionRef = useRef<string | null>(null);
+  
+  // ✅ NEW: Timer ref for the thinking labels
+  const thinkingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const assistantIdRef = useRef<string | null>(null);
   const hasReceivedFirstTokenRef = useRef(false);
@@ -112,15 +125,18 @@ export default function ChatWindow({
   /* ================= STATE ================= */
 
   const isTyping =
-  messages.some(
-    (m) => m.status === "typing" || m.status === "streaming"
-  ) || assistantIdRef.current !== null;
+    messages.some(
+      (m) => m.status === "typing" || m.status === "streaming"
+    ) || assistantIdRef.current !== null;
 
 
   const isNetBlocked =
     model === "net" &&
     netRateLimitedUntil !== null &&
     Date.now() < netRateLimitedUntil;
+
+  // UI is blocked if: Metadata Pending OR Net Limited OR File Uploading
+  const isUIBlocked = metadataPending || isNetBlocked || isUploading;
 
   /* ================= HELPERS ================= */
 
@@ -139,6 +155,8 @@ export default function ChatWindow({
         content: "",
         createdAt: Date.now(),
         status: "typing",
+        // ✅ Initialize with a label
+        progressLabel: "Initializing..." 
       },
     ]);
 
@@ -146,6 +164,7 @@ export default function ChatWindow({
   }
 
   function finalizeAssistant() {
+    stopThinkingSimulation(); // ✅ Stop labels
     const id = assistantIdRef.current;
     if (!id) return;
 
@@ -156,6 +175,7 @@ export default function ChatWindow({
               ...m,
               content: textBufferRef.current,
               status: "done",
+              progressLabel: undefined // Clear label
             }
           : m
       )
@@ -164,102 +184,230 @@ export default function ChatWindow({
     assistantIdRef.current = null;
     hasReceivedFirstTokenRef.current = false;
   }
-  /* ================= STREAMING ================= */
 
-async function generateAIResponse(question: string) {
-  if (!sessionId || metadataPending) return;
+  /* ================= THINKING SIMULATION ================= */
+  // Cycles through "Loading...", "Reranking..." so user doesn't feel stuck
+  
+  function startThinkingSimulation(msgId: string) {
+      let index = 0;
+      if (thinkingIntervalRef.current) clearInterval(thinkingIntervalRef.current);
+      
+      thinkingIntervalRef.current = setInterval(() => {
+          index = (index + 1) % THINKING_LABELS.length;
+          const label = THINKING_LABELS[index];
+          
+          onUpdateMessages((prev) => prev.map((m) => 
+              m.id === msgId ? { ...m, progressLabel: label } : m
+          ));
+      }, 1500); // Change label every 1.5s
+  }
 
-  if (isNetBlocked) {
+  function stopThinkingSimulation() {
+      if (thinkingIntervalRef.current) {
+          clearInterval(thinkingIntervalRef.current);
+          thinkingIntervalRef.current = null;
+      }
+  }
+
+  /* ================= UPLOAD HANDLERS (UPDATED) ================= */
+
+  function handleUploadStart() {
+    setIsUploading(true);
+    const msgId = uuidv4();
+    setCurrentUploadMsgId(msgId);
+
     onUpdateMessages((prev) => [
       ...prev,
       {
-        id: uuidv4(),
+        id: msgId,
         role: "assistant",
-        content: "⚠️ Net rate-limited. Falling back to Base model.",
+        content: "",
         createdAt: Date.now(),
-        status: "done",
+        status: "progress",
+        progress: 0,
+        progressLabel: "Starting upload...",
       },
     ]);
-    return;
   }
 
-  const controller = startJob(sessionId);
+  function handleUploadProgress(status: UploadStatus, percent: number, label: string) {
+    if (!currentUploadMsgId) return;
 
-  parserRef.current.reset();
-  textBufferRef.current = "";
-  assistantIdRef.current = null;
-
-  try {
-    const response = await fetch(`${API_BASE}/chat/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: sessionId,
-        question,
-        mode: model,
-      }),
-      signal: controller.signal,
-    });
-
-    if (!response.ok || !response.body) {
-      throw new Error("Backend request failed");
-    }
-
-    assistantIdRef.current = createAssistantMessage();
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done || controller.signal.aborted) break;
-      if (!value) continue;
-
-      const chunk = decoder.decode(value, { stream: true });
-      const frames = parserRef.current.push(chunk);
-
-      for (const frame of frames) {
-        if (frame.type === "event") {
-          handleUIEvent(frame.value);
-          continue;
-        }
-
-        textBufferRef.current += frame.value;
-
-        if (!rafRef.current && assistantIdRef.current) {
-          rafRef.current = requestAnimationFrame(() => {
-            onUpdateMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantIdRef.current
-                  ? {
-                      ...m,
-                      content: textBufferRef.current,
-                      status: "streaming",
-                    }
-                  : m
-              )
-            );
-            rafRef.current = null;
-          });
-        }
-      }
-    }
-
-    const flushed = parserRef.current.flush();
-    for (const f of flushed) {
-      if (f.type === "text") {
-        textBufferRef.current += f.value;
-      }
-    }
-
-    finalizeAssistant();
-  } catch (err) {
-    finalizeAssistant();
-  } finally {
-    finishJob();
-    focusInput();
+    onUpdateMessages((prev) =>
+      prev.map((m) =>
+        m.id === currentUploadMsgId
+          ? { ...m, progress: percent, progressLabel: label }
+          : m
+      )
+    );
   }
-}
+
+  async function handleUploadSuccess(result: any) {
+    // 🔥 AUTO-COMMIT LOGIC: Force commit to skip metadata popup
+    try {
+        // 1. Update UI to show finalization
+        handleUploadProgress("processing", 85, "Finalizing index...");
+        
+        // 2. Force commit (skips validation)
+        await commitUpload({
+            job_id: result.job_id,
+            metadata: {},
+            force: true
+        });
+
+        setIsUploading(false);
+        
+        // 3. Convert Progress Bubble to Success Message
+        if (currentUploadMsgId) {
+            onUpdateMessages((prev) => prev.map(m => m.id === currentUploadMsgId ? {
+                ...m,
+                role: "system",
+                status: "done",
+                content: `✅ Successfully processed "${result.filename}" (v${result.revision_number}). \n\nYou can now ask questions about this document.`
+            } : m));
+            setCurrentUploadMsgId(null);
+        }
+
+        if (messages.length === 0 && sessionId && onRenameSession) {
+            onRenameSession(result.filename.replace(".pdf", ""));
+        }
+
+    } catch (err: any) {
+        setIsUploading(false);
+        handleUploadError(err.message || "Failed to commit document (Phase 2).");
+    }
+  }
+
+  function handleUploadError(errorMsg: string) {
+    setIsUploading(false);
+
+    if (currentUploadMsgId) {
+        onUpdateMessages((prev) => prev.map(m => m.id === currentUploadMsgId ? {
+            ...m,
+            status: "error",
+            content: `⚠️ **Upload Failed**: ${errorMsg}`
+        } : m));
+        setCurrentUploadMsgId(null);
+    } else {
+        const errorBubble: Message = {
+            id: uuidv4(),
+            role: "assistant",
+            content: `⚠️ **Upload Failed**: ${errorMsg}`,
+            createdAt: Date.now(),
+            status: "error",
+        };
+        onUpdateMessages((prev) => [...prev, errorBubble]);
+    }
+  }
+
+  /* ================= STREAMING ================= */
+
+  async function generateAIResponse(question: string) {
+    if (!sessionId || metadataPending) return;
+
+    if (isNetBlocked) {
+      onUpdateMessages((prev) => [
+        ...prev,
+        {
+          id: uuidv4(),
+          role: "assistant",
+          content: "⚠️ Net rate-limited. Falling back to Base model.",
+          createdAt: Date.now(),
+          status: "done",
+        },
+      ]);
+      return;
+    }
+
+    const controller = startJob(sessionId);
+
+    parserRef.current.reset();
+    textBufferRef.current = "";
+    assistantIdRef.current = null;
+
+    try {
+      const response = await fetch(`${API_BASE}/chat/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          question,
+          mode: model,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error("Backend request failed");
+      }
+
+      // ✅ 1. Create message and START THINKING LOOP
+      const assistantId = createAssistantMessage();
+      assistantIdRef.current = assistantId;
+      startThinkingSimulation(assistantId);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done || controller.signal.aborted) break;
+        if (!value) continue;
+
+        // ✅ 2. First Token received? Stop thinking loop!
+        if (!hasReceivedFirstTokenRef.current) {
+            hasReceivedFirstTokenRef.current = true;
+            stopThinkingSimulation();
+            // Clear label immediately
+            onUpdateMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, progressLabel: undefined } : m));
+        }
+
+        const chunk = decoder.decode(value, { stream: true });
+        const frames = parserRef.current.push(chunk);
+
+        for (const frame of frames) {
+          if (frame.type === "event") {
+            handleUIEvent(frame.value);
+            continue;
+          }
+
+          textBufferRef.current += frame.value;
+
+          if (!rafRef.current && assistantIdRef.current) {
+            rafRef.current = requestAnimationFrame(() => {
+              onUpdateMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantIdRef.current
+                    ? {
+                        ...m,
+                        content: textBufferRef.current,
+                        status: "streaming",
+                      }
+                    : m
+                )
+              );
+              rafRef.current = null;
+            });
+          }
+        }
+      }
+
+      const flushed = parserRef.current.flush();
+      for (const f of flushed) {
+        if (f.type === "text") {
+          textBufferRef.current += f.value;
+        }
+      }
+
+      finalizeAssistant();
+    } catch (err) {
+      finalizeAssistant();
+    } finally {
+      stopThinkingSimulation(); // Safety stop
+      finishJob();
+      focusInput();
+    }
+  }
 
 
   /* ================= UI EVENTS ================= */
@@ -284,44 +432,60 @@ async function generateAIResponse(question: string) {
           status: "done",
         },
       ]);
+      return;
+    }
+
+    if (event.type === "SOURCES") {
+        const sources = event.data as RagSource[];
+        if (assistantIdRef.current) {
+            const currentId = assistantIdRef.current;
+            onUpdateMessages((prev) =>
+                prev.map((m) =>
+                    m.id === currentId
+                        ? { ...m, sources: sources }
+                        : m
+                )
+            );
+        }
     }
   }
 
   /* ================= STOP ================= */
 
   function handleStop() {
-  if (!sessionId) return;
+    if (!sessionId) return;
 
-  abortJob();
-  finishJob();
+    abortJob();
+    stopThinkingSimulation(); // ✅ Stop animation
+    finishJob();
 
-  if (rafRef.current) {
-    cancelAnimationFrame(rafRef.current);
-    rafRef.current = null;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+
+    if (assistantIdRef.current) {
+      onUpdateMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantIdRef.current
+            ? {
+                ...m,
+                content: textBufferRef.current,
+                status: "done",
+              }
+            : m
+        )
+      );
+    }
+
+    assistantIdRef.current = null;
+    hasReceivedFirstTokenRef.current = false;
   }
-
-  if (assistantIdRef.current) {
-    onUpdateMessages((prev) =>
-      prev.map((m) =>
-        m.id === assistantIdRef.current
-          ? {
-              ...m,
-              content: textBufferRef.current,
-              status: "done",
-            }
-          : m
-      )
-    );
-  }
-
-  assistantIdRef.current = null;
-  hasReceivedFirstTokenRef.current = false;
-}
 
   /* ================= SEND ================= */
 
   function handleSend(customInput?: string) {
-    if (metadataPending || isNetBlocked) return;
+    if (isUIBlocked) return;
 
     if (model === "net" && !hasNetApiKey()) {
       setNetModalOpen(true);
@@ -349,6 +513,13 @@ async function generateAIResponse(question: string) {
       return;
     }
 
+    const userMsgCount = messages.filter(m => m.role === "user").length;
+    if (userMsgCount === 0 && sessionId && onRenameSession) {
+      generateChatTitle(text).then((title) => {
+          onRenameSession(title);
+      });
+    }
+
     generateAIResponse(text);
   }
 
@@ -365,7 +536,7 @@ async function generateAIResponse(question: string) {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, metadataPending]);
+  }, [messages.length, metadataPending, messages[messages.length - 1]?.progress]); 
 
   /* ================= RENDER ================= */
 
@@ -376,7 +547,15 @@ async function generateAIResponse(question: string) {
           className={`absolute inset-0 flex items-center justify-center transition-all
           ${hasStarted ? "opacity-0 pointer-events-none" : "opacity-100"}`}
         >
-          <EmptyState disabled={metadataPending} onSend={handleSend} />
+          <EmptyState 
+            disabled={isUIBlocked} 
+            onSend={handleSend}
+            sessionId={sessionId}
+            onUploadStart={handleUploadStart}
+            onUploadProgress={handleUploadProgress} 
+            onUploadSuccess={handleUploadSuccess}
+            onUploadError={handleUploadError}
+          />
         </div>
 
         <div
@@ -397,6 +576,10 @@ async function generateAIResponse(question: string) {
                         .map((x) => x.role)
                         .lastIndexOf("assistant")
                   }
+                  onViewSources={(sources) => {
+                    setActiveSources(sources);
+                    setViewerOpen(true);
+                  }}
                 />
               ))}
 
@@ -435,9 +618,14 @@ async function generateAIResponse(question: string) {
                 value={input}
                 onChange={setInput}
                 onSend={handleSend}
-                disabled={metadataPending || isNetBlocked}
+                disabled={isUIBlocked} 
                 isGenerating={isTyping}
                 onStop={handleStop}
+                sessionId={sessionId}
+                onUploadStart={handleUploadStart}
+                onUploadProgress={handleUploadProgress} 
+                onUploadSuccess={handleUploadSuccess}
+                onUploadError={handleUploadError}
               />
             </div>
           </div>
@@ -447,6 +635,12 @@ async function generateAIResponse(question: string) {
       <NetKeyModal
         open={netModalOpen}
         onClose={() => setNetModalOpen(false)}
+      />
+
+      <SourceViewerModal 
+        open={viewerOpen} 
+        sources={activeSources} 
+        onClose={() => setViewerOpen(false)} 
       />
     </>
   );

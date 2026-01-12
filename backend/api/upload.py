@@ -21,6 +21,9 @@ from backend.storage.minio_client import upload_pdf as minio_upload_pdf
 # ✅ Import active document persistence
 from backend.memory.pg_memory import save_active_document
 
+# ✅ Import duplicate checker
+from backend.rag.ingest import metadata_exists
+
 # ============================================================
 # CONFIG
 # ============================================================
@@ -92,7 +95,7 @@ class CommitRequest(BaseModel):
 class CommitResponse(BaseModel):
     job_id: str
     company_document_id: str
-    revision_number: str # ✅ Changed to STR for consistency
+    revision_number: str 
     status: str
 
 
@@ -101,7 +104,7 @@ class CommitResponse(BaseModel):
 # ============================================================
 
 @router.post("/", response_model=UploadResponse)
-async def upload_pdf(
+def upload_pdf(
     *,
     file: UploadFile = File(...),
     session_id: str = Form(...),
@@ -154,7 +157,7 @@ async def upload_pdf(
             company_document_id=company_document_id,
             extra_metadata={
                 "company_document_id": company_document_id,
-                "revision_number": str(revision_number), # ✅ Ensure String
+                "revision_number": str(revision_number),
                 "source_file": file.filename,
                 "session_id": session_id,
             },
@@ -168,32 +171,77 @@ async def upload_pdf(
     metadata: Dict[str, MetadataField] = {}
     missing: List[str] = []
 
-    for key, meta in result.get("metadata", {}).items():
-        val = meta.get("value")
-        conf = meta.get("confidence", 0.0)
+    extracted = result.get("metadata", {})
 
-        metadata[key] = MetadataField(
-            key=key,
-            value=str(val) if val is not None else None,
-            confidence=conf,
-        )
+    # --------------------------------------------------------
+    # 🔥 LOGIC FIX: Ask User if Confidence Low or Missing
+    # --------------------------------------------------------
 
-        if val is None or conf < 0.6:
-            missing.append(key)
+    # 1. Document Type
+    doc_type_val = extracted.get("document_type", {}).get("value")
+    doc_type_conf = extracted.get("document_type", {}).get("confidence", 0.0)
+    
+    metadata["document_type"] = MetadataField(
+        key="document_type", 
+        value=doc_type_val, 
+        confidence=doc_type_conf
+    )
+    
+    # If missing or low confidence, add to missing list (Triggers Popup)
+    if not doc_type_val or doc_type_conf < 0.8:
+        missing.append("document_type")
 
+    # 2. Revision Code
+    rev_code_val = extracted.get("revision_code", {}).get("value")
+    rev_code_conf = extracted.get("revision_code", {}).get("confidence", 0.0)
+
+    metadata["revision_code"] = MetadataField(
+        key="revision_code", 
+        value=rev_code_val, 
+        confidence=rev_code_conf
+    )
+
+    if not rev_code_val or rev_code_conf < 0.8:
+        missing.append("revision_code")
+
+    # --------------------------------------------------------
+    # 🔥 DUPLICATE CHECK (Force Popup if Exists)
+    # --------------------------------------------------------
+    
+    # Even if the AI is 100% sure, we check if this specific version exists in DB
+    is_duplicate = metadata_exists(
+        connection_string=db_connection,
+        metadata={
+            "company_document_id": company_document_id,
+            "revision_number": str(revision_number)
+        }
+    )
+
+    if is_duplicate:
+        print(f"⚠️ [PHASE 1] Duplicate detected! Forcing metadata popup.")
+        # Trigger popup by flagging a field as 'missing' even if it isn't
+        if "revision_code" not in missing:
+            missing.append("revision_code")
+
+    # Create Job State
     create_job(
         job_id=job_id,
         session_id=session_id,
         metadata={
             "company_document_id": company_document_id,
-            "revision_number": str(revision_number), # ✅ Store as String
+            "revision_number": str(revision_number),
             "source_file": file.filename,
             "pdf_path": str(pdf_path),
             "db_connection": db_connection,
-            **{k: v.value for k, v in metadata.items()},
+            "document_type": doc_type_val,
+            "revision_code": rev_code_val,
         },
         missing_fields=missing,
     )
+
+    # If missing is NOT empty, frontend will show the form
+    next_action = "WAIT_FOR_METADATA" if missing else "READY_TO_COMMIT"
+    print(f"👉 [PHASE 1] Decision: {next_action}")
 
     return UploadResponse(
         job_id=job_id,
@@ -203,7 +251,7 @@ async def upload_pdf(
         status="uploaded",
         metadata=metadata,
         missing_metadata=missing,
-        next_action="WAIT_FOR_METADATA" if missing else "READY_TO_COMMIT",
+        next_action=next_action,
     )
 
 
@@ -222,11 +270,18 @@ def commit_upload(payload: CommitRequest):
     if not job:
         raise HTTPException(404, "Invalid job_id")
 
+    # Only block if NOT forced
     if job.missing_fields and not payload.force:
-        raise HTTPException(
-            400,
-            f"Missing metadata fields: {job.missing_fields}",
-        )
+        # Check if user actually provided the missing fields in payload
+        # If they filled everything, we can proceed
+        filled_keys = set(payload.metadata.keys())
+        still_missing = [f for f in job.missing_fields if f not in filled_keys]
+        
+        if still_missing:
+            raise HTTPException(
+                400,
+                f"Missing metadata fields: {still_missing}",
+            )
 
     forbidden = {"company_document_id", "revision_number"}
     if forbidden & payload.metadata.keys():
@@ -241,12 +296,11 @@ def commit_upload(payload: CommitRequest):
     }
 
     # --------------------------------------------------------
-    # 1. UPLOAD TO MINIO (With Logs)
+    # 1. UPLOAD TO MINIO
     # --------------------------------------------------------
     try:
         print(f"☁️  [MINIO] Uploading: {final_metadata['source_file']} ...")
         
-        # MinIO expects int for folder paths, but DB uses string
         rev_val = final_metadata["revision_number"]
         rev_int = int(rev_val) if str(rev_val).isdigit() else 1
 
@@ -260,7 +314,6 @@ def commit_upload(payload: CommitRequest):
         print(f"✅ [MINIO] Upload Success! Path: {minio_path}")
     except Exception as e:
         print(f"❌ [MINIO] Upload Failed: {e}")
-        # Abort if backup fails
         raise HTTPException(500, f"MinIO Backup Failed: {e}")
 
     # --------------------------------------------------------
@@ -284,8 +337,7 @@ def commit_upload(payload: CommitRequest):
     # ✅ MARK JOB READY
     mark_job_ready(payload.job_id)
 
-    # ✅ CRITICAL: persist active document for RAG
-    # Explicitly cast to string to match DB schema
+    # ✅ SAVE ACTIVE DOC
     save_active_document(
         session_id=job.session_id,
         company_document_id=final_metadata["company_document_id"],

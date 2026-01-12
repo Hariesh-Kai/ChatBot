@@ -1,3 +1,5 @@
+# backend/rag/chunk.py
+
 import json
 import sys
 import re
@@ -37,6 +39,7 @@ class ContextAwareChunker:
     def __init__(self):
         self.current_section = "General / Introduction"
         self.text_buffer = []
+        self.current_buffer_page = 1 # Track the page number for the buffer
 
     # --------------------------------------------------------
     # HTML → Markdown (Tables)
@@ -68,7 +71,9 @@ class ContextAwareChunker:
             metadata={
                 "type": "text", 
                 "section": self.current_section, 
-                "is_parent": False
+                "is_parent": False,
+                # ✅ Save Page Number (from the buffer tracking)
+                "page_number": self.current_buffer_page
             }
         ))
         self.text_buffer = []
@@ -87,6 +92,22 @@ class ContextAwareChunker:
         for element in elements:
             category = element.category
             text = normalize_numbers(element.text or "")
+            
+            # ✅ Safely Extract Metadata (Page + Coordinates)
+            meta = getattr(element, "metadata", None)
+            page_num = meta.page_number if meta else 1
+
+            # ✅ Extract Coordinates for Source Viewer
+            # Unstructured returns points as tuple of tuples: ((x1, y1), (x2, y2), ...)
+            # We store it as a JSON string for lightweight DB storage
+            bbox_json = ""
+            if meta and hasattr(meta, "coordinates") and meta.coordinates:
+                 # Convert tuple points to list for JSON serialization
+                try:
+                    points = list(meta.coordinates.points)
+                    bbox_json = json.dumps(points)
+                except Exception:
+                    pass
 
             # ------------------------------------------------
             # 1️⃣ SECTION TITLES
@@ -95,6 +116,8 @@ class ContextAwareChunker:
                 self._flush_text_buffer(final_documents)
                 self.current_section = text.strip()
                 self.text_buffer.append(text)
+                # Reset buffer page tracker to current title's page
+                self.current_buffer_page = page_num
                 continue
 
             # ------------------------------------------------
@@ -107,7 +130,6 @@ class ContextAwareChunker:
                 markdown = self.html_to_markdown(html) if html else text
                 
                 # --- A. CREATE PARENT CHUNK (The Whole Table) ---
-                # This chunk is what we will send to the LLM if a match is found.
                 parent_id = str(uuid.uuid4())
                 
                 parent_doc = Document(
@@ -116,16 +138,16 @@ class ContextAwareChunker:
                         "type": "parent",
                         "section": self.current_section,
                         "doc_id": parent_id,  # Unique ID for linking
-                        "is_parent": True     # Flag to identify parent
+                        "is_parent": True,    # Flag to identify parent
+                        "page_number": page_num, # ✅ Save Page
+                        "bbox": bbox_json     # ✅ Save Highlight Box
                     }
                 )
                 final_documents.append(parent_doc)
 
                 # --- B. CREATE CHILD CHUNKS (The Rows) ---
-                # These chunks are what we search against in the database.
                 rows = markdown.split("\n")
                 
-                # Check if we have headers + separator + data (at least 3 lines)
                 if len(rows) > 2:
                     headers = rows[:2]
                     for row in rows[2:]:
@@ -141,7 +163,9 @@ class ContextAwareChunker:
                                 "type": "child",
                                 "section": self.current_section,
                                 "parent_id": parent_id,  # Link back to parent
-                                "is_parent": False
+                                "is_parent": False,
+                                "page_number": page_num, # ✅ Child inherits Page
+                                "bbox": bbox_json     # ✅ Child inherits Box
                             }
                         )
                         final_documents.append(child_doc)
@@ -151,6 +175,10 @@ class ContextAwareChunker:
             # 3️⃣ NARRATIVE / LIST TEXT
             # ------------------------------------------------
             if category in ("NarrativeText", "UncategorizedText", "ListItem"):
+                # If buffer is empty, start tracking page from this element
+                if not self.text_buffer:
+                    self.current_buffer_page = page_num
+                
                 self.text_buffer.append(text)
 
                 # Semantic boundary: paragraph/list end

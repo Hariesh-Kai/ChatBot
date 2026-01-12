@@ -135,6 +135,31 @@ RULES FOR ANSWERING:
 """.strip()
 
 
+# backend/llm/prompts.py
+
+# ============================================================
+# PROMPT BUILDERS — Chat Title Naming
+# ============================================================
+
+def build_title_prompt(question: str) -> str:
+    """
+    Zero-shot prompt for summarizing a conversation into a title.
+    """
+    return f"""<|start_header_id|>system<|end_header_id|>
+
+You are a helpful assistant.
+Summarize the user's input into a concise title (maximum 5 words).
+Do not answer the question.
+Do not use quotes.
+Do not use "Title:" prefix.
+Just the text.
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{question}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+"""
+
+
 # ============================================================
 # PROMPT BUILDERS — HUGGINGFACE (CHAT MODELS)
 # ============================================================

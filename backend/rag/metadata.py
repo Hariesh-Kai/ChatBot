@@ -4,6 +4,7 @@ import json
 import sys
 import hashlib
 import tiktoken
+import time
 from datetime import datetime
 from typing import Dict, Any, List
 
@@ -159,13 +160,15 @@ def enrich_chunks(
     - ✅ Identity lives ONLY in cmetadata
     """
 
+    print(f"✨ Enriching chunks from: {chunks_file}")
+
     with open(chunks_file, "r", encoding="utf-8") as f:
         chunks = json.load(f)
 
     # ✅ FIX: Treat revision as String (do not cast to int)
     revision_number = str(extra_metadata.get("revision_number", ""))
     revision_code = extra_metadata.get("revision_code")
-    revision_date = extra_metadata.get("revision_date")
+    revision_date = extra_metadata.get("revision_date", int(time.time()))
     document_type = extra_metadata.get("document_type")
     source_file = extra_metadata.get("source_file")
 
@@ -175,7 +178,7 @@ def enrich_chunks(
     if not source_file:
         raise RuntimeError("extra_metadata.source_file is required")
 
-    created_at = datetime.utcnow().isoformat()
+    created_at = int(time.time())
     enriched: List[Dict[str, Any]] = []
 
     for item in chunks:
@@ -198,6 +201,10 @@ def enrich_chunks(
                     "source_file": source_file,
                     "tokens": count_tokens(content),
                     "created_at": created_at,
+                    
+                    # ✅ NEW: Pass through location data to DB
+                    "page_number": base_meta.get("page_number", 1),
+                    "bbox": base_meta.get("bbox", "")
                 },
 
                 # -----------------------------
@@ -219,11 +226,16 @@ def enrich_chunks(
                     revision_number, # ✅ String
                     content,
                 ),
+                "parent_id": base_meta.get("parent_id"), # None if parent
+                "doc_id": base_meta.get("doc_id"),       # Only present on parent
             }
         )
 
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(enriched, f, indent=2, ensure_ascii=False)
+
+    print(f"✅ Enriched {len(enriched)} chunks.")
+    print(f"💾 Saved to: {output_file}")
 
     return {
         "company_document_id": company_document_id,

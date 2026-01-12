@@ -27,6 +27,9 @@ from backend.api.net_key import router as net_key_router   # /net-key/*
 from backend.api.debug_rag import router as debug_router   # 🐞 Debug RAG
 from backend.api.retrieve import router as retrieve_router # Optional retrieval APIs
 
+# ✅ NEW: Render Router for Source Viewer
+from backend.api.render import router as render_router 
+
 # ============================================================
 # IMPORT HEALTH CHECK DEPENDENCIES
 # ============================================================
@@ -86,6 +89,9 @@ app.include_router(net_router)         # /net/*
 app.include_router(net_key_router)     # /net-key/*
 app.include_router(retrieve_router)    # /retrieve/* (optional)
 
+# ✅ Render API (Source Viewer)
+app.include_router(render_router)      # GET /render/image
+
 
 # ============================================================
 # BASIC INFO ENDPOINT
@@ -104,6 +110,7 @@ def root_info():
             "Agent-aware metadata workflow",
             "RAG Debug Observability",
             "Answer Confidence Scoring",
+            "Source Highlighting & Rendering"
         ],
     }
 

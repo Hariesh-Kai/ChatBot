@@ -10,6 +10,9 @@
    - Parser is stream-safe and never throws
 ========================================================= */
 
+// ✅ IMPORT Source Type
+import { RagSource } from "./types";
+
 /* =========================================================
    CONSTANTS (MUST MATCH BACKEND EXACTLY)
 ========================================================= */
@@ -85,6 +88,13 @@ export type NetRateLimitedEvent = {
   retryAfterSec: number;
 };
 
+/* ---------- ✅ NEW: Sources ---------- */
+
+export type SourcesEvent = {
+  type: "SOURCES";
+  data: RagSource[];
+};
+
 
 /* =========================================================
    UNION TYPE — ALL ALLOWED EVENTS
@@ -99,7 +109,8 @@ export type LLMUIEvent =
   | ProgressEvent
   | ErrorEvent
   | NetStatusEvent
-  | NetRateLimitedEvent;
+  | NetRateLimitedEvent
+  | SourcesEvent; // ✅ Added here
 
 
 
@@ -123,6 +134,7 @@ export function isLLMUIEvent(obj: unknown): obj is LLMUIEvent {
       case "ERROR":
       case "NET_STATUS":
       case "NET_RATE_LIMITED":
+      case "SOURCES": // ✅ Added here
         return true;
       default:
         return false;

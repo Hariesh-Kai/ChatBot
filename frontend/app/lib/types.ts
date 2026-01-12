@@ -1,4 +1,4 @@
-// app/lib/types.ts
+// frontend/app/lib/types.ts
 
 import type { KavinModelId } from "./kavin-models";
 
@@ -27,6 +27,19 @@ export type MessageStatus =
   | "progress"      // 🔥 determinate progress (PDF / ingestion)
   | "done"          // final answer rendered
   | "error";        // error state (metadata / pipeline)
+
+/* ================= SOURCE TYPE (✅ NEW) ================= */
+
+export interface RagSource {
+  id: string;
+  filename: string; // Changed from fileName to match backend usually, or keep fileName if strict
+  page: number;
+  bbox?: string; // JSON string "[[x,y], ...]"
+  company_doc_id?: string;
+  revision?: number;
+  text?: string; // Often useful to have the text snippet
+  score?: number;
+}
 
 /* ================= MESSAGE ================= */
 
@@ -59,14 +72,6 @@ export interface Message {
   edited?: boolean;
   regenerated?: boolean;
 
-  /* ================= STREAMING (OPTIONAL) ================= */
-
-  /**
-   * Legacy / optional streaming hint.
-   * (Not required if status is used consistently)
-   */
-  streaming?: boolean;
-
   /* ================= 🔥 PROGRESS (PDF / JOB ONLY) ================= */
 
   /**
@@ -80,6 +85,14 @@ export interface Message {
    * Example: "Chunking PDF", "Embedding vectors"
    */
   progressLabel?: string;
+
+  /* ================= 📚 SOURCES (✅ NEW) ================= */
+  
+  /**
+   * List of citations used to generate this message.
+   * Used for the "Source Viewer" modal.
+   */
+  sources?: RagSource[];
 }
 
 /* ================= CHAT SESSION ================= */

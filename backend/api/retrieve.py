@@ -23,7 +23,7 @@ DEFAULT_DB = os.getenv(
 
 COLLECTION_NAME = "rag_documents"
 
-HF_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+HF_MODEL = "BAAI/bge-m3"
 
 
 # ============================================================

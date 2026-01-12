@@ -1,353 +1,333 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import Sidebar from "./components/sidebar/Sidebar";
-import ChatWindow from "./components/chat/ChatWindow";
-import ChatHeader from "./components/chat/ChatHeader";
-import DeleteConfirmModal from "./components/ui/DeleteConfirmModal";
-import Disclaimer from "./components/ui/Disclaimer";
-
-/* 🔥 Metadata popup */
-import MetadataModal from "./components/chat/MetadataModal";
-import { MetadataRequestField } from "@/app/lib/llm-ui-events";
-
+import Sidebar from "@/app/components/sidebar/Sidebar";
+import ChatWindow from "@/app/components/chat/ChatWindow";
 import { ChatSession, Message } from "@/app/lib/types";
-import { loadChats, saveChats } from "@/app/lib/chat-store";
 import { KavinModelId } from "@/app/lib/kavin-models";
+import { loadChats, saveChats } from "@/app/lib/chat-store";
+import { commitUpload } from "@/app/lib/api"; 
+import MetadataModal from "@/app/components/chat/MetadataModal";
+import { MetadataRequestField } from "@/app/lib/llm-ui-events";
+import { UploadStatus } from "@/app/hooks/useSmartUpload";
 
 /* =========================================================
-   SAFE DEFAULTS
+   HELPER: UUID
 ========================================================= */
-
-const DEFAULT_MODEL: KavinModelId = "lite";
-
-/* =========================================================
-   HELPERS
-========================================================= */
-
-function generateChatTitle(text: string): string {
-  return text
-    .replace(/[`*_~>#]/g, "")
-    .split(/[.!?\n]/)[0]
-    .split(" ")
-    .slice(0, 5)
-    .join(" ")
-    .trim();
-}
-
-function normalizeChats(raw: any[]): ChatSession[] {
-  return raw.map((c) => {
-    const model: KavinModelId =
-      c.model === "base" || c.model === "lite" || c.model === "net"
-        ? c.model
-        : DEFAULT_MODEL;
-
-    return {
-      id: c.id ?? crypto.randomUUID(),
-      title: c.title ?? "",
-      model,
-      pinned: Boolean(c.pinned),
-      messages: Array.isArray(c.messages) ? c.messages : [],
-    };
+function uuidv4() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+    const r = (Math.random() * 16) | 0,
+      v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
   });
 }
 
-/* =========================================================
-   PAGE
-========================================================= */
-
-export default function Page() {
+export default function Home() {
+  /* ================= STATE ================= */
   const [chats, setChats] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [deleteChatId, setDeleteChatId] = useState<string | null>(null);
+  
+  // Metadata Modal State (For Sidebar Uploads)
+  const [metadataModalOpen, setMetadataModalOpen] = useState(false);
+  const [pendingMetadataFields, setPendingMetadataFields] = useState<MetadataRequestField[]>([]);
+  const [pendingJobId, setPendingJobId] = useState<string | null>(null);
+  const [pendingFilename, setPendingFilename] = useState<string>("");
 
-  /* 🔥 Upload metadata popup state */
-  const [uploadMetadata, setUploadMetadata] = useState<{
-    jobId: string;
-    fields: MetadataRequestField[];
-  } | null>(null);
+  // ✅ NEW: Track sidebar upload progress message ID
+  const [sidebarUploadMsgId, setSidebarUploadMsgId] = useState<string | null>(null);
 
-  /* =======================================================
-     INITIAL LOAD
-  ======================================================= */
-
+  // Load state on mount
   useEffect(() => {
-    const stored = normalizeChats(loadChats());
-
-    if (stored.length > 0) {
-      setChats(stored);
-      setActiveId(stored[0].id);
+    const loaded = loadChats();
+    setChats(loaded);
+    if (loaded.length > 0) {
+      setActiveId(loaded[0].id);
     } else {
-      const chat = createChat();
-      setChats([chat]);
-      setActiveId(chat.id);
+      createNewChat();
     }
   }, []);
 
-  /* =======================================================
-     CHAT HELPERS
-  ======================================================= */
+  // Save state on change
+  useEffect(() => {
+    if (chats.length > 0) saveChats(chats);
+  }, [chats]);
 
-  const createChat = useCallback((): ChatSession => {
-    return {
-      id: crypto.randomUUID(),
-      title: "",
+  /* ================= DERIVED STATE ================= */
+  const activeChat = chats.find((c) => c.id === activeId);
+
+  const isTyping = activeChat
+    ? activeChat.messages.some(
+        (m) => m.status === "typing" || m.status === "streaming"
+      )
+    : false;
+
+  /* ================= ACTIONS ================= */
+
+  const createNewChat = useCallback(() => {
+    const newChat: ChatSession = {
+      id: uuidv4(),
+      title: "New Chat",
       messages: [],
-      model: DEFAULT_MODEL,
+      model: "lite", // Default to lite
       pinned: false,
     };
+    setChats((prev) => [newChat, ...prev]);
+    setActiveId(newChat.id);
+    if (window.innerWidth < 768) setSidebarOpen(false);
   }, []);
 
-  const ensureActiveChat = useCallback((): string => {
-    if (activeId) return activeId;
-
-    const chat = createChat();
-    setChats((prev) => {
-      const next = [chat, ...prev];
-      saveChats(next);
-      return next;
-    });
-    setActiveId(chat.id);
-    return chat.id;
-  }, [activeId, createChat]);
-
-  function updateMessages(
-    updater: Message[] | ((prev: Message[]) => Message[])
-  ) {
-    const chatId = ensureActiveChat();
-
-    setChats((prev) => {
-      const next = prev.map((c) => {
-        if (c.id !== chatId) return c;
-
-        const nextMessages =
-          typeof updater === "function"
-            ? updater(c.messages)
-            : updater;
-
-        if (
-          !c.title &&
-          nextMessages[0]?.role === "user" &&
-          typeof nextMessages[0].content === "string"
-        ) {
-          return {
-            ...c,
-            title: generateChatTitle(nextMessages[0].content),
-            messages: nextMessages,
-          };
-        }
-
-        return { ...c, messages: nextMessages };
-      });
-
-      saveChats(next);
-      return next;
-    });
-  }
-
-  /* =======================================================
-     CHAT ACTIONS
-  ======================================================= */
-
-  function handleNewChat() {
-    const chat = createChat();
-    setChats((prev) => {
-      const next = [chat, ...prev];
-      saveChats(next);
-      return next;
-    });
-    setActiveId(chat.id);
-  }
-
-  function renameChat(chatId: string, title: string) {
-    if (!title.trim()) return;
-    setChats((prev) => {
-      const next = prev.map((c) =>
-        c.id === chatId ? { ...c, title } : c
-      );
-      saveChats(next);
-      return next;
-    });
-  }
-
-  function clearChat(chatId: string) {
-    setChats((prev) => {
-      const next = prev.map((c) =>
-        c.id === chatId ? { ...c, messages: [] } : c
-      );
-      saveChats(next);
-      return next;
-    });
-  }
-
-  function changeChatModel(chatId: string, model: KavinModelId) {
-    setChats((prev) => {
-      const next = prev.map((c) =>
-        c.id === chatId ? { ...c, model } : c
-      );
-      saveChats(next);
-      return next;
-    });
-  }
-
-  function handleModelSwitch(model: KavinModelId) {
-    if (activeId) {
-      changeChatModel(activeId, model);
-    } else {
-      const chat = createChat();
-      chat.model = model;
-      setChats((prev) => {
-        const next = [chat, ...prev];
-        saveChats(next);
-        return next;
-      });
-      setActiveId(chat.id);
-    }
-  }
-
-  function requestDeleteChat(chatId: string) {
-    setDeleteChatId(chatId);
-  }
-
-  function confirmDeleteChat() {
-    if (!deleteChatId) return;
-    setChats((prev) => {
-      const next = prev.filter((c) => c.id !== deleteChatId);
-      saveChats(next);
-      return next;
-    });
-    setActiveId(null);
-    setDeleteChatId(null);
-  }
-
-  function pinChat(chatId: string) {
-    setChats((prev) => {
-      const next = [...prev]
-        .map((c) =>
-          c.id === chatId ? { ...c, pinned: !c.pinned } : c
-        )
-        .sort((a, b) => Number(b.pinned) - Number(a.pinned));
-      saveChats(next);
-      return next;
-    });
-  }
-
-  /* =======================================================
-     🔥 UPLOAD HANDLER
-  ======================================================= */
-
-  const handleUploadSuccess = useCallback(
-    (result: any) => {
-      if (activeId) {
-        updateMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: "system",
-            content: `📄 Uploaded "${result.filename}" successfully.`,
-            createdAt: Date.now(),
-            status: "done",
-          },
-        ]);
-      }
-
-      if (
-        result.next_action === "WAIT_FOR_METADATA" &&
-        Array.isArray(result.missing_metadata)
-      ) {
-        const fields: MetadataRequestField[] =
-          result.missing_metadata.map((key: string) => ({
-            key,
-            label: key
-              .replace(/_/g, " ")
-              .replace(/\b\w/g, (c) => c.toUpperCase()),
-            placeholder: `Enter ${key.replace(/_/g, " ")}`,
-            reason: "Low confidence extraction",
-          }));
-
-        setUploadMetadata({
-          jobId: result.job_id,
-          fields,
-        });
+  const handleDeleteChat = useCallback(
+    (id: string) => {
+      setChats((prev) => prev.filter((c) => c.id !== id));
+      if (activeId === id) {
+        setActiveId(null);
       }
     },
     [activeId]
   );
 
-  /* =======================================================
-     RENDER
-  ======================================================= */
+  const handleRenameChat = useCallback((id: string, newTitle: string) => {
+    setChats((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, title: newTitle } : c))
+    );
+  }, []);
 
-  const activeChat =
-    activeId ? chats.find((c) => c.id === activeId) ?? null : null;
+  const handlePinChat = useCallback((id: string) => {
+    setChats((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, pinned: !c.pinned } : c))
+    );
+  }, []);
 
-  const isTyping =
-    activeChat?.messages.some(
-      (m) => m.status === "typing" || m.status === "streaming"
-    ) ?? false;
+  const handleModelChange = useCallback(
+    (id: string, model: KavinModelId) => {
+      setChats((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, model } : c))
+      );
+    },
+    []
+  );
+
+  /* ================= MESSAGE UPDATER ================= */
+
+  const updateMessages = useCallback(
+    (updater: Message[] | ((prev: Message[]) => Message[])) => {
+      if (!activeId) return;
+
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id !== activeId) return c;
+          const newMessages =
+            typeof updater === "function" ? updater(c.messages) : updater;
+          return { ...c, messages: newMessages };
+        })
+      );
+    },
+    [activeId]
+  );
+
+  /* ================= SIDEBAR UPLOAD HANDLERS (✅ FIXED) ================= */
+
+  const handleSidebarUploadStart = () => {
+    if (!activeId) return;
+    
+    // ✅ Create persistent progress message in current chat
+    const msgId = uuidv4();
+    setSidebarUploadMsgId(msgId);
+    
+    updateMessages((prev) => [...prev, {
+        id: msgId,
+        role: "assistant",
+        content: "",
+        createdAt: Date.now(),
+        status: "progress",
+        progress: 0,
+        progressLabel: "Starting upload...",
+    }]);
+  };
+
+  // ✅ Handle real-time updates from Sidebar button
+  const handleSidebarUploadProgress = (status: UploadStatus, percent: number, label: string) => {
+    if (!activeId || !sidebarUploadMsgId) return;
+    
+    updateMessages((prev) => prev.map((m) => 
+        m.id === sidebarUploadMsgId 
+            ? { ...m, progress: percent, progressLabel: label } 
+            : m
+    ));
+  };
+
+  const handleSidebarUploadSuccess = async (result: any) => {
+    if (!activeId) return;
+
+    // WAIT_FOR_METADATA logic
+    if (result.next_action === "WAIT_FOR_METADATA") {
+        const fields: MetadataRequestField[] = Object.entries(result.metadata).map(
+            ([key, meta]: [string, any]) => ({
+                key: key,
+                label: key.replace(/_/g, " ").toUpperCase(),
+                value: meta.value || "",
+                placeholder: `Enter ${key}...`,
+                reason: "Please verify this field"
+            })
+        );
+
+        setPendingJobId(result.job_id);
+        setPendingFilename(result.filename);
+        setPendingMetadataFields(fields);
+        setMetadataModalOpen(true);
+        
+        // Remove progress bar while waiting for user input
+        if (sidebarUploadMsgId) {
+            updateMessages(prev => prev.filter(m => m.id !== sidebarUploadMsgId));
+            setSidebarUploadMsgId(null);
+        }
+        return; 
+    }
+
+    // READY_TO_COMMIT logic
+    if (result.next_action === "READY_TO_COMMIT") {
+        try {
+            // Update progress bar
+            handleSidebarUploadProgress("processing", 95, "Finalizing index...");
+            
+            await commitUpload({
+                job_id: result.job_id,
+                metadata: {},
+                force: true
+            });
+            
+            finalizeUploadSuccess(result.filename, result.revision_number);
+        } catch (err: any) {
+            handleSidebarUploadError(err.message || "Failed to commit document.");
+        }
+    }
+  };
+
+  // Helper to finish UI updates after successful Phase 2
+  const finalizeUploadSuccess = (filename: string, revision: any) => {
+    if (sidebarUploadMsgId) {
+        // Transform the progress bubble into success message
+        updateMessages((prev) => prev.map(m => m.id === sidebarUploadMsgId ? {
+            ...m,
+            role: "system",
+            status: "done",
+            content: `✅ Successfully processed "${filename}" (v${revision}). \n\nYou can now ask questions about this document.`
+        } : m));
+        setSidebarUploadMsgId(null);
+    } else {
+        // Fallback if message ID was lost
+        const successMsg: Message = {
+            id: uuidv4(),
+            role: "system",
+            content: `✅ Successfully processed "${filename}" (v${revision}). \n\nYou can now ask questions about this document.`,
+            createdAt: Date.now(),
+            status: "done",
+        };
+        updateMessages((prev) => [...prev, successMsg]);
+    }
+
+    // Auto-Rename Chat if empty
+    if (activeChat && activeChat.messages.length === 0) {
+        handleRenameChat(activeId!, filename.replace(".pdf", ""));
+    }
+  };
+
+  const handleSidebarUploadError = (errorMsg: string) => {
+    if (!activeId) return;
+
+    if (sidebarUploadMsgId) {
+        updateMessages((prev) => prev.map(m => m.id === sidebarUploadMsgId ? {
+            ...m,
+            status: "error",
+            content: `⚠️ **Upload Failed**: ${errorMsg}`
+        } : m));
+        setSidebarUploadMsgId(null);
+    } else {
+        const errorMsgBubble: Message = {
+            id: uuidv4(),
+            role: "assistant",
+            content: `⚠️ **Upload Failed**: ${errorMsg}`,
+            createdAt: Date.now(),
+            status: "error",
+        };
+        updateMessages((prev) => [...prev, errorMsgBubble]);
+    }
+  };
+
+  /* ================= MODAL HANDLERS ================= */
+
+  const handleMetadataSubmitSuccess = () => {
+    setMetadataModalOpen(false);
+    finalizeUploadSuccess(pendingFilename, "X"); 
+    setPendingJobId(null);
+  };
+
+  /* ================= RENDER ================= */
+
+  if (!activeChat && chats.length > 0 && !activeId) {
+     setActiveId(chats[0].id);
+  }
 
   return (
-    <div className="relative h-screen w-screen bg-black text-white overflow-hidden">
+    <div className="flex h-full w-full bg-black text-white">
+      {/* SIDEBAR */}
       <Sidebar
         chats={chats}
         activeId={activeId}
-        isTyping={isTyping}
+        sessionId={activeId}
         onSelect={setActiveId}
-        onNew={handleNewChat}
-        onRename={renameChat}
-        onDelete={requestDeleteChat}
-        onPin={pinChat}
+        onNew={createNewChat}
+        onRename={handleRenameChat}
+        onDelete={handleDeleteChat}
+        onPin={handlePinChat}
         isOpen={sidebarOpen}
         onOpen={() => setSidebarOpen(true)}
         onClose={() => setSidebarOpen(false)}
-        sessionId={activeId}
-        onUploadStart={() => {}}
-        onUploadSuccess={handleUploadSuccess}
-        onUploadError={(err) => alert(err)}
+        isTyping={isTyping}
+        // ✅ Pass upload handlers including progress
+        onUploadStart={handleSidebarUploadStart}
+        onUploadSuccess={handleSidebarUploadSuccess}
+        onUploadError={handleSidebarUploadError}
+        onUploadProgress={handleSidebarUploadProgress} 
       />
 
+      {/* MAIN CONTENT */}
       <main
-        className={`flex flex-col h-full ${
-          sidebarOpen ? "pl-72" : "pl-14"
-        }`}
+        className={`
+          flex-1 h-full relative transition-all duration-300 ease-in-out
+          ${sidebarOpen ? "md:ml-72" : "md:ml-14"}
+        `}
       >
-        <ChatHeader
-          title={activeChat?.title ?? ""}
-          isTyping={isTyping}
-          activeModel={activeChat?.model ?? DEFAULT_MODEL}
-          onRename={(t) =>
-            activeChat && renameChat(activeChat.id, t)
-          }
-          onClear={() =>
-            activeChat && clearChat(activeChat.id)
-          }
-          onModelChange={handleModelSwitch}
-        />
-
-        <ChatWindow
-          messages={activeChat?.messages ?? []}
-          onUpdateMessages={updateMessages}
-          model={activeChat?.model ?? DEFAULT_MODEL}
-          sessionId={activeChat?.id ?? null}
-        />
-
-        <Disclaimer />
+        {activeChat ? (
+          <div className="flex h-full flex-col">
+            <ChatWindow
+              messages={activeChat.messages}
+              onUpdateMessages={updateMessages}
+              model={activeChat.model}
+              sessionId={activeChat.id}
+              onRenameSession={(newTitle) => handleRenameChat(activeChat.id, newTitle)}
+            />
+          </div>
+        ) : (
+          <div className="flex h-full items-center justify-center text-gray-500">
+            <button onClick={createNewChat} className="underline hover:text-white">
+                Create a new chat
+            </button>
+          </div>
+        )}
       </main>
 
-      <DeleteConfirmModal
-        open={!!deleteChatId}
-        onCancel={() => setDeleteChatId(null)}
-        onConfirm={confirmDeleteChat}
-      />
-
-      {/* 🔥 Metadata Popup */}
-      {uploadMetadata && (
+      {/* ✅ RENDER MODAL IF SIDEBAR TRIGGERED IT */}
+      {metadataModalOpen && pendingJobId && (
         <MetadataModal
-          fields={uploadMetadata.fields}
-          sessionId={uploadMetadata.jobId}
-          onSuccess={() => setUploadMetadata(null)}
-          onCancel={() => setUploadMetadata(null)}
+            fields={pendingMetadataFields}
+            sessionId={pendingJobId}
+            onSuccess={handleMetadataSubmitSuccess}
+            onCancel={() => setMetadataModalOpen(false)}
         />
       )}
     </div>

@@ -1,37 +1,45 @@
-// frontend/components/chat/ChatInput.tsx
-
 "use client";
 
 import React, { forwardRef } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import { Send, Square } from "lucide-react";
+import PdfUploadButton from "../upload/PdfUploadButton";
+import { UploadStatus } from "@/app/hooks/useSmartUpload";
 
-/* ================= PROPS ================= */
 interface Props {
   value: string;
   onChange: (v: string) => void;
   onSend: (value?: string) => void;
+  
+  // Upload props
+  sessionId: string | null;
+  onUploadStart?: () => void;
+  onUploadSuccess?: (result: any) => void;
+  onUploadError?: (error: string) => void;
+  // ✅ NEW: Progress Prop
+  onUploadProgress?: (status: UploadStatus, percent: number, label: string) => void;
 
   /* Hidden power features */
-  onArrowUp?: () => void;   // edit last message
-  onEscape?: () => void;    // cancel edit
+  onArrowUp?: () => void;   
+  onEscape?: () => void;    
 
   disabled?: boolean;
   isEditing?: boolean;
-
   isGenerating?: boolean;
   onStop?: () => void;
 }
 
-/**
- * ChatInput
- */
 const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
   (
     {
       value,
       onChange,
       onSend,
+      sessionId,
+      onUploadStart,
+      onUploadSuccess,
+      onUploadError,
+      onUploadProgress, // ✅ Destructure
       onArrowUp,
       onEscape,
       disabled = false,
@@ -48,118 +56,66 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
       <div
         aria-disabled={disabled}
         className={`
-          flex items-end gap-3
-          rounded-xl px-4 py-3
-          border border-white/10
-          bg-[#1a1a1a]
-          shadow-md transition
-          ${disabled ? "opacity-60" : ""}
-          focus-within:ring-1 focus-within:ring-white/20
+          flex items-end gap-3 rounded-xl px-3 py-3 border border-white/10 bg-[#1a1a1a] shadow-md transition
+          ${disabled ? "opacity-60" : ""} focus-within:ring-1 focus-within:ring-white/20
         `}
       >
+        {/* ================= UPLOAD BUTTON ================= */}
+        <div className="pb-1">
+            <PdfUploadButton 
+                sessionId={sessionId}
+                iconOnly={true}
+                disabled={disabled || isGenerating}
+                onUploadStart={onUploadStart}
+                onUploadSuccess={onUploadSuccess}
+                onUploadError={onUploadError}
+                onUploadProgress={onUploadProgress} // ✅ Pass it down
+            />
+        </div>
+
         {/* ================= TEXTAREA ================= */}
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <TextareaAutosize
             ref={ref}
             value={text}
             disabled={disabled}
             minRows={1}
             maxRows={6}
-            placeholder={
-              disabled
-                ? "AI is responding…"
-                : isEditing
-                ? "Edit message…"
-                : "Message KAVIN"
-            }
-            onChange={(e) => {
-              if (disabled) return;
-              onChange(e.target.value);
-            }}
+            placeholder={disabled ? "AI is responding..." : "Message KAVIN..."}
+            onChange={(e) => !disabled && onChange(e.target.value)}
             onKeyDown={(e) => {
-              if (disabled) {
-                e.preventDefault();
-                return;
-              }
-
-              /* Stop generation on Enter while generating */
-              if (isGenerating && e.key === "Enter" && onStop) {
-                e.preventDefault();
-                onStop();
-                return;
-              }
-
-              /* ↑ Arrow → edit last message */
-              if (e.key === "ArrowUp" && text.trim() === "" && onArrowUp) {
-                e.preventDefault();
-                onArrowUp();
-                return;
-              }
-
-              /* ESC → cancel edit */
-              if (e.key === "Escape" && onEscape) {
-                e.preventDefault();
-                onEscape();
-                return;
-              }
-
-              /* Ctrl + Enter → send */
-              if (e.key === "Enter" && e.ctrlKey) {
-                e.preventDefault();
-                if (canSend) onSend(text);
-                return;
-              }
-
-              /* Enter → send */
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                if (canSend) onSend(text);
-              }
+              if (disabled) { e.preventDefault(); return; }
+              if (isGenerating && e.key === "Enter" && onStop) { e.preventDefault(); onStop(); return; }
+              if (e.key === "ArrowUp" && text.trim() === "" && onArrowUp) { e.preventDefault(); onArrowUp(); return; }
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (canSend) onSend(text); }
             }}
-            className="
-              w-full resize-none bg-transparent
-              text-sm text-white outline-none
-              placeholder:text-gray-500
-              disabled:cursor-not-allowed
-            "
+            className="w-full resize-none bg-transparent text-sm text-white outline-none placeholder:text-gray-500 disabled:cursor-not-allowed py-2"
           />
         </div>
 
-        {/* ================= SEND / STOP BUTTON ================= */}
-        <button
-          type="button"
-          onClick={() => {
-            if (isGenerating && onStop) {
-              onStop();
-            } else if (canSend) {
-              onSend(text);
-            }
-          }}
-          disabled={!canSend && !isGenerating}
-          className={`
-            flex h-9 w-9 items-center justify-center
-            rounded-full transition
-            ${
-              isGenerating
-                ? "bg-red-500/10 text-red-500 hover:bg-red-500/20 hover:text-red-400"
-                : canSend
-                ? "bg-white text-black hover:bg-gray-200"
-                : "bg-white/10 text-gray-500 cursor-not-allowed"
-            }
-          `}
-          title={isGenerating ? "Stop generating" : "Send"}
-        >
-          {isGenerating ? (
-            <Square size={14} fill="currentColor" />
-          ) : (
-            <Send size={16} />
-          )}
-        </button>
+        {/* ================= SEND BUTTON ================= */}
+        <div className="pb-1">
+            <button
+            type="button"
+            onClick={() => {
+                if (isGenerating && onStop) onStop();
+                else if (canSend) onSend(text);
+            }}
+            disabled={!canSend && !isGenerating}
+            className={`
+                flex h-9 w-9 items-center justify-center rounded-lg transition
+                ${isGenerating 
+                    ? "bg-red-500/10 text-red-500 hover:bg-red-500/20" 
+                    : canSend ? "bg-white text-black hover:bg-gray-200" : "bg-white/10 text-gray-500 cursor-not-allowed"}
+            `}
+            >
+            {isGenerating ? <Square size={14} fill="currentColor" /> : <Send size={16} />}
+            </button>
+        </div>
       </div>
     );
   }
 );
 
 ChatInput.displayName = "ChatInput";
-
 export default ChatInput;

@@ -33,6 +33,8 @@ from backend.llm.intent_rules import detect_rule_intent
 from backend.llm.intent_classifier import classify_intent
 from backend.llm.text_normalizer import normalize_text
 from backend.llm.query_rewriter import rewrite_question
+from backend.llm.prompts import build_title_prompt 
+from backend.llm.loader import get_llm
 
 # ================================
 # RAG
@@ -108,6 +110,9 @@ class ChatRequest(BaseModel):
     question: str
     mode: Literal["lite", "base", "net"] = "lite"
 
+class TitleRequest(BaseModel):
+    question: str
+
 
 # ================================
 # SHARED VECTOR STORE
@@ -172,6 +177,23 @@ def safe_stream_response(
         pass
 
 
+def safe_stream_with_sources(generator, sources):
+    """
+    Wrapper to stream the answer first, then append the SOURCES event.
+    """
+    yield from generator
+    
+    if sources:
+        # Emit custom event for Source Viewer
+        payload = {
+            "type": "SOURCES",
+            "data": sources
+        }
+        # Format consistent with your stream parser (likely expects prefix or newlines)
+        # Using emit_event helper for consistency
+        yield emit_event(payload)
+
+
 # ================================
 # PARENT-CHILD LOOKUP
 # ================================
@@ -204,32 +226,9 @@ def resolve_parent_chunks(
         return list(final_docs_map.values())
 
     # 2. Fetch Parents from DB
-    # We use the vector store's underlying SQL engine to fetch by ID (metadata)
-    # Note: PGVector doesn't have a direct "get_by_metadata" in LangChain, 
-    # so we rely on a custom SQL query or filter search. 
-    # For efficiency here, we will iterate and fetch.
-    
-    # Efficient retrieval approach: Fetch by IDs
-    # (Simplified for this architecture: we treat the parent ID as the "doc_id" in metadata)
-    
     try:
-        # Construct a filter for all parents
-        # This acts as a batch fetch
-        import sqlalchemy
-        
-        filter_clauses = [
-            {"doc_id": pid} for pid in parent_ids_to_fetch
-        ]
-        
-        # We can't do a massive OR in LangChain's filter easily, so we might loop
-        # OR we perform a targeted SQL query if we have access to the engine.
-        # Let's use the VectorStore's search with filter for each parent.
-        # Since standard RAG k is small (8), this loop is acceptable (max ~5-8 queries).
-        
         for pid in parent_ids_to_fetch:
             # We search for the specific parent document
-            # The 'chunk_id' in our ingestion is the unique key, but for parents, 
-            # we stored 'doc_id' in metadata.
             results = vector_store.similarity_search(
                 "ignored", # query ignored with exact filter usually
                 k=1,
@@ -382,7 +381,6 @@ def chat(req: ChatRequest):
     # 3. Deduplicate
     unique_map = {}
     for d in vector_docs + keyword_docs:
-        # Dedupe by content hash + page_content
         unique_map[d.page_content] = d
     candidates = list(unique_map.values())
 
@@ -392,7 +390,6 @@ def chat(req: ChatRequest):
     
     if candidates:
         print(f"   - Reranking {len(candidates)} unique candidates...")
-        # Sort by semantic relevance to query
         reranked_docs = rerank_documents(rewritten, candidates, top_k=RAG_MAX_K)
     else:
         reranked_docs = []
@@ -401,17 +398,19 @@ def chat(req: ChatRequest):
     # 🚀 STEP 3: PARENT RESOLUTION (CONTEXT EXPANSION)
     # ---------------------------------------------------------
     
-    # If we found a "Child" (Row), fetch the "Parent" (Table)
     final_docs = resolve_parent_chunks(reranked_docs, vector_store, COLLECTION_NAME)
     
     # ---------------------------------------------------------
-    # 🚀 STEP 4: FORMAT FOR LLM
+    # 🚀 STEP 4: FORMAT FOR LLM & FRONTEND (SOURCES)
     # ---------------------------------------------------------
 
     rag_chunks = []
+    rag_sources = [] # ✅ List for Source Viewer
+
     for d in final_docs:
         cid = d.metadata.get("chunk_id") or d.metadata.get("doc_id") or str(uuid.uuid4())
         
+        # Prepare context for LLM
         rag_chunks.append({
             "id": cid,
             "content": d.page_content,
@@ -420,11 +419,20 @@ def chat(req: ChatRequest):
             "score": d.metadata.get("rerank_score", 0.0)
         })
 
+        # ✅ Extract Source Metadata for Frontend
+        rag_sources.append({
+            "id": str(uuid.uuid4()),
+            "fileName": d.metadata.get("source_file", "Unknown"),
+            "page_number": d.metadata.get("page_number", 1),
+            "bbox": d.metadata.get("bbox", ""),
+            "company_doc_id": company_document_id,
+            "revision": int(revision_number) 
+        })
+
     add_used_chunk_ids(session_id, [c["id"] for c in rag_chunks])
 
     confidence_payload = compute_confidence(
         rag_chunks=rag_chunks,
-        # Use rerank score as similarity score if available
         similarity_scores=[c.get("score") or SQL_BASE_SCORE for c in rag_chunks],
     )
 
@@ -439,18 +447,76 @@ def chat(req: ChatRequest):
         },
     )
 
+    # ✅ STREAM WITH SOURCES
+    # Wrap the generator to append the SOURCES event at the end
     return StreamingResponse(
-        safe_stream_response(
-            generate_answer_stream(
-                question=rewritten,
-                model=req.mode,
-                context_chunks=rag_chunks,
-                intent=intent,
-                session_id=session_id,
+        safe_stream_with_sources(
+            safe_stream_response(
+                generate_answer_stream(
+                    question=rewritten,
+                    model=req.mode,
+                    context_chunks=rag_chunks,
+                    intent=intent,
+                    session_id=session_id,
+                ),
+                session_id,
+                original_question,
+                confidence_payload,
             ),
-            session_id,
-            original_question,
-            confidence_payload,
+            rag_sources # Pass the sources list here
         ),
         media_type="text/plain",
     )
+
+
+# ================================
+# AUTO-TITLE ENDPOINT
+# ================================
+
+@router.post("/title", response_model=Dict[str, str])
+def generate_title(req: TitleRequest):
+    """
+    Generates a short title for a chat session based on the first message.
+    """
+    # 1. Build Prompt
+    prompt = build_title_prompt(req.question)
+
+    # 2. Get Lite LLM (Fastest)
+    try:
+        llm_info = get_llm("lite_llama_8b") # or your lite model ID
+    except Exception:
+        return {"title": "New Chat"}
+
+    # 3. Generate (Non-streaming)
+    output = ""
+    try:
+        if llm_info["type"] == "gguf":
+            resp = llm_info["llm"](prompt, max_tokens=15, stop=["\n"])
+            if isinstance(resp, dict):
+                output = resp["choices"][0]["text"]
+            else:
+                output = str(resp)
+        else:
+            model = llm_info["model"]
+            tokenizer = llm_info["tokenizer"]
+            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+            tokens = model.generate(
+                **inputs, 
+                max_new_tokens=15, 
+                pad_token_id=tokenizer.eos_token_id,
+                do_sample=False
+            )
+            output = tokenizer.decode(tokens[0], skip_special_tokens=True)
+            if prompt in output:
+                output = output.replace(prompt, "")
+            
+    except Exception as e:
+        print(f"Title generation failed: {e}")
+        return {"title": "New Chat"}
+
+    # 4. Clean up
+    clean_title = output.strip().replace('"', '').replace("Title:", "")
+    if len(clean_title) > 50:
+        clean_title = clean_title[:47] + "..."
+
+    return {"title": clean_title}

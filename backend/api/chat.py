@@ -51,6 +51,7 @@ from backend.rag.rerank import rerank_documents  # ✅ NEW: Reranker
 from backend.memory.redis_memory import (
     add_used_chunk_ids,
     save_rag_debug,
+    get_used_chunk_ids, # ✅ NEW: Retrieve IDs for follow-ups
 )
 
 from backend.memory.pg_memory import (
@@ -58,6 +59,7 @@ from backend.memory.pg_memory import (
     get_recent_user_messages,
     save_topic_hint,
     get_last_topic_hint,
+    get_chunks_by_ids, # ✅ NEW: Hydrate text from IDs
 )
 
 from backend.memory.topic_hints import extract_topic_hint
@@ -351,6 +353,9 @@ def chat(req: ChatRequest):
     rewritten = rewrite_question(original_question, history)
     intent = classify_intent(rewritten)
 
+    # ✅ LOGIC UPDATE: Force "Detailed" verbosity if user asks for details
+    force_detail = any(x in original_question.lower() for x in ["detail", "explain more", "elaborate"])
+
     # ✅ FILTER
     metadata_filter = {
         "company_document_id": company_document_id,
@@ -362,9 +367,12 @@ def chat(req: ChatRequest):
     # ---------------------------------------------------------
     
     # 1. Vector Search (High Recall)
+    # ✅ IMPROVEMENT: Fetch MORE candidates if requesting details
+    search_k = RAG_CANDIDATE_K + 10 if force_detail else RAG_CANDIDATE_K
+
     vector_docs = vector_store.similarity_search(
         rewritten,
-        k=RAG_CANDIDATE_K, # Fetch 25
+        k=search_k, 
         filter=metadata_filter,
     )
     print(f"   - Vector Candidates: {len(vector_docs)}")
@@ -385,12 +393,53 @@ def chat(req: ChatRequest):
     candidates = list(unique_map.values())
 
     # ---------------------------------------------------------
+    # 🚀 STEP 1.5: MERGE PREVIOUS CONTEXT (FOR FOLLOW-UPS)
+    # ---------------------------------------------------------
+    
+    previous_context_docs = []
+    
+    if intent == "follow_up" or force_detail:
+        print(f"🔄 [RAG] Follow-up detected. Restoring previous context...")
+        prev_ids = get_used_chunk_ids(session_id)
+        if prev_ids:
+            # Fetch full content from Postgres
+            restored_chunks = get_chunks_by_ids(list(prev_ids))
+            
+            # Convert back to Document objects
+            for rc in restored_chunks:
+                doc = Document(
+                    page_content=rc["content"],
+                    metadata={
+                        "chunk_id": rc["id"],
+                        "section": rc["section"],
+                        "type": rc["chunk_type"],
+                        **rc["metadata"] 
+                    }
+                )
+                previous_context_docs.append(doc)
+            
+            print(f"   - Restored {len(previous_context_docs)} previous chunks.")
+
+    # Combine: Previous Context + New Candidates
+    combined_candidates = previous_context_docs + candidates
+    
+    # Deduplicate again (using chunk_id if available, else content hash)
+    final_unique_map = {}
+    for d in combined_candidates:
+        cid = d.metadata.get("chunk_id") or d.page_content
+        final_unique_map[cid] = d
+    
+    final_candidates = list(final_unique_map.values())
+
+    # ---------------------------------------------------------
     # 🚀 STEP 2: RERANKING
     # ---------------------------------------------------------
     
-    if candidates:
-        print(f"   - Reranking {len(candidates)} unique candidates...")
-        reranked_docs = rerank_documents(rewritten, candidates, top_k=RAG_MAX_K)
+    if final_candidates:
+        # Increase top_k if user wants details (give LLM more to work with)
+        final_k = RAG_MAX_K + 2 if force_detail else RAG_MAX_K
+        print(f"   - Reranking {len(final_candidates)} candidates...")
+        reranked_docs = rerank_documents(rewritten, final_candidates, top_k=final_k)
     else:
         reranked_docs = []
 
@@ -419,12 +468,22 @@ def chat(req: ChatRequest):
             "score": d.metadata.get("rerank_score", 0.0)
         })
 
+        # ✅ FIX: Robust Metadata Extraction for Source Viewer
+        meta = d.metadata
+        filename = meta.get("source_file")
+        if not filename:
+             # Fallback to nested cmetadata if flattened extraction failed
+             filename = meta.get("cmetadata", {}).get("source_file", "Unknown")
+
+        page_num = meta.get("page_number", 1)
+        bbox = meta.get("bbox", "")
+
         # ✅ Extract Source Metadata for Frontend
         rag_sources.append({
             "id": str(uuid.uuid4()),
-            "fileName": d.metadata.get("source_file", "Unknown"),
-            "page_number": d.metadata.get("page_number", 1),
-            "bbox": d.metadata.get("bbox", ""),
+            "fileName": filename, # Matches SourceViewerModal
+            "page": page_num,     # ✅ CRITICAL FIX: "page" (Frontend expects this), NOT "page_number"
+            "bbox": bbox,
             "company_doc_id": company_document_id,
             "revision": int(revision_number) 
         })
@@ -491,12 +550,22 @@ def generate_title(req: TitleRequest):
     output = ""
     try:
         if llm_info["type"] == "gguf":
-            resp = llm_info["llm"](prompt, max_tokens=15, stop=["\n"])
-            if isinstance(resp, dict):
-                output = resp["choices"][0]["text"]
-            else:
-                output = str(resp)
+            # 🔥 CRITICAL FIX: CONSUME THE GENERATOR STREAM
+            stream = llm_info["llm"](prompt, max_tokens=15, stop=["\n"])
+            chunks = []
+            
+            # Iterate through the stream to get the actual text
+            for chunk in stream:
+                if isinstance(chunk, dict):
+                    text = chunk.get("choices", [{}])[0].get("text", "")
+                    chunks.append(text)
+                elif isinstance(chunk, str):
+                    chunks.append(chunk)
+            
+            output = "".join(chunks)
+
         else:
+            # HuggingFace logic
             model = llm_info["model"]
             tokenizer = llm_info["tokenizer"]
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
@@ -518,5 +587,9 @@ def generate_title(req: TitleRequest):
     clean_title = output.strip().replace('"', '').replace("Title:", "")
     if len(clean_title) > 50:
         clean_title = clean_title[:47] + "..."
+    
+    # Fallback if empty
+    if not clean_title:
+        clean_title = "New Chat"
 
     return {"title": clean_title}

@@ -2,12 +2,14 @@
 
 import io
 import json
+import os
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Response
 from pdf2image import convert_from_bytes
 from PIL import Image, ImageDraw
 
-from backend.storage.minio_client import get_minio_client
+# ✅ NEW: Import _get_config to read bucket from env safely
+from backend.storage.minio_client import get_minio_client, _get_config
 
 router = APIRouter(prefix="/render", tags=["Render"])
 
@@ -23,7 +25,13 @@ def render_page_image(
     Streams a specific PDF page as a PNG with optional highlighting.
     """
     client = get_minio_client()
-    bucket = "kavin-documents" # Ensure this matches your upload bucket
+    
+    # ✅ FIX: Get dynamic bucket name from config instead of hardcoding
+    try:
+        conf = _get_config()
+        bucket = conf["bucket"]
+    except Exception:
+        bucket = "kavin-documents" # Fallback if config fails
     
     # 1. Construct Path
     object_path = f"{company_doc_id}/v{revision}/{file}"
@@ -35,47 +43,57 @@ def render_page_image(
         response.close()
         response.release_conn()
     except Exception as e:
-        raise HTTPException(404, f"File not found: {e}")
+        print(f"❌ MinIO Download Error: {e}")
+        # Helpful error message for debugging
+        raise HTTPException(404, f"File not found in bucket '{bucket}': {object_path}. Error: {e}")
 
     # 3. Convert Page to Image
     try:
-        # 150 DPI is a good balance for screen viewing
+        # ✅ If on Windows without Poppler in PATH, you might need to uncomment and set this:
+        # poppler_path = r"C:\Program Files\poppler\bin"
+        
         images = convert_from_bytes(
             pdf_bytes, 
             first_page=page, 
             last_page=page,
             fmt="png",
             dpi=150
+            # poppler_path=poppler_path # Uncomment if you get "poppler not installed" error
         )
         if not images:
             raise ValueError("Page out of range")
         image = images[0]
     except Exception as e:
-        raise HTTPException(500, f"Rendering failed: {e}")
+        print(f"❌ PDF Rendering Error: {e}")
+        raise HTTPException(500, f"Rendering failed. Is Poppler installed and in PATH? Error: {e}")
 
     # 4. Draw Highlight
-    if bbox:
+    if bbox and bbox != "null" and bbox != "":
         try:
-            # Unstructured uses 72 DPI (Points) usually
-            # We rendered at 150 DPI, so scale factor is ~2.08
+            # Unstructured uses 72 DPI (Points), We rendered at 150 DPI
             scale_factor = 150 / 72 
             
             points = json.loads(bbox)
-            # Flatten points [[x,y], [x,y]] -> [(x,y), (x,y)]
+            
+            # ✅ FIX: Handle Nested List structures from Unstructured safely
+            # Sometimes it returns [[x,y], [x,y]] or [[x,y,x,y]]
             scaled_points = []
-            for point in points:
-                # Handle both [x,y] lists and (x,y) tuples
-                x, y = point[0], point[1]
-                scaled_points.append((x * scale_factor, y * scale_factor))
+            
+            if points and (isinstance(points[0], list) or isinstance(points[0], tuple)):
+                for point in points:
+                    if len(point) >= 2:
+                        x, y = point[0], point[1]
+                        scaled_points.append((x * scale_factor, y * scale_factor))
             
             draw = ImageDraw.Draw(image, "RGBA")
-            # Draw Red Box
-            draw.polygon(scaled_points, outline="red", width=5)
-            # Optional: Semi-transparent fill
-            # draw.polygon(scaled_points, fill=(255, 0, 0, 30))
+            
+            # Only draw if we have a valid shape (at least 3 points for a polygon)
+            if len(scaled_points) > 2:
+                # Draw Red Box with semi-transparent fill
+                draw.polygon(scaled_points, outline="red", width=5, fill=(255, 0, 0, 40))
             
         except Exception as e:
-            print(f"⚠️ Highlight failed: {e}")
+            print(f"⚠️ Highlight failed (rendering image without highlight): {e}")
 
     # 5. Return Image
     img_byte_arr = io.BytesIO()

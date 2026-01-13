@@ -1,6 +1,6 @@
 # backend/memory/pg_memory.py
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any  # ✅ Added 'Any'
 import os
 from contextlib import contextmanager
 
@@ -19,6 +19,13 @@ CHAT_DB_URL = os.getenv(
     "postgresql://postgres:1@localhost:5432/chat_memory_db",
 )
 
+# ✅ NEW: RAG Database Connection (for retrieving chunk text)
+# We strip '+psycopg2' because the driver doesn't need it in the connection string
+RAG_DB_URL = os.getenv(
+    "DB_CONNECTION", 
+    "postgresql://postgres:1@localhost:5432/rag_db"
+).replace("postgresql+psycopg2://", "postgresql://")
+
 # Hard safety cap
 MAX_CHAT_HISTORY = 200
 
@@ -28,6 +35,9 @@ MAX_CHAT_HISTORY = 200
 
 @contextmanager
 def get_connection():
+    """
+    Context manager for CHAT DATABASE operations.
+    """
     conn = None
     try:
         conn = connect(CHAT_DB_URL)
@@ -334,3 +344,72 @@ def clear_active_document(session_id: str):
                 )
     except psycopg2.errors.UndefinedTable:
         pass # If table is gone, the data is gone anyway
+
+# =========================================================
+# 🚀 NEW: CHUNK RECOVERY (FOR FOLLOW-UPS)
+# =========================================================
+
+def get_chunks_by_ids(chunk_ids: List[str]) -> List[Dict[str, Any]]:
+    """
+    Fetch full chunk content for a list of IDs.
+    Used to restore context for follow-up questions.
+    
+    NOTE: Connects to RAG_DB_URL because chunks live in the vector DB,
+    not the chat memory DB.
+    """
+    if not chunk_ids:
+        return []
+
+    # Safe parameter binding for dynamic list
+    placeholders = ",".join(["%s"] * len(chunk_ids))
+    
+    conn = None
+    try:
+        # Connect to RAG DB directly
+        conn = connect(RAG_DB_URL)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT 
+                    cmetadata->>'chunk_id' as id,
+                    document as content,
+                    cmetadata->>'section' as section,
+                    cmetadata->>'chunk_type' as chunk_type,
+                    cmetadata->>'page_number' as page_number,
+                    cmetadata->>'bbox' as bbox,
+                    cmetadata->>'source_file' as source_file,
+                    cmetadata->>'company_document_id' as company_doc_id,
+                    cmetadata->>'revision_number' as revision
+                FROM langchain_pg_embedding
+                WHERE cmetadata->>'chunk_id' IN ({placeholders})
+                """,
+                tuple(chunk_ids)
+            )
+            rows = cur.fetchall() or []
+    except Exception as e:
+        print(f"❌ [PG] Failed to fetch chunks by IDs: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+    # Normalize output format to match retrieval pipeline
+    results = []
+    for r in rows:
+        results.append({
+            "id": r["id"],
+            "content": r["content"],
+            "section": r["section"],
+            "chunk_type": r.get("chunk_type", "text"),
+            "score": 1.0,  # Previous context is assumed highly relevant
+            # Metadata structure matching pipeline
+            "metadata": {
+                "source_file": r["source_file"],
+                "page_number": int(r["page_number"]) if r["page_number"] else 1,
+                "bbox": r["bbox"],
+                "company_document_id": r["company_doc_id"],
+                "revision_number": r["revision"],
+            }
+        })
+        
+    return results

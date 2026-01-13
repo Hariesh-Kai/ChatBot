@@ -63,9 +63,11 @@ _GREETINGS = {
     "good morning", "good afternoon", "good evening",
 }
 
+# ✅ UPDATED: Added "more detail" triggers
 _FOLLOW_UP_TRIGGERS = {
     "this", "that", "it", "again", "above", "previous",
     "same", "earlier", "explain more", "tell more",
+    "more detail", "detail about", 
 }
 
 
@@ -85,7 +87,8 @@ def _fast_intent_check(question: str) -> Intent | None:
     tokens = token_count(q)
 
     # Short contextual follow-ups
-    if tokens <= 3 and any(t in q for t in _FOLLOW_UP_TRIGGERS):
+    # "tell me more details" (4 tokens) should be caught
+    if tokens <= 5 and any(t in q for t in _FOLLOW_UP_TRIGGERS):
         return "follow_up"
 
     # Single-word confirmations should NOT block RAG

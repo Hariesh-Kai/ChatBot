@@ -1,3 +1,5 @@
+# backend/llm/answer_policy.py
+
 """
 answer_policy.py
 
@@ -8,6 +10,7 @@ PHASE 2 FIXES:
 - Greetings ALWAYS one-line
 - Conversational messages NEVER block generation
 - Clarification logic is conservative (no silence)
+- ✅ FIX: Explicit "detailed" trigger for follow-up requests
 """
 
 from dataclasses import dataclass
@@ -132,7 +135,7 @@ def infer_answer_policy(
     )
 
     # --------------------------------------------------------
-    # 4️⃣ VERBOSITY CONTROL (FIXED)
+    # 4️⃣ VERBOSITY CONTROL (UPDATED)
     # --------------------------------------------------------
 
     # 🔥 Conversational ALWAYS wins
@@ -153,7 +156,13 @@ def infer_answer_policy(
     if any(p in q for p in ("in short", "brief", "one line")):
         verbosity = "one_line"
 
-    if any(p in q for p in ("explain fully", "detailed", "in detail")):
+    # ✅ FIX: Explicitly trigger DETAILED mode for elaboration requests
+    # This prevents response_policy.py from cutting off the answer.
+    if any(p in q for p in (
+        "explain fully", "detailed", "in detail", 
+        "more detail", "more info", "elaborate",
+        "not getting any knowledge", "expand on", "tell me more"
+    )):
         verbosity = "detailed"
 
     # --------------------------------------------------------

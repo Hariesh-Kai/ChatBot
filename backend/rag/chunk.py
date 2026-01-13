@@ -8,7 +8,7 @@ import pandas as pd
 from io import StringIO
 from unstructured.staging.base import elements_from_json
 from langchain_core.documents import Document
-
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # ============================================================
 # OCR / TEXT NORMALIZATION (SAFE)
@@ -39,7 +39,16 @@ class ContextAwareChunker:
     def __init__(self):
         self.current_section = "General / Introduction"
         self.text_buffer = []
-        self.current_buffer_page = 1 # Track the page number for the buffer
+        self.current_buffer_page = 1
+        
+        # ✅ NEW: Splitter configuration for Text content
+        # Chunk size ~3000 chars (approx 750 tokens) is optimal for BGE-M3
+        # Overlap of 400 chars ensures context isn't lost between splits
+        self.splitter = RecursiveCharacterTextSplitter(
+            chunk_size=3000, 
+            chunk_overlap=400,
+            separators=["\n\n", "\n", ". ", " ", ""]
+        )
 
     # --------------------------------------------------------
     # HTML → Markdown (Tables)
@@ -55,27 +64,42 @@ class ContextAwareChunker:
         return ""
 
     # --------------------------------------------------------
-    # TEXT FLUSHER (HELPER)
+    # TEXT FLUSHER (IMPROVED SPLITTING)
     # --------------------------------------------------------
 
     def _flush_text_buffer(self, docs_list):
+        """
+        Flushes collected text tokens into Documents.
+        Now uses Recursive Character Splitting to prevent massive chunks.
+        """
         if not self.text_buffer:
             return
 
-        content = "\n".join(self.text_buffer).strip()
-        content = normalize_numbers(content)
+        full_content = "\n".join(self.text_buffer).strip()
+        full_content = normalize_numbers(full_content)
         
-        # Standard text chunk (Direct indexing)
-        docs_list.append(Document(
-            page_content=f"### Section: {self.current_section}\n{content}",
-            metadata={
-                "type": "text", 
-                "section": self.current_section, 
-                "is_parent": False,
-                # ✅ Save Page Number (from the buffer tracking)
-                "page_number": self.current_buffer_page
-            }
-        ))
+        if not full_content:
+            self.text_buffer = []
+            return
+
+        # ✅ NEW: Split massive sections into smaller overlapping chunks
+        # This prevents the embedding model from truncating important data
+        chunks = self.splitter.split_text(full_content)
+
+        for i, chunk_text in enumerate(chunks):
+            docs_list.append(Document(
+                page_content=f"### Section: {self.current_section}\n{chunk_text}",
+                metadata={
+                    "type": "text", 
+                    "section": self.current_section, 
+                    "is_parent": False,
+                    # ✅ Save Page Number (from the buffer tracking)
+                    "page_number": self.current_buffer_page,
+                    # ✅ Add index to keep order intact during retrieval
+                    "chunk_index": i 
+                }
+            ))
+        
         self.text_buffer = []
 
     # --------------------------------------------------------
@@ -98,12 +122,11 @@ class ContextAwareChunker:
             page_num = meta.page_number if meta else 1
 
             # ✅ Extract Coordinates for Source Viewer
-            # Unstructured returns points as tuple of tuples: ((x1, y1), (x2, y2), ...)
             # We store it as a JSON string for lightweight DB storage
             bbox_json = ""
             if meta and hasattr(meta, "coordinates") and meta.coordinates:
-                 # Convert tuple points to list for JSON serialization
                 try:
+                    # Unstructured returns points as tuple of tuples: ((x1, y1), (x2, y2), ...)
                     points = list(meta.coordinates.points)
                     bbox_json = json.dumps(points)
                 except Exception:
@@ -146,6 +169,7 @@ class ContextAwareChunker:
                 final_documents.append(parent_doc)
 
                 # --- B. CREATE CHILD CHUNKS (The Rows) ---
+                # Splitting by newline works well for markdown tables
                 rows = markdown.split("\n")
                 
                 if len(rows) > 2:

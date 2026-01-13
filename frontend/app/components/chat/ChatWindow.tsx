@@ -7,6 +7,8 @@ import EmptyState from "../EmptyState";
 import InlineMetadataPrompt from "./InlineMetadataPrompt";
 import RagDebugPanel from "@/app/components/debug/RagDebugPanel";
 import SourceViewerModal from "./SourceViewerModal";
+// ✅ NEW: Import ChatHeader
+import ChatHeader from "./ChatHeader"; 
 import { Message, RagSource } from "@/app/lib/types";
 import { KAVIN_MODELS, KavinModelId } from "@/app/lib/kavin-models";
 import { LLMUIEvent, MetadataRequestField } from "@/app/lib/llm-ui-events";
@@ -48,7 +50,6 @@ const SAFE_MODELS: SafeModel[] = [
   { id: KAVIN_MODELS.net.id, label: KAVIN_MODELS.net.label },
 ];
 
-// ✅ NEW: Labels to simulate backend steps while waiting on CPU
 const THINKING_LABELS = [
     "Initializing Model...",
     "Loading Context...", 
@@ -66,7 +67,10 @@ interface ChatWindowProps {
   ) => void;
   model: KavinModelId;
   sessionId: string | null;
+  // ✅ NEW PROPS NEEDED FOR HEADER
+  title?: string;
   onRenameSession?: (title: string) => void;
+  onModelChange?: (model: KavinModelId) => void;
 }
 
 /* ================= COMPONENT ================= */
@@ -76,7 +80,9 @@ export default function ChatWindow({
   onUpdateMessages,
   model,
   sessionId,
+  title = "New Chat", // Default title
   onRenameSession,
+  onModelChange,
 }: ChatWindowProps) {
   const [input, setInput] = useState("");
   const hasStarted = messages.length > 0;
@@ -88,13 +94,9 @@ export default function ChatWindow({
     useState<MetadataRequestField[] | null>(null);
   const [metadataPending, setMetadataPending] = useState(false);
   
-  // Track upload state to lock UI
   const [isUploading, setIsUploading] = useState(false);
-  
-  // Track the ID of the current upload message to update it
   const [currentUploadMsgId, setCurrentUploadMsgId] = useState<string | null>(null);
 
-  // Source Viewer State
   const [viewerOpen, setViewerOpen] = useState(false);
   const [activeSources, setActiveSources] = useState<RagSource[]>([]);
 
@@ -108,9 +110,7 @@ export default function ChatWindow({
   const rafRef = useRef<number | null>(null);
   const pendingQuestionRef = useRef<string | null>(null);
   
-  // ✅ NEW: Timer ref for the thinking labels
   const thinkingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
   const assistantIdRef = useRef<string | null>(null);
   const hasReceivedFirstTokenRef = useRef(false);
 
@@ -135,7 +135,6 @@ export default function ChatWindow({
     netRateLimitedUntil !== null &&
     Date.now() < netRateLimitedUntil;
 
-  // UI is blocked if: Metadata Pending OR Net Limited OR File Uploading
   const isUIBlocked = metadataPending || isNetBlocked || isUploading;
 
   /* ================= HELPERS ================= */
@@ -155,7 +154,6 @@ export default function ChatWindow({
         content: "",
         createdAt: Date.now(),
         status: "typing",
-        // ✅ Initialize with a label
         progressLabel: "Initializing..." 
       },
     ]);
@@ -164,7 +162,7 @@ export default function ChatWindow({
   }
 
   function finalizeAssistant() {
-    stopThinkingSimulation(); // ✅ Stop labels
+    stopThinkingSimulation(); 
     const id = assistantIdRef.current;
     if (!id) return;
 
@@ -175,7 +173,7 @@ export default function ChatWindow({
               ...m,
               content: textBufferRef.current,
               status: "done",
-              progressLabel: undefined // Clear label
+              progressLabel: undefined 
             }
           : m
       )
@@ -186,7 +184,6 @@ export default function ChatWindow({
   }
 
   /* ================= THINKING SIMULATION ================= */
-  // Cycles through "Loading...", "Reranking..." so user doesn't feel stuck
   
   function startThinkingSimulation(msgId: string) {
       let index = 0;
@@ -199,7 +196,7 @@ export default function ChatWindow({
           onUpdateMessages((prev) => prev.map((m) => 
               m.id === msgId ? { ...m, progressLabel: label } : m
           ));
-      }, 1500); // Change label every 1.5s
+      }, 1500); 
   }
 
   function stopThinkingSimulation() {
@@ -209,7 +206,7 @@ export default function ChatWindow({
       }
   }
 
-  /* ================= UPLOAD HANDLERS (UPDATED) ================= */
+  /* ================= UPLOAD HANDLERS ================= */
 
   function handleUploadStart() {
     setIsUploading(true);
@@ -243,12 +240,9 @@ export default function ChatWindow({
   }
 
   async function handleUploadSuccess(result: any) {
-    // 🔥 AUTO-COMMIT LOGIC: Force commit to skip metadata popup
     try {
-        // 1. Update UI to show finalization
         handleUploadProgress("processing", 85, "Finalizing index...");
         
-        // 2. Force commit (skips validation)
         await commitUpload({
             job_id: result.job_id,
             metadata: {},
@@ -257,7 +251,6 @@ export default function ChatWindow({
 
         setIsUploading(false);
         
-        // 3. Convert Progress Bubble to Success Message
         if (currentUploadMsgId) {
             onUpdateMessages((prev) => prev.map(m => m.id === currentUploadMsgId ? {
                 ...m,
@@ -341,7 +334,6 @@ export default function ChatWindow({
         throw new Error("Backend request failed");
       }
 
-      // ✅ 1. Create message and START THINKING LOOP
       const assistantId = createAssistantMessage();
       assistantIdRef.current = assistantId;
       startThinkingSimulation(assistantId);
@@ -354,11 +346,9 @@ export default function ChatWindow({
         if (done || controller.signal.aborted) break;
         if (!value) continue;
 
-        // ✅ 2. First Token received? Stop thinking loop!
         if (!hasReceivedFirstTokenRef.current) {
             hasReceivedFirstTokenRef.current = true;
             stopThinkingSimulation();
-            // Clear label immediately
             onUpdateMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, progressLabel: undefined } : m));
         }
 
@@ -403,7 +393,7 @@ export default function ChatWindow({
     } catch (err) {
       finalizeAssistant();
     } finally {
-      stopThinkingSimulation(); // Safety stop
+      stopThinkingSimulation(); 
       finishJob();
       focusInput();
     }
@@ -456,7 +446,7 @@ export default function ChatWindow({
     if (!sessionId) return;
 
     abortJob();
-    stopThinkingSimulation(); // ✅ Stop animation
+    stopThinkingSimulation(); 
     finishJob();
 
     if (rafRef.current) {
@@ -542,93 +532,105 @@ export default function ChatWindow({
 
   return (
     <>
-      <div className="relative h-full w-full">
-        <div
-          className={`absolute inset-0 flex items-center justify-center transition-all
-          ${hasStarted ? "opacity-0 pointer-events-none" : "opacity-100"}`}
-        >
-          <EmptyState 
-            disabled={isUIBlocked} 
-            onSend={handleSend}
-            sessionId={sessionId}
-            onUploadStart={handleUploadStart}
-            onUploadProgress={handleUploadProgress} 
-            onUploadSuccess={handleUploadSuccess}
-            onUploadError={handleUploadError}
-          />
-        </div>
+      <div className="relative h-full w-full flex flex-col">
+        {/* ✅ HEADER RESTORED */}
+        <ChatHeader 
+            title={title}
+            isTyping={isTyping}
+            activeModel={model}
+            onModelChange={onModelChange || (() => {})}
+            onRename={onRenameSession || (() => {})}
+            onClear={() => onUpdateMessages([])}
+        />
 
-        <div
-          className={`absolute inset-0 flex flex-col transition-opacity
-          ${hasStarted ? "opacity-100" : "opacity-0 pointer-events-none"}`}
-        >
-          <div className="flex-1 overflow-y-auto px-4 pt-6">
-            <div className="mx-auto max-w-3xl space-y-5">
-              {messages.map((m, index) => (
-                <MessageBubble
-                  key={m.id}
-                  message={m}
-                  modelLabel={modelLabel}
-                  isLastAssistant={
-                    m.role === "assistant" &&
-                    index ===
-                      messages
-                        .map((x) => x.role)
-                        .lastIndexOf("assistant")
-                  }
-                  onViewSources={(sources) => {
-                    setActiveSources(sources);
-                    setViewerOpen(true);
-                  }}
-                />
-              ))}
-
-              {metadataPending && metadataFields && (
-                <InlineMetadataPrompt
-                  fields={metadataFields}
-                  onSubmit={async (values) => {
-                    if (!sessionId) return;
-                    await updateMetadata({
-                      job_id: sessionId,
-                      metadata: values,
-                    });
-                    setMetadataFields(null);
-                    setMetadataPending(false);
-                    focusInput();
-                  }}
-                />
-              )}
-
-              {process.env.NODE_ENV === "development" &&
-                sessionId && (
-                  <RagDebugPanel
-                    sessionId={sessionId}
-                    open={debugOpen}
-                  />
-                )}
-
-              <div ref={bottomRef} />
-            </div>
-          </div>
-
-          <div className="border-t border-white/10 bg-black py-4">
-            <div className="mx-auto max-w-3xl px-4">
-              <ChatInput
-                ref={inputRef}
-                value={input}
-                onChange={setInput}
-                onSend={handleSend}
+        <div className="relative flex-1 w-full overflow-hidden">
+            <div
+            className={`absolute inset-0 flex items-center justify-center transition-all
+            ${hasStarted ? "opacity-0 pointer-events-none" : "opacity-100"}`}
+            >
+            <EmptyState 
                 disabled={isUIBlocked} 
-                isGenerating={isTyping}
-                onStop={handleStop}
+                onSend={handleSend}
                 sessionId={sessionId}
                 onUploadStart={handleUploadStart}
                 onUploadProgress={handleUploadProgress} 
                 onUploadSuccess={handleUploadSuccess}
                 onUploadError={handleUploadError}
-              />
+            />
             </div>
-          </div>
+
+            <div
+            className={`absolute inset-0 flex flex-col transition-opacity
+            ${hasStarted ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+            >
+            <div className="flex-1 overflow-y-auto px-4 pt-6">
+                <div className="mx-auto max-w-3xl space-y-5">
+                {messages.map((m, index) => (
+                    <MessageBubble
+                    key={m.id}
+                    message={m}
+                    modelLabel={modelLabel}
+                    isLastAssistant={
+                        m.role === "assistant" &&
+                        index ===
+                        messages
+                            .map((x) => x.role)
+                            .lastIndexOf("assistant")
+                    }
+                    onViewSources={(sources) => {
+                        setActiveSources(sources);
+                        setViewerOpen(true);
+                    }}
+                    />
+                ))}
+
+                {metadataPending && metadataFields && (
+                    <InlineMetadataPrompt
+                    fields={metadataFields}
+                    onSubmit={async (values) => {
+                        if (!sessionId) return;
+                        await updateMetadata({
+                        job_id: sessionId,
+                        metadata: values,
+                        });
+                        setMetadataFields(null);
+                        setMetadataPending(false);
+                        focusInput();
+                    }}
+                    />
+                )}
+
+                {process.env.NODE_ENV === "development" &&
+                    sessionId && (
+                    <RagDebugPanel
+                        sessionId={sessionId}
+                        open={debugOpen}
+                    />
+                    )}
+
+                <div ref={bottomRef} />
+                </div>
+            </div>
+
+            <div className="border-t border-white/10 bg-black py-4">
+                <div className="mx-auto max-w-3xl px-4">
+                <ChatInput
+                    ref={inputRef}
+                    value={input}
+                    onChange={setInput}
+                    onSend={handleSend}
+                    disabled={isUIBlocked} 
+                    isGenerating={isTyping}
+                    onStop={handleStop}
+                    sessionId={sessionId}
+                    onUploadStart={handleUploadStart}
+                    onUploadProgress={handleUploadProgress} 
+                    onUploadSuccess={handleUploadSuccess}
+                    onUploadError={handleUploadError}
+                />
+                </div>
+            </div>
+            </div>
         </div>
       </div>
 

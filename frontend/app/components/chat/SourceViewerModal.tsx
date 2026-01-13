@@ -88,14 +88,19 @@ function SourcePage({ source, zoom }: { source: RagSource, zoom: number }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(false);
 
-    const imageUrl = `${API_BASE}/render/image?file=${encodeURIComponent(source.fileName)}&page=${source.page}&company_doc_id=${source.company_doc_id}&revision=${source.revision}&bbox=${source.bbox || ""}`;
+    // 🔥 CRITICAL FIX: Handle legacy data ("page_number") vs new data ("page")
+    // This prevents 'undefined' in the URL if you are viewing old chat history
+    // It prioritizes 'page' (new backend), falls back to 'page_number' (old backend), or defaults to 1.
+    const safePage = source.page ?? (source as any).page_number ?? 1;
+
+    const imageUrl = `${API_BASE}/render/image?file=${encodeURIComponent(source.fileName)}&page=${safePage}&company_doc_id=${source.company_doc_id}&revision=${source.revision}&bbox=${source.bbox || ""}`;
 
     return (
         <div className="relative group flex flex-col items-center">
             {/* Label */}
             <div className="mb-2 w-full max-w-[800px] flex justify-between text-xs text-gray-400 px-1">
                 <span className="truncate max-w-[70%]">{source.fileName}</span>
-                <span>Page {source.page}</span>
+                <span className="font-mono text-blue-300">Page {safePage}</span>
             </div>
 
             {/* Image Container */}
@@ -108,7 +113,7 @@ function SourcePage({ source, zoom }: { source: RagSource, zoom: number }) {
                     <div className="absolute inset-0 flex items-center justify-center bg-[#111] z-10">
                         <div className="flex flex-col items-center gap-2 text-gray-400">
                             <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
-                            <span className="text-xs">Rendering page...</span>
+                            <span className="text-xs">Rendering page {safePage}...</span>
                         </div>
                     </div>
                 )}
@@ -119,6 +124,7 @@ function SourcePage({ source, zoom }: { source: RagSource, zoom: number }) {
                         <div className="flex flex-col items-center gap-2">
                             <AlertCircle className="h-6 w-6" />
                             <span className="text-xs">Failed to load page image</span>
+                            <span className="text-[10px] opacity-50">Debug Page: {safePage}</span>
                         </div>
                     </div>
                 )}
@@ -126,7 +132,7 @@ function SourcePage({ source, zoom }: { source: RagSource, zoom: number }) {
                 {/* The Actual Image */}
                 <img
                     src={imageUrl}
-                    alt={`Page ${source.page}`}
+                    alt={`Page ${safePage} of ${source.fileName}`}
                     className={`w-full h-auto object-contain ${loading ? 'opacity-0' : 'opacity-100'}`}
                     onLoad={() => setLoading(false)}
                     onError={() => {

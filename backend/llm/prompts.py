@@ -45,7 +45,7 @@ def clean_model_output(text: str) -> str:
 
 
 # ============================================================
-# CORE SYSTEM PERSONA
+# CORE SYSTEM PERSONA (BASE)
 # ============================================================
 
 CORE_SYSTEM_PROMPT = """
@@ -54,7 +54,6 @@ You are KavinBase, a senior engineering assistant.
 MANDATORY BEHAVIOR:
 - Think silently before answering.
 - Answer ONLY the question asked.
-- Be concise, factual, and precise.
 - Do NOT explain unless explicitly requested.
 - Do NOT teach unless explicitly requested.
 - Do NOT restate the question.
@@ -82,13 +81,39 @@ FORBIDDEN:
 - Introducing new numbers
 - Explaining reasoning steps in the final answer
 - Self-justifying phrases (e.g., “I inferred”, “no inference was made”)
-
-OUTPUT STYLE:
-- Professional
-- Technical
-- Direct
-- One or two sentences unless explicitly asked otherwise (or if a table is required).
 """.strip()
+
+
+# ============================================================
+# 🚀 DYNAMIC STYLES (VERBOSITY CONTROL)
+# ============================================================
+
+STYLE_INSTRUCTIONS = {
+    "one_line": """
+OUTPUT STYLE:
+- Extremely concise.
+- One single sentence.
+- No fluff.
+""",
+    "short": """
+OUTPUT STYLE:
+- Professional and direct.
+- Maximum 2-3 sentences.
+""",
+    "normal": """
+OUTPUT STYLE:
+- Professional and technical.
+- Provide a complete answer but remain concise.
+- Avoid unnecessary elaboration.
+""",
+    "detailed": """
+OUTPUT STYLE:
+- Detailed and comprehensive.
+- Explain the concept fully using the document context.
+- Break down complex points.
+- You may use multiple paragraphs if necessary.
+"""
+}
 
 
 # ============================================================
@@ -134,8 +159,6 @@ RULES FOR ANSWERING:
 - Prefer a cautious answer over silence when evidence exists.
 """.strip()
 
-
-# backend/llm/prompts.py
 
 # ============================================================
 # PROMPT BUILDERS — Chat Title Naming
@@ -183,10 +206,15 @@ def build_prompt_hf(
     else:
         context_text = "Document context is limited or unavailable."
 
+    # 🚀 DYNAMIC STYLE INJECTION
+    # Default to 'short' if style is missing
+    style_key = getattr(answer_style, "verbosity", "short")
+    style_instruction = STYLE_INSTRUCTIONS.get(style_key, STYLE_INSTRUCTIONS["short"])
+
     messages = []
 
     messages.append(
-        f"<|system|>\n{CORE_SYSTEM_PROMPT}\n\n{REASONING_GUIDANCE}\n<|end|>"
+        f"<|system|>\n{CORE_SYSTEM_PROMPT}\n\n{style_instruction}\n\n{REASONING_GUIDANCE}\n<|end|>"
     )
 
     if history:
@@ -285,13 +313,18 @@ def build_prompt_gguf(
     else:
         context_text = "No document context provided."
 
+    # 🚀 DYNAMIC STYLE INJECTION
+    style_key = getattr(answer_style, "verbosity", "short")
+    style_instruction = STYLE_INSTRUCTIONS.get(style_key, STYLE_INSTRUCTIONS["short"])
+
     # 🔥 FIX: Removed <|begin_of_text|> to prevent double-init warning
     return f"""<|start_header_id|>system<|end_header_id|>
 
 You are KavinBase, a senior engineering assistant.
 Answer the user's question using ONLY the provided context.
 If the answer requires data from a table, FORMAT IT AS A MARKDOWN TABLE.
-Be concise. If the answer is not in the context, say so.
+
+{style_instruction}
 
 CONTEXT:
 {context_text}

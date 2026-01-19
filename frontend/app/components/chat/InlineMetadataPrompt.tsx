@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from "react";
 import { MetadataRequestField } from "@/app/lib/llm-ui-events";
+import { ArrowRight, Info } from "lucide-react"; // Optional icons
 
 interface Props {
   fields: MetadataRequestField[];
@@ -25,7 +26,8 @@ export default function InlineMetadataPrompt({
   useEffect(() => {
     const initial: Record<string, string> = {};
     for (const f of fields) {
-      initial[f.key] = "";
+      // ✅ FIX: Use the pre-filled value from the backend if available
+      initial[f.key] = f.value || "";
     }
     setValues(initial);
   }, [fields]);
@@ -41,7 +43,8 @@ export default function InlineMetadataPrompt({
     }));
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(e?: React.FormEvent) {
+    if (e) e.preventDefault();
     if (isBlocked || submitting) return;
 
     try {
@@ -66,62 +69,73 @@ export default function InlineMetadataPrompt({
   ========================================================= */
 
   return (
-    <div className="rounded-xl border border-white/10 bg-[#1a1a1a] px-4 py-3">
-      <div className="mb-3 text-sm text-gray-300">
-        I need a bit more information to continue:
-      </div>
+    <div className="mx-2 my-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+      <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-5 shadow-sm">
+        
+        {/* HEADER */}
+        <div className="mb-4 flex items-center gap-2">
+            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white shadow-md shadow-blue-500/20">
+            ?
+            </div>
+            <h3 className="text-sm font-semibold text-blue-100">
+            Information Required
+            </h3>
+        </div>
 
-      <div className="space-y-3">
-        {fields.map((field) => (
-          <div key={field.key}>
-            <label className="mb-1 block text-xs text-gray-400">
-              {field.label}
-            </label>
+        <p className="mb-4 text-xs text-blue-200/70">
+            I need a few details to index this document correctly.
+        </p>
 
-            {field.reason && (
-              <div className="mb-1 text-[11px] text-gray-500">
-                {field.reason}
-              </div>
-            )}
+        {/* FORM */}
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {fields.map((field, index) => (
+            <div key={field.key} className="space-y-1">
+              <label className="ml-1 block text-[10px] font-bold uppercase tracking-wider text-blue-300/60">
+                {field.label}
+              </label>
 
-            <input
-              type="text"
-              value={values[field.key] ?? ""}
-              placeholder={field.placeholder}
-              onChange={(e) =>
-                updateValue(field.key, e.target.value)
-              }
-              disabled={disabled || submitting}
-              className="
-                w-full rounded-md
-                border border-white/10
-                bg-black px-3 py-2
-                text-sm text-white
-                placeholder-gray-500
-                outline-none
-                focus:border-blue-500
-                disabled:opacity-60
-              "
-            />
+              <input
+                // ✅ UX: Auto-focus the first field so user can type immediately
+                autoFocus={index === 0} 
+                type="text"
+                value={values[field.key] ?? ""}
+                placeholder={field.placeholder}
+                onChange={(e) => updateValue(field.key, e.target.value)}
+                disabled={disabled || submitting}
+                className={`
+                  w-full rounded-lg border bg-black/60 px-4 py-2.5 text-sm text-white placeholder-blue-500/30 outline-none transition-all
+                  ${disabled ? "opacity-50 cursor-not-allowed" : "focus:border-blue-500 focus:ring-1 focus:ring-blue-500 border-blue-500/20"}
+                `}
+              />
+              
+              {field.reason && (
+                <div className="ml-1 flex items-center gap-1 text-[10px] text-blue-300/50">
+                  <Info size={10} />
+                  {field.reason}
+                </div>
+              )}
+            </div>
+          ))}
+
+          {/* ACTIONS */}
+          <div className="flex justify-end pt-2">
+            <button
+              type="submit"
+              disabled={isBlocked}
+              className={`
+                flex items-center gap-2 rounded-lg px-5 py-2 text-sm font-medium transition-all
+                ${
+                  isBlocked
+                    ? "bg-blue-500/20 text-blue-500/50 cursor-not-allowed"
+                    : "bg-blue-600 text-white hover:bg-blue-500 shadow-lg shadow-blue-500/20 hover:scale-[1.02] active:scale-[0.98]"
+                }
+              `}
+            >
+              {submitting ? "Processing..." : "Submit Details"} 
+              {!submitting && <ArrowRight size={14} />}
+            </button>
           </div>
-        ))}
-      </div>
-
-      <div className="mt-4 flex justify-end">
-        <button
-          onClick={handleSubmit}
-          disabled={isBlocked}
-          className="
-            rounded-md bg-blue-600
-            px-4 py-2 text-sm font-medium
-            text-white
-            hover:bg-blue-500
-            disabled:opacity-50
-            disabled:cursor-not-allowed
-          "
-        >
-          {submitting ? "Submitting…" : "Continue"}
-        </button>
+        </form>
       </div>
     </div>
   );

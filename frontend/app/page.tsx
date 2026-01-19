@@ -1,3 +1,4 @@
+// frontend/app/page.tsx
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
@@ -7,7 +8,6 @@ import { ChatSession, Message } from "@/app/lib/types";
 import { KavinModelId } from "@/app/lib/kavin-models";
 import { loadChats, saveChats } from "@/app/lib/chat-store";
 import { commitUpload } from "@/app/lib/api"; 
-import MetadataModal from "@/app/components/chat/MetadataModal";
 import { MetadataRequestField } from "@/app/lib/llm-ui-events";
 import { UploadStatus } from "@/app/hooks/useSmartUpload";
 
@@ -31,13 +31,13 @@ export default function Home() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   
-  // Metadata Modal State (For Sidebar Uploads)
-  const [metadataModalOpen, setMetadataModalOpen] = useState(false);
-  const [pendingMetadataFields, setPendingMetadataFields] = useState<MetadataRequestField[]>([]);
-  const [pendingJobId, setPendingJobId] = useState<string | null>(null);
-  const [pendingFilename, setPendingFilename] = useState<string>("");
+  // ✅ NEW: Sidebar metadata request state (replaces Modal)
+  const [sidebarMetadataRequest, setSidebarMetadataRequest] = useState<{
+      jobId: string;
+      fields: MetadataRequestField[];
+      filename: string;
+  } | null>(null);
 
-  // ✅ NEW: Track sidebar upload progress message ID
   const [sidebarUploadMsgId, setSidebarUploadMsgId] = useState<string | null>(null);
 
   // Load state on mount
@@ -129,12 +129,10 @@ export default function Home() {
     [activeId]
   );
 
-  /* ================= SIDEBAR UPLOAD HANDLERS (✅ FIXED) ================= */
+  /* ================= SIDEBAR UPLOAD HANDLERS ================= */
 
   const handleSidebarUploadStart = () => {
     if (!activeId) return;
-    
-    // ✅ Create persistent progress message in current chat
     const msgId = uuidv4();
     setSidebarUploadMsgId(msgId);
     
@@ -149,7 +147,6 @@ export default function Home() {
     }]);
   };
 
-  // ✅ Handle real-time updates from Sidebar button
   const handleSidebarUploadProgress = (status: UploadStatus, percent: number, label: string) => {
     if (!activeId || !sidebarUploadMsgId) return;
     
@@ -175,12 +172,14 @@ export default function Home() {
             })
         );
 
-        setPendingJobId(result.job_id);
-        setPendingFilename(result.filename);
-        setPendingMetadataFields(fields);
-        setMetadataModalOpen(true);
+        // ✅ Instead of opening Modal, we trigger ChatWindow's inline logic via props
+        setSidebarMetadataRequest({
+            jobId: result.job_id,
+            fields: fields,
+            filename: result.filename
+        });
         
-        // Remove progress bar while waiting for user input
+        // Remove progress bar (Inline Prompt will take over UI focus)
         if (sidebarUploadMsgId) {
             updateMessages(prev => prev.filter(m => m.id !== sidebarUploadMsgId));
             setSidebarUploadMsgId(null);
@@ -191,7 +190,6 @@ export default function Home() {
     // READY_TO_COMMIT logic
     if (result.next_action === "READY_TO_COMMIT") {
         try {
-            // Update progress bar
             handleSidebarUploadProgress("processing", 95, "Finalizing index...");
             
             await commitUpload({
@@ -207,10 +205,8 @@ export default function Home() {
     }
   };
 
-  // Helper to finish UI updates after successful Phase 2
   const finalizeUploadSuccess = (filename: string, revision: any) => {
     if (sidebarUploadMsgId) {
-        // Transform the progress bubble into success message
         updateMessages((prev) => prev.map(m => m.id === sidebarUploadMsgId ? {
             ...m,
             role: "system",
@@ -219,7 +215,6 @@ export default function Home() {
         } : m));
         setSidebarUploadMsgId(null);
     } else {
-        // Fallback if message ID was lost
         const successMsg: Message = {
             id: uuidv4(),
             role: "system",
@@ -230,7 +225,6 @@ export default function Home() {
         updateMessages((prev) => [...prev, successMsg]);
     }
 
-    // Auto-Rename Chat if empty
     if (activeChat && activeChat.messages.length === 0) {
         handleRenameChat(activeId!, filename.replace(".pdf", ""));
     }
@@ -258,14 +252,6 @@ export default function Home() {
     }
   };
 
-  /* ================= MODAL HANDLERS ================= */
-
-  const handleMetadataSubmitSuccess = () => {
-    setMetadataModalOpen(false);
-    finalizeUploadSuccess(pendingFilename, "X"); 
-    setPendingJobId(null);
-  };
-
   /* ================= RENDER ================= */
 
   if (!activeChat && chats.length > 0 && !activeId) {
@@ -274,7 +260,6 @@ export default function Home() {
 
   return (
     <div className="flex h-full w-full bg-black text-white">
-      {/* SIDEBAR */}
       <Sidebar
         chats={chats}
         activeId={activeId}
@@ -288,14 +273,12 @@ export default function Home() {
         onOpen={() => setSidebarOpen(true)}
         onClose={() => setSidebarOpen(false)}
         isTyping={isTyping}
-        // ✅ Pass upload handlers including progress
         onUploadStart={handleSidebarUploadStart}
         onUploadSuccess={handleSidebarUploadSuccess}
         onUploadError={handleSidebarUploadError}
         onUploadProgress={handleSidebarUploadProgress} 
       />
 
-      {/* MAIN CONTENT */}
       <main
         className={`
           flex-1 h-full relative transition-all duration-300 ease-in-out
@@ -310,6 +293,10 @@ export default function Home() {
               model={activeChat.model}
               sessionId={activeChat.id}
               onRenameSession={(newTitle) => handleRenameChat(activeChat.id, newTitle)}
+              
+              // ✅ PASS THE SIDEBAR REQUEST DOWN
+              externalMetadataRequest={sidebarMetadataRequest}
+              onExternalMetadataSubmit={() => setSidebarMetadataRequest(null)}
             />
           </div>
         ) : (
@@ -320,16 +307,6 @@ export default function Home() {
           </div>
         )}
       </main>
-
-      {/* ✅ RENDER MODAL IF SIDEBAR TRIGGERED IT */}
-      {metadataModalOpen && pendingJobId && (
-        <MetadataModal
-            fields={pendingMetadataFields}
-            sessionId={pendingJobId}
-            onSuccess={handleMetadataSubmitSuccess}
-            onCancel={() => setMetadataModalOpen(false)}
-        />
-      )}
     </div>
   );
 }

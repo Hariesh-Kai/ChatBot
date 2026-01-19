@@ -37,12 +37,12 @@ from backend.llm.prompts import build_title_prompt
 from backend.llm.loader import get_llm
 
 # ================================
-# RAG
+# RAG (Refactored)
 # ================================
 
-from backend.rag.keyword_search import keyword_search
+# ✅ NEW: Import the shared retrieval logic
+from backend.rag.retrieve import retrieve_rag_context
 from backend.rag.confidence import compute_confidence
-from backend.rag.rerank import rerank_documents  # ✅ NEW: Reranker
 
 # ================================
 # MEMORY
@@ -51,18 +51,14 @@ from backend.rag.rerank import rerank_documents  # ✅ NEW: Reranker
 from backend.memory.redis_memory import (
     add_used_chunk_ids,
     save_rag_debug,
-    get_used_chunk_ids, # ✅ NEW: Retrieve IDs for follow-ups
+    get_used_chunk_ids, 
 )
 
 from backend.memory.pg_memory import (
     append_chat_message,
     get_recent_user_messages,
-    save_topic_hint,
-    get_last_topic_hint,
-    get_chunks_by_ids, # ✅ NEW: Hydrate text from IDs
+    get_chunks_by_ids, 
 )
-
-from backend.memory.topic_hints import extract_topic_hint
 
 # ================================
 # JOB STATE
@@ -80,7 +76,6 @@ from backend.state.job_state import (
 from backend.contracts.ui_events import (
     system_message_event,
     request_metadata_event,
-    answer_confidence_event,
 )
 
 # ================================
@@ -93,10 +88,6 @@ DB_CONNECTION = os.getenv(
 )
 
 COLLECTION_NAME = "rag_documents"
-
-RAG_MAX_K = 8
-# Fetch more candidates for reranking
-RAG_CANDIDATE_K = 25 
 SQL_BASE_SCORE = 0.35
 UI_EVENT_PREFIX = "__UI_EVENT__"
 
@@ -126,6 +117,8 @@ embedding_model = HuggingFaceEmbeddings(
     model_kwargs={"device": "cpu"},
     encode_kwargs={"normalize_embeddings": True}
 )
+
+
 
 vector_store = PGVector.from_existing_index(
     embedding=embedding_model,
@@ -194,58 +187,6 @@ def safe_stream_with_sources(generator, sources):
         # Format consistent with your stream parser (likely expects prefix or newlines)
         # Using emit_event helper for consistency
         yield emit_event(payload)
-
-
-# ================================
-# PARENT-CHILD LOOKUP
-# ================================
-
-def resolve_parent_chunks(
-    child_docs: List[Document], 
-    vector_store: PGVector, 
-    collection_name: str
-) -> List[Document]:
-    """
-    For every Child chunk (row), find its Parent chunk (full table).
-    If a chunk is already a Parent or Text, keep it.
-    Deduplicates parents.
-    """
-    
-    # 1. Identify IDs to fetch
-    parent_ids_to_fetch = set()
-    final_docs_map = {} # Map ID -> Document
-
-    for doc in child_docs:
-        # Is this a child?
-        if doc.metadata.get("type") == "child" and doc.metadata.get("parent_id"):
-            parent_ids_to_fetch.add(doc.metadata["parent_id"])
-        else:
-            # It's already a parent or standard text, keep it
-            doc_id = doc.metadata.get("chunk_id") or str(uuid.uuid4())
-            final_docs_map[doc_id] = doc
-
-    if not parent_ids_to_fetch:
-        return list(final_docs_map.values())
-
-    # 2. Fetch Parents from DB
-    try:
-        for pid in parent_ids_to_fetch:
-            # We search for the specific parent document
-            results = vector_store.similarity_search(
-                "ignored", # query ignored with exact filter usually
-                k=1,
-                filter={"doc_id": pid, "type": "parent"} 
-            )
-            if results:
-                parent = results[0]
-                final_docs_map[pid] = parent
-                
-    except Exception as e:
-        print(f"⚠️ Parent lookup failed: {e}")
-        # Fallback: Just use the children if parents fail
-        return child_docs
-
-    return list(final_docs_map.values())
 
 
 # ================================
@@ -356,138 +297,93 @@ def chat(req: ChatRequest):
     # ✅ LOGIC UPDATE: Force "Detailed" verbosity if user asks for details
     force_detail = any(x in original_question.lower() for x in ["detail", "explain more", "elaborate"])
 
-    # ✅ FILTER
-    metadata_filter = {
-        "company_document_id": company_document_id,
-        "revision_number": str(revision_number), 
-    }
-    
     # ---------------------------------------------------------
-    # 🚀 STEP 1: RETRIEVE CANDIDATES (CHILDREN)
+    # 🚀 STEP 1.5: RESTORE PREVIOUS CONTEXT (FOR FOLLOW-UPS)
     # ---------------------------------------------------------
     
-    # 1. Vector Search (High Recall)
-    # ✅ IMPROVEMENT: Fetch MORE candidates if requesting details
-    search_k = RAG_CANDIDATE_K + 10 if force_detail else RAG_CANDIDATE_K
-
-    vector_docs = vector_store.similarity_search(
-        rewritten,
-        k=search_k, 
-        filter=metadata_filter,
-    )
-    print(f"   - Vector Candidates: {len(vector_docs)}")
-
-    # 2. Keyword Search (Precision)
-    keyword_docs = keyword_search(
-        question=rewritten,
-        vector_store=vector_store,
-        metadata_filter=metadata_filter,
-        limit=10, 
-    )
-    print(f"   - Keyword Candidates: {len(keyword_docs)}")
-
-    # 3. Deduplicate
-    unique_map = {}
-    for d in vector_docs + keyword_docs:
-        unique_map[d.page_content] = d
-    candidates = list(unique_map.values())
-
-    # ---------------------------------------------------------
-    # 🚀 STEP 1.5: MERGE PREVIOUS CONTEXT (FOR FOLLOW-UPS)
-    # ---------------------------------------------------------
+    # We do this BEFORE the main search so we can merge the memory chunks with new search results.
     
-    previous_context_docs = []
+    previous_context_chunks = []
     
     if intent == "follow_up" or force_detail:
         print(f"🔄 [RAG] Follow-up detected. Restoring previous context...")
         prev_ids = get_used_chunk_ids(session_id)
         if prev_ids:
             # Fetch full content from Postgres
-            restored_chunks = get_chunks_by_ids(list(prev_ids))
+            restored_raw = get_chunks_by_ids(list(prev_ids))
             
-            # Convert back to Document objects
-            for rc in restored_chunks:
-                doc = Document(
-                    page_content=rc["content"],
-                    metadata={
-                        "chunk_id": rc["id"],
-                        "section": rc["section"],
-                        "type": rc["chunk_type"],
-                        **rc["metadata"] 
-                    }
-                )
-                previous_context_docs.append(doc)
+            # Convert raw DB rows into the standard RAG chunk format
+            for rc in restored_raw:
+                previous_context_chunks.append({
+                    "id": rc["id"],
+                    "content": rc["content"],
+                    "section": rc["section"],
+                    "chunk_type": rc["chunk_type"],
+                    "score": 1.0, # Treat previous context as high value
+                    "metadata": rc["metadata"]
+                })
             
-            print(f"   - Restored {len(previous_context_docs)} previous chunks.")
-
-    # Combine: Previous Context + New Candidates
-    combined_candidates = previous_context_docs + candidates
-    
-    # Deduplicate again (using chunk_id if available, else content hash)
-    final_unique_map = {}
-    for d in combined_candidates:
-        cid = d.metadata.get("chunk_id") or d.page_content
-        final_unique_map[cid] = d
-    
-    final_candidates = list(final_unique_map.values())
+            print(f"   - Restored {len(previous_context_chunks)} previous chunks.")
 
     # ---------------------------------------------------------
-    # 🚀 STEP 2: RERANKING
+    # 🚀 STEP 2: RETRIEVAL (REFACTORED)
     # ---------------------------------------------------------
     
-    if final_candidates:
-        # Increase top_k if user wants details (give LLM more to work with)
-        final_k = RAG_MAX_K + 2 if force_detail else RAG_MAX_K
-        print(f"   - Reranking {len(final_candidates)} candidates...")
-        reranked_docs = rerank_documents(rewritten, final_candidates, top_k=final_k)
-    else:
-        reranked_docs = []
+    # Call the new unified retrieval function
+    new_rag_chunks = retrieve_rag_context(
+        question=rewritten,
+        vector_store=vector_store,
+        company_document_id=company_document_id,
+        revision_number=str(revision_number),
+        force_detailed=force_detail,
+    )
 
     # ---------------------------------------------------------
-    # 🚀 STEP 3: PARENT RESOLUTION (CONTEXT EXPANSION)
-    # ---------------------------------------------------------
-    
-    final_docs = resolve_parent_chunks(reranked_docs, vector_store, COLLECTION_NAME)
-    
-    # ---------------------------------------------------------
-    # 🚀 STEP 4: FORMAT FOR LLM & FRONTEND (SOURCES)
+    # 🚀 STEP 3: MERGE & DEDUPLICATE
     # ---------------------------------------------------------
 
+    # Combine: Previous Context + New Results
+    # We put previous chunks FIRST to give them context priority
+    all_chunks = previous_context_chunks + new_rag_chunks
+    
+    unique_map = {}
     rag_chunks = []
-    rag_sources = [] # ✅ List for Source Viewer
+    
+    for c in all_chunks:
+        if c["id"] not in unique_map:
+            unique_map[c["id"]] = True
+            rag_chunks.append(c)
 
-    for d in final_docs:
-        cid = d.metadata.get("chunk_id") or d.metadata.get("doc_id") or str(uuid.uuid4())
+    
+
+    # ---------------------------------------------------------
+    # 🚀 STEP 4: FORMAT SOURCES FOR FRONTEND
+    # ---------------------------------------------------------
+
+    rag_sources = [] 
+
+    for c in rag_chunks:
+        # Extract Metadata for Source Viewer
+        meta = c.get("metadata", {})
         
-        # Prepare context for LLM
-        rag_chunks.append({
-            "id": cid,
-            "content": d.page_content,
-            "section": d.metadata.get("section"),
-            "chunk_type": d.metadata.get("type"),
-            "score": d.metadata.get("rerank_score", 0.0)
-        })
-
-        # ✅ FIX: Robust Metadata Extraction for Source Viewer
-        meta = d.metadata
+        # Handle flattened vs nested metadata structures defensively
         filename = meta.get("source_file")
         if not filename:
-             # Fallback to nested cmetadata if flattened extraction failed
              filename = meta.get("cmetadata", {}).get("source_file", "Unknown")
 
         page_num = meta.get("page_number", 1)
         bbox = meta.get("bbox", "")
 
-        # ✅ Extract Source Metadata for Frontend
         rag_sources.append({
             "id": str(uuid.uuid4()),
-            "fileName": filename, # Matches SourceViewerModal
-            "page": page_num,     # ✅ CRITICAL FIX: "page" (Frontend expects this), NOT "page_number"
+            "fileName": filename, 
+            "page": page_num,     
             "bbox": bbox,
             "company_doc_id": company_document_id,
             "revision": int(revision_number) 
         })
 
+    # Save used chunk IDs for the next follow-up
     add_used_chunk_ids(session_id, [c["id"] for c in rag_chunks])
 
     confidence_payload = compute_confidence(
@@ -507,7 +403,6 @@ def chat(req: ChatRequest):
     )
 
     # ✅ STREAM WITH SOURCES
-    # Wrap the generator to append the SOURCES event at the end
     return StreamingResponse(
         safe_stream_with_sources(
             safe_stream_response(
@@ -522,7 +417,7 @@ def chat(req: ChatRequest):
                 original_question,
                 confidence_payload,
             ),
-            rag_sources # Pass the sources list here
+            rag_sources 
         ),
         media_type="text/plain",
     )
@@ -542,7 +437,7 @@ def generate_title(req: TitleRequest):
 
     # 2. Get Lite LLM (Fastest)
     try:
-        llm_info = get_llm("lite_llama_8b") # or your lite model ID
+        llm_info = get_llm("lite_llama_8b") 
     except Exception:
         return {"title": "New Chat"}
 
@@ -550,22 +445,17 @@ def generate_title(req: TitleRequest):
     output = ""
     try:
         if llm_info["type"] == "gguf":
-            # 🔥 CRITICAL FIX: CONSUME THE GENERATOR STREAM
             stream = llm_info["llm"](prompt, max_tokens=15, stop=["\n"])
             chunks = []
-            
-            # Iterate through the stream to get the actual text
             for chunk in stream:
                 if isinstance(chunk, dict):
                     text = chunk.get("choices", [{}])[0].get("text", "")
                     chunks.append(text)
                 elif isinstance(chunk, str):
                     chunks.append(chunk)
-            
             output = "".join(chunks)
 
         else:
-            # HuggingFace logic
             model = llm_info["model"]
             tokenizer = llm_info["tokenizer"]
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
@@ -588,7 +478,6 @@ def generate_title(req: TitleRequest):
     if len(clean_title) > 50:
         clean_title = clean_title[:47] + "..."
     
-    # Fallback if empty
     if not clean_title:
         clean_title = "New Chat"
 

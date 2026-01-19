@@ -304,14 +304,25 @@ def build_prompt_gguf(
     Updated to use strict Llama-3 tokens to prevent infinite looping.
     """
 
+    # ✅ FIX: Handle conversational/empty context gracefully
     if context_chunks:
         context_text = "\n".join(
             f"- {c['content']}"
             for c in context_chunks
             if c.get("content")
         )
+        system_instruction = (
+            "You are KavinBase, a senior engineering assistant. "
+            "Answer the user's question using ONLY the provided context.\n"
+            "If the answer requires data from a table, FORMAT IT AS A MARKDOWN TABLE."
+        )
     else:
+        # ✅ If no documents found, switch to polite assistant mode
         context_text = "No document context provided."
+        system_instruction = (
+            "You are KavinBase, a helpful AI assistant. "
+            "Answer the user politely. Do not hallucinate document facts."
+        )
 
     # 🚀 DYNAMIC STYLE INJECTION
     style_key = getattr(answer_style, "verbosity", "short")
@@ -320,9 +331,7 @@ def build_prompt_gguf(
     # 🔥 FIX: Removed <|begin_of_text|> to prevent double-init warning
     return f"""<|start_header_id|>system<|end_header_id|>
 
-You are KavinBase, a senior engineering assistant.
-Answer the user's question using ONLY the provided context.
-If the answer requires data from a table, FORMAT IT AS A MARKDOWN TABLE.
+{system_instruction}
 
 {style_instruction}
 

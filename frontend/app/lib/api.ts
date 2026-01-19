@@ -6,7 +6,7 @@
    • Chat streaming (unchanged)
    • PDF upload (phase 1: metadata only)
    • PDF commit (phase 2: chunk + ingest)
-   • Metadata update
+   • Metadata update (STREAMING ENABLED for Processing Bubble)
    • Force ingest support
    • Abort + retry safe
 ========================================================= */
@@ -81,12 +81,9 @@ export interface CommitUploadResponse {
 
 export interface MetadataUpdateRequest {
   job_id: string;
-  metadata: {
-    document_type?: string;
-    revision_code?: string;
-    revision_number?: string;
-    company_document_id?: string; // usually not editable
-  };
+  // ✅ Changed to Record<string, string> to match InlinePrompt output
+  metadata: Record<string, string>; 
+  force?: boolean;
 }
 
 
@@ -280,11 +277,12 @@ export async function commitUpload(
 }
 
 /* =========================================================
-   METADATA UPDATE (POST-POPUP)
+   METADATA UPDATE (STREAMING SUPPORT)
 ========================================================= */
 
 export async function updateMetadata(
-  payload: MetadataUpdateRequest
+  payload: MetadataUpdateRequest,
+  onProgress?: (msg: string) => void
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/metadata/update`, {
     method: "POST",
@@ -294,6 +292,52 @@ export async function updateMetadata(
 
   if (!res.ok) {
     throw new Error(await normalizeError(res));
+  }
+
+  // ✅ STREAM READER: Reads backend progress events line-by-line
+  const reader = res.body?.getReader();
+  if (!reader) return; 
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        try {
+          const data = JSON.parse(trimmed);
+          
+          if (data.stage === "error") {
+            throw new Error(data.message || "Server reported an error");
+          }
+
+          // 🔥 Callback for Processing Bubble updates
+          if (onProgress && data.message) {
+            onProgress(data.message);
+          }
+        } catch (e: any) {
+          // If we explicitly threw the error above, rethrow it
+          if (e.message && e.message !== "Unexpected end of JSON input") {
+             throw e;
+          }
+          // Otherwise ignore parse errors on partial chunks
+        }
+      }
+    }
+  } catch (err) {
+    throw err;
+  } finally {
+    reader.releaseLock();
   }
 
   logEvent("metadata_submitted", {

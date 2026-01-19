@@ -6,8 +6,12 @@
 from dotenv import load_dotenv
 load_dotenv()  # <-- This must happen before other backend imports
 
+import psutil  # ✅ Required for system checks
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# ✅ NEW: Import the CPU limiter from our Traffic Cop
+from backend.rag.resource_planner import limit_cpu_usage
 
 # ============================================================
 # IMPORT API ROUTERS
@@ -22,13 +26,16 @@ from backend.api.update import router as metadata_commit_router
 from backend.api.metadata import router as metadata_correct_router
 
 # Net & Debug routers
-from backend.api.net import router as net_router           # /net/*
-from backend.api.net_key import router as net_key_router   # /net-key/*
-from backend.api.debug_rag import router as debug_router   # 🐞 Debug RAG
-from backend.api.retrieve import router as retrieve_router # Optional retrieval APIs
+from backend.api.net import router as net_router            # /net/*
+from backend.api.net_key import router as net_key_router    # /net-key/*
+from backend.api.debug_rag import router as debug_router    # 🐞 Debug RAG
+from backend.api.retrieve import router as retrieve_router  # Optional retrieval APIs
 
-# ✅ NEW: Render Router for Source Viewer
+# ✅ Render Router for Source Viewer
 from backend.api.render import router as render_router 
+
+# ✅ DevTools Router
+from backend.api.devtools import router as devtools_router
 
 # ============================================================
 # IMPORT HEALTH CHECK DEPENDENCIES
@@ -53,6 +60,28 @@ app = FastAPI(
     ),
     version="1.0.0",
 )
+
+
+# ============================================================
+# 🚦 STARTUP EVENT (GLOBAL RESOURCE SAFETY)
+# ============================================================
+@app.on_event("startup")
+async def startup_event():
+    """
+    On server start, restrict Python to specific CPU cores
+    to prevent freezing the OS/UI during heavy RAG tasks.
+    """
+    try:
+        total_cores = psutil.cpu_count(logical=True) or 2
+        
+        # Strategy: Use 75% of cores for AI, leave 25% for Windows/Chrome
+        # Example: On 12 cores, use 9, leave 3 free.
+        safe_cores = max(1, int(total_cores * 0.75))
+        
+        print(f"🚦 [STARTUP] Optimizing CPU Affinity (Using {safe_cores}/{total_cores} cores)...")
+        limit_cpu_usage(safe_cores)
+    except Exception as e:
+        print(f"⚠️ [STARTUP] CPU Affinity configuration failed (OS might limit this): {e}")
 
 
 # ============================================================
@@ -92,6 +121,9 @@ app.include_router(retrieve_router)    # /retrieve/* (optional)
 # ✅ Render API (Source Viewer)
 app.include_router(render_router)      # GET /render/image
 
+# ✅ DevTools API (Dashboard)
+app.include_router(devtools_router)    # POST /devtools/*
+
 
 # ============================================================
 # BASIC INFO ENDPOINT
@@ -110,7 +142,9 @@ def root_info():
             "Agent-aware metadata workflow",
             "RAG Debug Observability",
             "Answer Confidence Scoring",
-            "Source Highlighting & Rendering"
+            "Source Highlighting & Rendering",
+            "Developer Method Dashboard",
+            "Resource Aware Dispatcher"
         ],
     }
 

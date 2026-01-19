@@ -1,3 +1,4 @@
+// frontend/components/chat/MessageBubble.tsx
 "use client";
 
 import { Message, RagSource } from "@/app/lib/types";
@@ -5,8 +6,8 @@ import Avatar from "../ui/Avatar";
 import ReactMarkdown from "react-markdown";
 import CodeBlock from "./CodeBlock";
 import ThinkingDisclosure from "./ThinkingDisclosure";
-import TypingIndicator from "./TypingIndicator"; // ✅ Use new indicator
-import { Copy, Trash2, RotateCcw, BookOpen } from "lucide-react"; 
+import TypingIndicator from "./TypingIndicator";
+import { Copy, Trash2, RotateCcw, BookOpen, FileText } from "lucide-react"; 
 import remarkGfm from "remark-gfm";
 
 /* ================= PROPS ================= */
@@ -47,7 +48,7 @@ export default function MessageBubble({
 
   // --- DERIVED STATES ---
   const isProgress = message.status === "progress";
-  const isTyping = message.status === "typing" || message.status === "streaming";
+  const isTyping = message.status === "typing";
   const isError = message.status === "error";
   const isEdited = Boolean(message.edited);
   const isRegenerated = Boolean(message.regenerated);
@@ -59,6 +60,32 @@ export default function MessageBubble({
   async function handleCopy() {
     if (!hasContent) return;
     await navigator.clipboard.writeText(message.content || "");
+  }
+
+  /* ================= 1. SYSTEM MESSAGE (CENTERED PILL) ================= */
+  if (isSystem) {
+    return (
+      <div className="mx-auto my-6 flex justify-center animate-in fade-in zoom-in-95 duration-500">
+        <div className="flex items-center gap-2 rounded-full bg-white/5 px-4 py-1.5 text-xs font-medium text-gray-400 border border-white/5 shadow-sm">
+          <FileText size={12} className="text-blue-400" />
+          <span>{message.content}</span>
+        </div>
+      </div>
+    );
+  }
+
+  /* ================= 2. PROGRESS / UPLOAD STATE ================= */
+  if (isProgress) {
+      return (
+        <div className="w-full py-2">
+            <TypingIndicator 
+                modelLabel="System" 
+                type="uploading"
+                label={message.progressLabel || "Processing..."} 
+                progress={message.progress}
+            />
+        </div>
+      );
   }
 
   /* ================= PARSE CHAIN OF THOUGHT (CoT) ================= */
@@ -78,43 +105,13 @@ export default function MessageBubble({
   }
 
   /* ================= GET STATUS LABEL ================= */
-  // Returns text like "Processing...", "Thinking...", or null
   const getStatusLabel = () => {
-      if (isProgress) return message.progressLabel || "Processing...";
       if (thoughtContent && !finalDisplayContent) return "Thinking...";
       if (isTyping) return "Generating response...";
       return null;
   };
 
-  /* ================= SYSTEM MESSAGE ================= */
-
-  if (isSystem) {
-    return (
-      <div className="mx-auto my-4 flex justify-center animate-fade-in">
-        <div className="rounded-full bg-white/5 px-4 py-1 text-xs text-gray-400 border border-white/10 italic">
-          {message.content}
-        </div>
-      </div>
-    );
-  }
-
-  /* ================= 1. HANDLE PROGRESS / LOADING STATE ================= */
-  // If we are uploading (progress) OR searching (typing but no text yet)
-  // We swap the whole bubble for the sleek TypingIndicator
-  
-  if (isProgress) {
-      return (
-        <div className="w-full py-2">
-            <TypingIndicator 
-                modelLabel="System" 
-                type="uploading"
-                label={message.progressLabel || "Processing..."} 
-                progress={message.progress}
-            />
-        </div>
-      );
-  }
-
+  /* ================= 3. TYPING INDICATOR (SEARCHING) ================= */
   if (isAssistant && isTyping && !hasContent && !thoughtContent) {
       return (
         <div className="w-full py-2">
@@ -127,14 +124,14 @@ export default function MessageBubble({
       );
   }
 
-  /* ================= 2. NORMAL MESSAGE BUBBLE ================= */
+  /* ================= 4. NORMAL MESSAGE BUBBLE ================= */
 
   return (
     <div className="w-full flex transition-opacity duration-200 opacity-100 my-2">
       <div
         className={`
           group flex w-full max-w-3xl gap-4
-          animate-message-in
+          animate-in slide-in-from-bottom-2 duration-300
           ${isAssistant ? "justify-start" : "justify-end"}
         `}
       >
@@ -144,7 +141,7 @@ export default function MessageBubble({
         {/* Bubble Container */}
         <div className="max-w-[85%] min-w-[300px]"> 
           
-          {/* ✅ HEADER: Show Model & Status Label (Only if active and has content) */}
+          {/* HEADER: Show Model & Status Label */}
           {isAssistant && (isTyping || (thoughtContent && !finalDisplayContent)) && (
              <div className="mb-1 flex items-center gap-2 text-xs text-gray-400 select-none">
                 <span className="font-semibold text-blue-400">{modelLabel}</span>
@@ -166,7 +163,7 @@ export default function MessageBubble({
                 isAssistant
                   ? isError
                     ? "bg-red-900/20 border border-red-500/30 text-red-200"
-                    : "bg-[#1f1f1f] text-gray-100"
+                    : "bg-[#1f1f1f] text-gray-100 border border-white/5"
                   : "bg-[#2a2a2a] text-white"
               }
               ${isEdited ? "ring-2 ring-yellow-400/60" : ""}
@@ -212,36 +209,37 @@ export default function MessageBubble({
                     ul: ({ node, ...props }) => <ul className="list-disc pl-5 space-y-1 my-2" {...props} />,
                     ol: ({ node, ...props }) => <ol className="list-decimal pl-5 space-y-1 my-2" {...props} />,
                     li: ({ node, ...props }) => <li className="pl-1" {...props} />,
+                    a: ({ node, ...props }) => <a className="text-blue-400 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
                   }}
                 >
                   {finalDisplayContent}
                 </ReactMarkdown>
               </div>
             ) : (
-               /* Fallback if content is empty but not caught by indicators */
                <span className="italic text-gray-500">No content generated.</span>
             )}
 
-            {/* ================= ✅ SOURCES BUTTON ================= */}
+            {/* ================= SOURCES BUTTON (REVERTED) ================= */}
+            {/* This replaces the individual chips with a single clean button */}
             {isAssistant && message.sources && message.sources.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-white/10">
-                <button
-                    onClick={() => onViewSources?.(message.sources!)}
-                    className="flex items-center gap-2 rounded-md bg-white/5 px-3 py-1.5 text-xs font-medium text-blue-300 hover:bg-white/10 hover:text-blue-200 transition-colors"
-                >
-                    <BookOpen size={14} />
-                    View {message.sources.length} Source{message.sources.length > 1 ? "s" : ""}
-                </button>
+                    <button
+                        onClick={() => onViewSources?.(message.sources!)}
+                        className="flex items-center gap-2 rounded-md bg-white/5 px-3 py-1.5 text-xs font-medium text-blue-300 hover:bg-white/10 hover:text-blue-200 transition-colors border border-white/5"
+                    >
+                        <BookOpen size={14} />
+                        <span>View {message.sources.length} Source{message.sources.length > 1 ? "s" : ""}</span>
+                    </button>
                 </div>
             )}
 
             {/* ================= ACTION BAR ================= */}
             {!isEditing && !isProgress && (
-              <div className="absolute -bottom-6 right-0 hidden gap-2 group-hover:flex text-gray-500">
+              <div className="absolute -bottom-6 right-0 hidden gap-2 group-hover:flex text-gray-500 bg-[#111] px-2 py-1 rounded-md border border-white/5 shadow-sm z-10">
                 {hasContent && (
                   <button
                     onClick={handleCopy}
-                    className="hover:text-white p-1"
+                    className="hover:text-white p-1 transition-colors"
                     title="Copy"
                   >
                     <Copy size={13} />
@@ -251,8 +249,8 @@ export default function MessageBubble({
                 {isAssistant && isLastAssistant && onRetry && (
                   <button
                     onClick={onRetry}
-                    className="hover:text-white p-1"
-                    title="Retry"
+                    className="hover:text-white p-1 transition-colors"
+                    title="Regenerate"
                   >
                     <RotateCcw size={13} />
                   </button>
@@ -261,8 +259,8 @@ export default function MessageBubble({
                 {onDelete && (
                   <button
                     onClick={onDelete}
-                    className="hover:text-red-400 p-1"
-                    title="Delete"
+                    className="hover:text-red-400 p-1 transition-colors"
+                    title="Delete Message"
                   >
                     <Trash2 size={13} />
                   </button>
@@ -273,20 +271,14 @@ export default function MessageBubble({
 
           {/* ================= FOOTER ================= */}
           <div
-            className={`mt-1 text-xs text-gray-500 ${
-              isAssistant ? "text-left" : "text-right"
+            className={`mt-1 text-xs text-gray-600 ${
+              isAssistant ? "text-left pl-1" : "text-right pr-1"
             }`}
           >
             {formatTime(message.createdAt)}
-            {isEdited && (
-              <span className="ml-2 text-yellow-400">· edited</span>
-            )}
-            {isRegenerated && (
-              <span className="ml-2 text-blue-400">· regenerated</span>
-            )}
-            {isError && (
-              <span className="ml-2 text-red-400">· error</span>
-            )}
+            {isEdited && <span className="ml-2 text-yellow-500/50">· edited</span>}
+            {isRegenerated && <span className="ml-2 text-blue-500/50">· regenerated</span>}
+            {isError && <span className="ml-2 text-red-500/50">· error</span>}
           </div>
         </div>
 

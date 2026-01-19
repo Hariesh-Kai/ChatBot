@@ -10,10 +10,7 @@ import type { KavinModelId } from "./kavin-models";
  * - assistant: LLM response
  * - system: internal / lifecycle / status messages
  */
-export type MessageRole =
-  | "user"
-  | "assistant"
-  | "system";
+export type Role = "user" | "assistant" | "system";
 
 /* ================= MESSAGE STATUS ================= */
 
@@ -23,21 +20,21 @@ export type MessageRole =
  */
 export type MessageStatus =
   | "typing"        // initial thinking (TypingIndicator)
-  | "streaming"     // tokens streaming
-  | "progress"      // 🔥 determinate progress (PDF / ingestion)
+  | "streaming"     // tokens streaming OR processing bubble
+  | "progress"      // 🔥 determinate progress (PDF upload)
   | "done"          // final answer rendered
   | "error";        // error state (metadata / pipeline)
 
-/* ================= SOURCE TYPE (✅ NEW) ================= */
+/* ================= SOURCE TYPE ================= */
 
 export interface RagSource {
   id: string;
-  filename: string; // Changed from fileName to match backend usually, or keep fileName if strict
+  fileName: string; // ✅ Fixed: Must be camelCase to match Backend & MessageBubble
   page: number;
-  bbox?: string; // JSON string "[[x,y], ...]"
+  bbox?: string;    // JSON string "[[x,y], ...]"
   company_doc_id?: string;
   revision?: number;
-  text?: string; // Often useful to have the text snippet
+  text?: string;    // Snippet text
   score?: number;
 }
 
@@ -48,15 +45,13 @@ export interface RagSource {
  */
 export interface Message {
   id: string;
-  role: MessageRole;
+  role: Role;
 
   /**
    * Message text.
-   * Optional because:
-   * - progress messages don’t have text
-   * - typing indicator is UI-only
+   * We treat this as required (empty string if no content) to prevent UI crashes.
    */
-  content?: string;
+  content: string;
 
   createdAt: number;
 
@@ -76,7 +71,7 @@ export interface Message {
 
   /**
    * 0–100 progress value.
-   * Used ONLY when status === "progress"
+   * Used for 'progress' (upload) and 'streaming' (processing bubble) states.
    */
   progress?: number;
 
@@ -86,7 +81,7 @@ export interface Message {
    */
   progressLabel?: string;
 
-  /* ================= 📚 SOURCES (✅ NEW) ================= */
+  /* ================= 📚 SOURCES ================= */
   
   /**
    * List of citations used to generate this message.

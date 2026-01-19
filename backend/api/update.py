@@ -1,184 +1,114 @@
 # backend/api/update.py
 
-from typing import Dict
+from typing import Dict, Generator
 from pathlib import Path
 import json
+import time
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from backend.contracts.ui_events import metadata_confirmed_event
 from backend.state.job_state import (
     get_job_state,
     update_job_metadata,
     mark_job_ready,
 )
 from backend.rag.pipeline import run_pipeline
-
-# ✅ NEW: Import MinIO Upload Function
 from backend.storage.minio_client import upload_pdf as minio_upload_pdf
-
-# ✅ NEW: persist active document
 from backend.memory.pg_memory import save_active_document
 
-# ============================================================
-# API ROUTER
-# ============================================================
-
 router = APIRouter(prefix="/metadata", tags=["Metadata"])
-
-
-# ============================================================
-# SCHEMAS
-# ============================================================
 
 class MetadataUpdateRequest(BaseModel):
     job_id: str
     metadata: Dict[str, str]
     force: bool = False
 
+# Helper to format stream events
+def _sse_msg(stage: str, msg: str, progress: int) -> str:
+    return json.dumps({"stage": stage, "message": msg, "progress": progress}) + "\n"
 
-class MetadataUpdateResponse(BaseModel):
-    job_id: str
-    company_document_id: str
-    revision_number: str # ✅ STRING (Fixed)
-    status: str  # committed
-
-
-# ============================================================
-# METADATA UPDATE + COMMIT
-# ============================================================
-
-@router.post("/update", response_model=MetadataUpdateResponse)
+@router.post("/update")
 def update_metadata(payload: MetadataUpdateRequest):
     """
-    Finalizes metadata and commits document ingestion.
-
-    FLOW:
-    - Validate job (smart lookup via Session OR Job ID)
-    - Merge metadata
-    - Ensure completeness
-    - Upload to MinIO (Backup)
-    - Run commit pipeline
-    - Mark job READY
+    Finalizes metadata and commits document ingestion via Streaming Response.
     """
     
-    # --- LOG START ---
-    print(f"\n------------------------------------------------")
-    print(f"🚀 [PHASE 2] Metadata Update & Commit: {payload.job_id}")
-    print(f"------------------------------------------------")
+    def _process_stream() -> Generator[str, None, None]:
+        # 1. VALIDATION
+        job = get_job_state(payload.job_id)
+        if not job:
+            yield _sse_msg("error", "Invalid or expired job_id", 0)
+            return
 
-    # --------------------------------------------------
-    # 1️⃣ LOAD JOB (SMART LOOKUP)
-    # --------------------------------------------------
-    # get_job_state handles both job_id AND session_id
-    job = get_job_state(payload.job_id)
-    if not job:
-        raise HTTPException(404, "Invalid or expired job_id")
-
-    # --------------------------------------------------
-    # 2️⃣ PREVENT IDENTITY OVERRIDE
-    # --------------------------------------------------
-
-    forbidden = {"company_document_id", "revision_number"}
-    if forbidden & payload.metadata.keys():
-        raise HTTPException(
-            400,
-            "company_document_id and revision_number cannot be overridden",
-        )
-
-    # --------------------------------------------------
-    # 3️⃣ MERGE + VALIDATE METADATA
-    # --------------------------------------------------
-
-    # 🔥 CRITICAL FIX: Use the resolved job.job_id, NOT payload.job_id
-    # This ensures we pass the UUID even if frontend sent the Session ID
-    job = update_job_metadata(
-        job_id=job.job_id,
-        updated_metadata=payload.metadata,
-    )
-
-    if job.missing_fields and not payload.force:
-        raise HTTPException(
-            400,
-            f"Missing required metadata fields: {job.missing_fields}",
-        )
-
-    final_metadata = job.metadata
-
-    # --------------------------------------------------
-    # ☁️ MINIO UPLOAD (Added)
-    # --------------------------------------------------
-    try:
-        print(f"☁️  [MINIO] Uploading: {final_metadata['source_file']} ...")
+        # Update metadata state
+        update_job_metadata(job.job_id, payload.metadata)
         
-        # Helper: Convert to int for MinIO path versioning if possible
-        rev_val = final_metadata["revision_number"]
-        rev_int = int(rev_val) if str(rev_val).isdigit() else 1
+        # Check completion
+        if job.missing_fields and not payload.force:
+            yield _sse_msg("error", f"Missing fields: {job.missing_fields}", 0)
+            return
 
-        minio_path = minio_upload_pdf(
-            local_path=final_metadata["pdf_path"],
-            document_id=final_metadata["company_document_id"],
-            revision=rev_int,
-            filename=final_metadata["source_file"],
-            overwrite=True
+        final_metadata = job.metadata
+        
+        # 2. MINIO UPLOAD
+        yield _sse_msg("upload", f"Backing up {final_metadata['source_file']}...", 10)
+        
+        try:
+            rev_val = final_metadata["revision_number"]
+            rev_int = int(rev_val) if str(rev_val).isdigit() else 1
+
+            minio_upload_pdf(
+                local_path=final_metadata["pdf_path"],
+                document_id=final_metadata["company_document_id"],
+                revision=rev_int,
+                filename=final_metadata["source_file"],
+                overwrite=True
+            )
+            yield _sse_msg("upload", "Backup complete.", 30)
+        except Exception as e:
+            yield _sse_msg("error", f"MinIO Upload Failed: {str(e)}", 0)
+            return
+
+        # 3. RAG PIPELINE
+        job_dir = (
+            Path(__file__).resolve().parents[1]
+            / "tmp"
+            / "jobs"
+            / job.job_id
         )
-        print(f"✅ [MINIO] Upload Success! Path: {minio_path}")
-    except Exception as e:
-        print(f"❌ [MINIO] Upload Failed: {e}")
-        # We abort if the backup fails to ensure data safety
-        raise HTTPException(500, f"MinIO Backup Failed: {e}")
 
-    # --------------------------------------------------
-    # 4️⃣ COMMIT PIPELINE
-    # --------------------------------------------------
+        try:
+            yield _sse_msg("processing", "Analyzing document structure...", 40)
+            
+            # Note: run_pipeline is synchronous, so this step will hang until done.
+            # Ideally, run_pipeline should accept a callback, but for now we wrap the heavy call.
+            yield _sse_msg("processing", "Chunking and Embedding (this may take a moment)...", 60)
+            
+            run_pipeline(
+                pdf_path=final_metadata["pdf_path"],
+                job_dir=str(job_dir),
+                company_document_id=final_metadata["company_document_id"], 
+                db_connection=final_metadata["db_connection"],
+                extra_metadata=final_metadata,
+                mode="commit",
+            )
+            yield _sse_msg("processing", "Indexing complete.", 90)
+            
+        except Exception as e:
+            yield _sse_msg("error", f"RAG Pipeline Failed: {str(e)}", 0)
+            return
 
-    job_dir = (
-        Path(__file__).resolve().parents[1]
-        / "tmp"
-        / "jobs"
-        / job.job_id # ✅ Use canonical ID
-    )
-
-    try:
-        print(f"⚙️  [RAG] Starting Chunking & Embedding...")
-        run_pipeline(
-            pdf_path=final_metadata["pdf_path"],
-            job_dir=str(job_dir),
-            company_document_id=final_metadata["company_document_id"], 
-            db_connection=final_metadata["db_connection"],
-            extra_metadata=final_metadata,
-            mode="commit",
+        # 4. FINALIZE
+        mark_job_ready(job.job_id)
+        save_active_document(
+            session_id=job.session_id,
+            company_document_id=final_metadata["company_document_id"],
+            revision_number=str(final_metadata["revision_number"]),
         )
-        print(f"✅ [RAG] Pipeline Complete. Chunks saved to DB.")
-    except Exception as e:
-        print(f"❌ [RAG] Pipeline Failed: {e}")
-        raise HTTPException(500, f"RAG Pipeline Failed: {e}")
 
-    # --------------------------------------------------
-    # 5️⃣ MARK JOB READY
-    # --------------------------------------------------
+        # 5. DONE
+        yield _sse_msg("done", "Document is ready.", 100)
 
-    mark_job_ready(job.job_id) # ✅ Use canonical ID
-    
-    # ✅ SAVE ACTIVE DOCUMENT (So the chatbot knows what to look at)
-    save_active_document(
-        session_id=job.session_id,
-        company_document_id=final_metadata["company_document_id"],
-        revision_number=str(final_metadata["revision_number"]), # Ensure string
-    )
-
-    # Emit UI unblock event
-    print(
-        "__UI_EVENT__"
-        + json.dumps(
-            metadata_confirmed_event("Document committed successfully")
-        )
-    )
-
-    return MetadataUpdateResponse(
-        job_id=job.job_id,
-        company_document_id=final_metadata["company_document_id"],
-        revision_number=str(final_metadata["revision_number"]),
-        status="committed",
-    )
+    return StreamingResponse(_process_stream(), media_type="application/x-ndjson")

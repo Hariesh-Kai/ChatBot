@@ -5,11 +5,10 @@ import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
 import EmptyState from "../EmptyState";
 import InlineMetadataPrompt from "./InlineMetadataPrompt";
-import RagDebugPanel from "@/app/components/debug/RagDebugPanel";
 import SourceViewerModal from "./SourceViewerModal";
 import ChatHeader from "./ChatHeader";
 import ProcessingBubble from "./ProcessingBubble";
-import Disclaimer from "../ui/Disclaimer"; // ✅ NEW
+import Disclaimer from "../ui/Disclaimer"; // ✅ NEW: Import Disclaimer
 
 import { Message, RagSource } from "@/app/lib/types";
 import { KAVIN_MODELS, KavinModelId } from "@/app/lib/kavin-models";
@@ -22,7 +21,7 @@ import NetKeyModal from "@/app/components/net/NetKeyModal";
 import { hasNetApiKey } from "@/app/lib/net-key-store";
 import { UploadStatus } from "@/app/hooks/useSmartUpload";
 
-// ... (Utils and Constants remain same) ...
+/* ================= UTILS ================= */
 
 function uuidv4() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -35,6 +34,8 @@ function uuidv4() {
   });
 }
 
+/* ================= CONSTANTS ================= */
+
 const SAFE_MODELS = [
   { id: KAVIN_MODELS.base.id, label: KAVIN_MODELS.base.label },
   { id: KAVIN_MODELS.lite.id, label: KAVIN_MODELS.lite.label },
@@ -44,6 +45,8 @@ const SAFE_MODELS = [
 const THINKING_LABELS = [
     "Initializing Model...", "Loading Context...", "Classifying Intent...", "Reranking Results...", "Generating Response..."
 ];
+
+/* ================= COMPONENT ================= */
 
 interface ChatWindowProps {
   messages: Message[];
@@ -74,22 +77,25 @@ export default function ChatWindow({
   onExternalMetadataSubmit,
 }: ChatWindowProps) {
   
-  // ... (State variables remain same) ...
+  // --- UI State ---
   const [input, setInput] = useState("");
   const hasStarted = messages.length > 0;
   
+  // --- Modals ---
   const [netModalOpen, setNetModalOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [activeSources, setActiveSources] = useState<RagSource[]>([]);
   const [debugOpen, setDebugOpen] = useState(false);
   const [netRateLimitedUntil, setNetRateLimitedUntil] = useState<number | null>(null);
 
+  // --- Upload / Metadata State ---
   const [isUploading, setIsUploading] = useState(false);
   const uploadMsgIdRef = useRef<string | null>(null);
   
   const [inlineMetadataFields, setInlineMetadataFields] = useState<MetadataRequestField[] | null>(null);
   const [pendingJobId, setPendingJobId] = useState<string | null>(null);
 
+  // --- Refs ---
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const parserRef = useRef(new StreamParser());
@@ -102,22 +108,25 @@ export default function ChatWindow({
 
   const modelLabel = useMemo(() => SAFE_MODELS.find((m) => m.id === model)?.label ?? "KavinBase", [model]);
 
+  // --- Blocking Logic ---
   const isTyping = messages.some((m) => m.status === "typing" || m.status === "streaming") || assistantIdRef.current !== null;
   const isNetBlocked = model === "net" && netRateLimitedUntil !== null && Date.now() < netRateLimitedUntil;
   const isUIBlocked = Boolean(inlineMetadataFields) || isUploading || isNetBlocked;
 
   // ✅ SAFETY EFFECT: Fixes stuck "Abort" icon if backend fails silently
+  // If the last message says "Done", we force the generation state to stop.
   useEffect(() => {
       const lastMsg = messages[messages.length - 1];
       if (lastMsg && (lastMsg.status === 'done' || lastMsg.status === 'error')) {
           if (assistantIdRef.current) {
               assistantIdRef.current = null;
               hasReceivedFirstTokenRef.current = false;
-              stopThinkingSimulation(); // Ensure thinker stops
+              stopThinkingSimulation(); 
           }
       }
   }, [messages]);
 
+  // Handle external metadata triggers
   useEffect(() => {
       if (externalMetadataRequest) {
           setPendingJobId(externalMetadataRequest.jobId);
@@ -126,9 +135,10 @@ export default function ChatWindow({
       }
   }, [externalMetadataRequest]);
 
-  // ... (Upload Handlers remain same) ...
-  // [Copy-paste existing upload handlers from previous response if needed, otherwise assume unchanged]
-  
+  // ----------------------------------------------------------------------
+  // 1. UPLOAD HANDLERS
+  // ----------------------------------------------------------------------
+
   function handleUploadStart() {
     setIsUploading(true);
     const msgId = uuidv4();
@@ -251,7 +261,11 @@ export default function ChatWindow({
     }
   }
 
-  // ... Inline Metadata Logic (assume unchanged) ...
+
+  // ----------------------------------------------------------------------
+  // 2. INLINE METADATA SUBMISSION
+  // ----------------------------------------------------------------------
+
   async function handleInlineMetadataSubmit(values: Record<string, string>) {
     setInlineMetadataFields(null);
     onExternalMetadataSubmit?.(); 
@@ -318,7 +332,10 @@ export default function ChatWindow({
     }
   }
 
-  // ... Chat Logic (assume unchanged) ...
+  // ----------------------------------------------------------------------
+  // 3. STANDARD CHAT LOGIC
+  // ----------------------------------------------------------------------
+
   function focusInput() { requestAnimationFrame(() => inputRef.current?.focus()); }
 
   function handleSend(customInput?: string) {
@@ -462,6 +479,7 @@ export default function ChatWindow({
                 <div className="flex-1 overflow-y-auto px-4 pt-6">
                     <div className="mx-auto max-w-3xl space-y-5">
                         {messages.map((m, index) => {
+                            // ✅ Render Processing Bubble for streaming status
                             if (m.status === "streaming" && m.progressLabel && !m.content) {
                                 return (
                                     <div key={m.id} className="mb-6 flex justify-start">
@@ -482,6 +500,7 @@ export default function ChatWindow({
                             );
                         })}
 
+                        {/* Inline Prompt for Metadata */}
                         {inlineMetadataFields && (
                             <InlineMetadataPrompt
                                 fields={inlineMetadataFields}

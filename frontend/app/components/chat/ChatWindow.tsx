@@ -8,7 +8,7 @@ import InlineMetadataPrompt from "./InlineMetadataPrompt";
 import SourceViewerModal from "./SourceViewerModal";
 import ChatHeader from "./ChatHeader";
 import ProcessingBubble from "./ProcessingBubble";
-import Disclaimer from "../ui/Disclaimer"; // ✅ NEW: Import Disclaimer
+import Disclaimer from "../ui/Disclaimer"; // ✅ Imported
 
 import { Message, RagSource } from "@/app/lib/types";
 import { KAVIN_MODELS, KavinModelId } from "@/app/lib/kavin-models";
@@ -18,7 +18,6 @@ import { updateMetadata, generateChatTitle, commitUpload } from "@/app/lib/api";
 import { startJob, abortJob, finishJob } from "@/app/lib/job-manager";
 import { API_BASE } from "@/app/lib/config";
 import NetKeyModal from "@/app/components/net/NetKeyModal";
-import { hasNetApiKey } from "@/app/lib/net-key-store";
 import { UploadStatus } from "@/app/hooks/useSmartUpload";
 
 /* ================= UTILS ================= */
@@ -85,7 +84,6 @@ export default function ChatWindow({
   const [netModalOpen, setNetModalOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [activeSources, setActiveSources] = useState<RagSource[]>([]);
-  const [debugOpen, setDebugOpen] = useState(false);
   const [netRateLimitedUntil, setNetRateLimitedUntil] = useState<number | null>(null);
 
   // --- Upload / Metadata State ---
@@ -113,11 +111,11 @@ export default function ChatWindow({
   const isNetBlocked = model === "net" && netRateLimitedUntil !== null && Date.now() < netRateLimitedUntil;
   const isUIBlocked = Boolean(inlineMetadataFields) || isUploading || isNetBlocked;
 
-  // ✅ SAFETY EFFECT: Fixes stuck "Abort" icon if backend fails silently
-  // If the last message says "Done", we force the generation state to stop.
+  // ✅ SAFETY: Auto-fix "Stuck Red Button" if backend disconnects or state gets out of sync
   useEffect(() => {
       const lastMsg = messages[messages.length - 1];
       if (lastMsg && (lastMsg.status === 'done' || lastMsg.status === 'error')) {
+          // If the last message says done, but we still think we are typing, FORCE RESET
           if (assistantIdRef.current) {
               assistantIdRef.current = null;
               hasReceivedFirstTokenRef.current = false;
@@ -126,7 +124,7 @@ export default function ChatWindow({
       }
   }, [messages]);
 
-  // Handle external metadata triggers
+  // Handle external metadata requests (from Sidebar)
   useEffect(() => {
       if (externalMetadataRequest) {
           setPendingJobId(externalMetadataRequest.jobId);
@@ -410,13 +408,26 @@ export default function ChatWindow({
     finally { stopThinkingSimulation(); finishJob(); focusInput(); }
   }
 
+  // ✅ FIX: CLEANUP FUNCTION MUST RESET REF IMMEDIATELY
   function finalizeAssistant() {
     stopThinkingSimulation();
-    const id = assistantIdRef.current;
-    if (!id) return;
-    onUpdateMessages(prev => prev.map(m => m.id === id ? { ...m, content: textBufferRef.current, status: "done", progressLabel: undefined } : m));
+    
+    // 1. Capture the ID *before* clearing
+    const currentId = assistantIdRef.current;
+    
+    // 2. Clear the ref FIRST to unlock the UI (Red -> Blue Button)
     assistantIdRef.current = null;
     hasReceivedFirstTokenRef.current = false;
+
+    if (!currentId) return;
+
+    // 3. Mark the message as done
+    onUpdateMessages(prev => prev.map(m => m.id === currentId ? { 
+        ...m, 
+        content: textBufferRef.current, 
+        status: "done", 
+        progressLabel: undefined 
+    } : m));
   }
 
   function handleUIEvent(event: LLMUIEvent) {
@@ -434,10 +445,29 @@ export default function ChatWindow({
     }
   }
 
+  // ✅ FIX: Force Stop Logic
   function handleStop() {
-    abortJob(); stopThinkingSimulation(); finishJob();
-    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
-    finalizeAssistant();
+    abortJob(); 
+    stopThinkingSimulation(); 
+    finishJob();
+    
+    if (rafRef.current) { 
+        cancelAnimationFrame(rafRef.current); 
+        rafRef.current = null; 
+    }
+    
+    // 🔥 Force finalize even if ref is missing
+    const currentId = assistantIdRef.current;
+    if (currentId) {
+        finalizeAssistant();
+    } else {
+        // Fallback: If ref is missing but we are "typing", find the last typing message and kill it
+        onUpdateMessages(prev => prev.map(m => 
+            (m.status === 'typing' || m.status === 'streaming') 
+            ? { ...m, status: 'done', content: m.content || "Stopped." } 
+            : m
+        ));
+    }
   }
 
   function startThinkingSimulation(msgId: string) {
@@ -479,7 +509,6 @@ export default function ChatWindow({
                 <div className="flex-1 overflow-y-auto px-4 pt-6">
                     <div className="mx-auto max-w-3xl space-y-5">
                         {messages.map((m, index) => {
-                            // ✅ Render Processing Bubble for streaming status
                             if (m.status === "streaming" && m.progressLabel && !m.content) {
                                 return (
                                     <div key={m.id} className="mb-6 flex justify-start">
@@ -500,7 +529,6 @@ export default function ChatWindow({
                             );
                         })}
 
-                        {/* Inline Prompt for Metadata */}
                         {inlineMetadataFields && (
                             <InlineMetadataPrompt
                                 fields={inlineMetadataFields}
@@ -520,7 +548,7 @@ export default function ChatWindow({
                             onUploadStart={handleUploadStart} onUploadProgress={handleUploadProgress} 
                             onUploadSuccess={handleUploadSuccess} onUploadError={handleUploadError}
                         />
-                        {/* ✅ DISCLAIMER RESTORED */}
+                        {/* ✅ DISCLAIMER ADDED */}
                         <div className="mt-2">
                             <Disclaimer text="KavinBase can make mistakes. Verify important information." />
                         </div>

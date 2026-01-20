@@ -12,11 +12,6 @@ from backend.llm.loader import get_llm
 # Purpose:
 # 1. Fix typos/grammar in user input ("whta" -> "what")
 # 2. Resolve vague references ("it", "this") using history
-#
-# STRICT RULES:
-# ❌ Do NOT answer the question here
-# ❌ Do NOT hallucinate new facts
-# ✅ DO fix "presure" to "pressure"
 # ============================================================
 
 VAGUE_PHRASES = {
@@ -25,7 +20,6 @@ VAGUE_PHRASES = {
     "what about this", "what about that", "details",
 }
 
-# Messages that are useless as rewrite context
 NON_INFORMATIVE_MESSAGES = {
     "hi", "hello", "hey", "ok", "okay", "yes", "no", "thanks", "thank you",
 }
@@ -41,7 +35,6 @@ def _clean_with_llm(text: str) -> str:
     """
     try:
         # Load the fast model (Llama-3-8B or Qwen)
-        # We use a very low max_tokens because we just want the sentence back.
         llm_info = get_llm("lite_llama_8b")
         
         prompt = f"""<|start_header_id|>system<|end_header_id|>
@@ -63,12 +56,24 @@ Input: {text}
 Output:<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 """
 
-        # Generate (Blocking call is fine here, it's short)
+        cleaned = ""
+
+        # ✅ FIX: Handle Streaming Generator & Remove 'echo' arg
         if llm_info["type"] == "gguf":
-            output = llm_info["llm"](prompt, max_tokens=30, stop=["\n"], echo=False)
-            cleaned = output["choices"][0]["text"].strip()
+            # The loader returns a generator, so we must consume it loop-by-loop.
+            # We removed 'echo=False' because the loader wrapper doesn't support it.
+            stream = llm_info["llm"](prompt, max_tokens=30, stop=["\n"])
+            
+            full_text = []
+            for chunk in stream:
+                # Chunk format: {'choices': [{'text': '...'}]}
+                content = chunk.get("choices", [{}])[0].get("text", "")
+                full_text.append(content)
+            
+            cleaned = "".join(full_text).strip()
+
         else:
-            # HuggingFace fallback
+            # HuggingFace fallback (remains same)
             model = llm_info["model"]
             tokenizer = llm_info["tokenizer"]
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
@@ -79,7 +84,6 @@ Output:<|eot_id|><|start_header_id|>assistant<|end_header_id|>
                 do_sample=False
             )
             cleaned = tokenizer.decode(tokens[0], skip_special_tokens=True)
-            # Remove any prompt echo if present
             if "Output:" in cleaned:
                 cleaned = cleaned.split("Output:")[-1].strip()
 
@@ -114,32 +118,23 @@ def rewrite_question(
     Master rewrite function:
     1. Fix typos (LLM)
     2. Resolve context (History)
-    
-    Inputs:
-    - question: current user question
-    - recent_user_messages: previous USER messages (chronological)
-
-    Output:
-    - rewritten question (clean, explicit, safe)
     """
 
     if not question:
         return ""
 
     # --------------------------------------------------------
-    # 1️⃣ STEP 1: FIX TYPOS & GRAMMAR (Always run this)
+    # 1️⃣ STEP 1: FIX TYPOS & GRAMMAR
     # --------------------------------------------------------
-    # This prevents RAG failure due to misspelled keywords.
     clean_question = _clean_with_llm(question)
     
-    # Log the change for debugging if it actually changed
     if clean_question.strip().lower() != question.strip().lower():
         print(f"✨ [REWRITE] Typo fix: '{question}' -> '{clean_question}'")
     
     question = clean_question
 
     # --------------------------------------------------------
-    # 2️⃣ STEP 2: CONTEXT RESOLUTION (Existing Logic)
+    # 2️⃣ STEP 2: CONTEXT RESOLUTION
     # --------------------------------------------------------
     
     if not is_vague_question(question):
@@ -159,7 +154,6 @@ def rewrite_question(
         if msg_lower in NON_INFORMATIVE_MESSAGES:
             continue
 
-        # Avoid chaining vague questions
         if is_vague_question(msg_clean):
             continue
 
@@ -175,15 +169,13 @@ def rewrite_question(
     q_lower = question.lower()
     base_lower = base_question.lower()
 
-    # If base already contains the vague intent, reuse base
     if q_lower in base_lower:
         return base_question
 
-    # If question already references base, do not expand
     if base_lower in q_lower:
         return question
 
     # --------------------------------------------------------
-    # 4️⃣ Safe rewrite (minimal, deterministic)
+    # 4️⃣ Safe rewrite
     # --------------------------------------------------------
     return f"{question} about {base_question}"

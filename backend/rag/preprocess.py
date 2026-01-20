@@ -1,212 +1,134 @@
-# backend/rag/pipeline.py
+# backend/rag/preprocess.py
 
+import os
+import gc
+import torch
 from pathlib import Path
-from typing import Dict, Any, List, Literal, Optional
-import json
+from typing import List, Generator
 
-from langchain_core.documents import Document
+# PDF & System Libraries
+from pypdf import PdfReader, PdfWriter
+from unstructured.partition.pdf import partition_pdf
 
-from backend.memory.redis_memory import clear_used_chunk_ids
-# ✅ NEW: Import the streaming preprocessor
-from backend.rag.preprocess import stream_pdf_to_elements
-from backend.rag.chunk import ContextAwareChunker
-from backend.rag.metadata import (
-    extract_document_metadata,
-    enrich_chunks,
-)
-from backend.rag.ingest import (
-    ingest_to_pgvector,
-    load_documents,
-)
+# Resource Planner (The Traffic Cop)
+# Ensure you created backend/rag/resource_planner.py as discussed!
+from backend.rag.resource_planner import get_optimal_strategy, limit_cpu_usage
 
-# ============================================================
-# PIPELINE MODES
-# ============================================================
-
-PipelineMode = Literal["metadata", "commit"]
-
-
-# ============================================================
-# MAIN PIPELINE
-# ============================================================
-
-def run_pipeline(
-    *,
-    pdf_path: str,
-    job_dir: str,
-    company_document_id: str,
-    extra_metadata: Dict[str, Any],
-    db_connection: Optional[str] = None,
-    mode: PipelineMode = "commit",
-) -> Dict[str, Any]:
+def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[dict], None, None]:
     """
-    Enterprise RAG ingestion pipeline (FINAL, CONTRACT-SAFE).
-
-    MODES
-    ─────────────────────────────────────
-    metadata → extract metadata ONLY
-    commit   → chunk + enrich + ingest
-
-    HARD GUARANTEES
-    ─────────────────────────────────────
-    ❌ No DB writes in metadata mode
-    ❌ No chunking in metadata mode
-    ❌ No identity stored in `metadata`
-    ✅ Identity lives ONLY in `cmetadata`
-    ✅ Revision ALWAYS comes from extra_metadata
-    ✅ Uses STREAMING preprocessing to save RAM
-    """
-
-    # --------------------------------------------------
-    # INIT
-    # --------------------------------------------------
-
-    job_dir = Path(job_dir)
-    job_dir.mkdir(parents=True, exist_ok=True)
-
-    # ✅ FIX: Treat revision as String (TEXT) to support "05", "A", etc.
-    revision_number = str(extra_metadata.get("revision_number", ""))
-    source_file = extra_metadata.get("source_file")
-
-    if not revision_number:
-        raise RuntimeError("extra_metadata.revision_number is required")
-
-    if not source_file:
-        raise RuntimeError("extra_metadata.source_file is required")
-
-    # --------------------------------------------------
-    # PATHS
-    # --------------------------------------------------
-
-    elements_path = job_dir / "filtered_elements.json"
-    chunks_path = job_dir / "chunks.json"
-    enriched_path = job_dir / "enriched_chunks.json"
-
-    # --------------------------------------------------
-    # 1️⃣ PDF → ELEMENTS (STREAMING MODE)
-    # --------------------------------------------------
-    # We aggregate the stream here because the next steps (Metadata/Chunking)
-    # expect a full list. For massive scale, those steps would also need to be streams,
-    # but for now, this dramatically reduces peak RAM during the heaviest step (OCR).
-
-    if not elements_path.exists():
-        print(f"📄 Parsing PDF in Streaming Mode...")
-        all_elements = []
+    Generator that processes a PDF page-by-page to save RAM.
+    
+    Instead of loading the whole PDF into memory (which crashes RAM),
+    this extracts 1 page -> processes it -> yields it -> deletes it.
+    
+    Args:
+        pdf_path (str): Path to the source PDF.
+        output_json (str): Target path (used to determine where to save images).
         
-        # Consume the generator page-by-page
-        for batch in stream_pdf_to_elements(pdf_path, str(elements_path)):
-            all_elements.extend(batch)
-            # Optional: Emit a log here if you want granular progress
-            # print(f"   ↳ Processed batch of {len(batch)} elements...")
+    Yields:
+        List[dict]: A batch of processed elements (e.g., one page worth).
+    """
+    
+    pdf_path = Path(pdf_path)
+    output_json = Path(output_json)
+    
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-        # Save the complete JSON once finished
-        # (This file might be large, but it's just text JSON, so it's fine)
-        with open(elements_path, "w", encoding="utf-8") as f:
-            json.dump(all_elements, f, indent=2)
+    # 1. Setup Image Output Directory (All pages save images here)
+    image_output_dir = output_json.parent / "images"
+    image_output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2. Resource Planning
+    file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
+    strategy, cores, batch_size = get_optimal_strategy(file_size_mb)
+    
+    print(f"🚀 [PREPROCESS] Strategy: {strategy} | Cores: {cores} | Processing {file_size_mb:.2f} MB")
+    
+    # 3. Pin CPU Cores (Prevents Windows Freeze)
+    limit_cpu_usage(cores)
+
+    # 4. Check Hardware Acceleration
+    if torch.cuda.is_available():
+        model_name = "yolox"
+        print(f"🚀 GPU Detected! Using high-accuracy model: '{model_name}'")
+    else:
+        model_name = "yolox_quantized"
+        print(f"💻 No GPU found. Using CPU-optimized model: '{model_name}'")
+
+    # 5. Open PDF Stream
+    try:
+        reader = PdfReader(str(pdf_path))
+        total_pages = len(reader.pages)
+        print(f"📄 Document has {total_pages} pages. Starting stream...")
+    except Exception as e:
+        print(f"❌ Failed to read PDF: {e}")
+        return
+
+    elements_buffer = []
+
+    # 6. Page-by-Page Processing Loop
+    for i in range(total_pages):
+        # A. Create a temporary single-page PDF
+        page_writer = PdfWriter()
+        page_writer.add_page(reader.pages[i])
+        
+        temp_filename = pdf_path.parent / f"temp_processing_{pdf_path.stem}_page_{i+1}.pdf"
+        
+        try:
+            with open(temp_filename, "wb") as f:
+                page_writer.write(f)
             
-        print(f"✅ Total elements extracted: {len(all_elements)}")
+            # B. Process ONLY this small file (Low RAM usage)
+            # This is the heavy lifting step.
+            page_elements = partition_pdf(
+                filename=str(temp_filename),
+                
+                # Accuracy Settings
+                strategy="hi_res",
+                infer_table_structure=True,
+                hi_res_model_name=model_name,
+                languages=["eng"],
+                
+                # Image Extraction (Direct to main folder)
+                extract_images_in_pdf=True,
+                extract_image_block_types=["Image", "Table"],
+                extract_image_block_output_dir=str(image_output_dir),
+                extract_image_block_to_payload=False, 
+            )
+            
+            # C. Enrich Metadata (Add correct page number)
+            # Since we split the PDF, 'page_number' will always be 1. We must fix it.
+            for el in page_elements:
+                el_dict = el.to_dict()
+                if "metadata" not in el_dict:
+                    el_dict["metadata"] = {}
+                
+                # Override page number with the REAL loop index
+                el_dict["metadata"]["page_number"] = i + 1
+                elements_buffer.append(el_dict)
+            
+            # D. Yield if buffer is full (or simple page-by-page yield)
+            # Yielding every page ensures the frontend sees progress fast.
+            yield elements_buffer
+            elements_buffer = [] 
+            
+            # E. Force RAM Cleanup
+            gc.collect()
 
-    if not elements_path.exists():
-        raise RuntimeError(
-            "Preprocess failed: filtered_elements.json not created"
-        )
+        except Exception as e:
+            print(f"⚠️ Error processing page {i+1}: {e}")
+            # Don't crash the whole job for one bad page
+            continue
+            
+        finally:
+            # F. Delete temp file immediately
+            if temp_filename.exists():
+                try:
+                    temp_filename.unlink()
+                except Exception:
+                    pass
 
-    # ==================================================
-    # 🔹 MODE: METADATA ONLY (NO CHUNKS, NO DB)
-    # ==================================================
-
-    if mode == "metadata":
-        metadata = extract_document_metadata(
-            elements_file=str(elements_path),
-            pdf_path=pdf_path,
-            company_document_id=company_document_id,
-            extra_metadata=extra_metadata,
-        )
-
-        return {
-            "company_document_id": company_document_id,
-            "revision_number": revision_number,
-            "metadata": metadata,
-            "mode": "metadata",
-        }
-
-    # ==================================================
-    # 🔹 MODE: COMMIT (FULL INGEST)
-    # ==================================================
-
-    if not db_connection:
-        raise RuntimeError(
-            "db_connection is required in commit mode"
-        )
-
-    # --------------------------------------------------
-    # 2️⃣ CONTEXT-AWARE CHUNKING
-    # --------------------------------------------------
-
-    chunker = ContextAwareChunker()
-    chunker.process(
-        input_file=str(elements_path),
-        output_file=str(chunks_path),
-    )
-
-    if not chunks_path.exists():
-        raise RuntimeError(
-            "Chunking failed: chunks.json not created"
-        )
-
-    # --------------------------------------------------
-    # 3️⃣ METADATA ENRICHMENT (AUTHORITATIVE)
-    # --------------------------------------------------
-
-    enrich_chunks(
-        chunks_file=str(chunks_path),
-        output_file=str(enriched_path),
-        pdf_path=pdf_path,
-        company_document_id=company_document_id,
-        extra_metadata=extra_metadata,
-    )
-
-    if not enriched_path.exists():
-        raise RuntimeError("Metadata enrichment failed")
-
-    # --------------------------------------------------
-    # 4️⃣ LOAD DOCUMENTS (STRICT)
-    # --------------------------------------------------
-
-    documents: List[Document] = load_documents(
-        json_path=str(enriched_path)
-    )
-
-    if not documents:
-        raise RuntimeError("No documents loaded for ingestion")
-
-    # --------------------------------------------------
-    # 5️⃣ INGEST INTO VECTOR DB (REVISION-SAFE)
-    # --------------------------------------------------
-
-    ingest_to_pgvector(
-        documents=documents,
-        connection_string=db_connection,
-        company_document_id=company_document_id,
-        revision_number=revision_number,
-    )
-
-    # --------------------------------------------------
-    # 6️⃣ RESET RAG SESSION STATE (OPTIONAL)
-    # --------------------------------------------------
-
-    session_id = extra_metadata.get("session_id")
-    if session_id:
-        clear_used_chunk_ids(session_id)
-
-    # --------------------------------------------------
-    # 7️⃣ RESULT
-    # --------------------------------------------------
-
-    return {
-        "company_document_id": company_document_id,
-        "revision_number": revision_number,
-        "chunk_count": len(documents),
-        "ingested": True,
-        "mode": "commit",
-    }
+    # 7. Final Cleanup
+    print("✅ Streaming preprocessing complete.")
+    gc.collect()

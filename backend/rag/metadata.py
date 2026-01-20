@@ -5,6 +5,7 @@ import sys
 import hashlib
 import tiktoken
 import time
+import re  # ✅ Added for Regex patterns
 from datetime import datetime
 from typing import Dict, Any, List
 
@@ -25,7 +26,7 @@ def count_tokens(text: str) -> int:
 
 def generate_chunk_id(
     company_document_id: str,
-    revision_number: str, # ✅ Changed to str
+    revision_number: str, 
     content: str,
 ) -> str:
     """
@@ -40,7 +41,7 @@ def generate_chunk_id(
 
 
 # ============================================================
-# METADATA EXTRACTION (PHASE 1 — NO DB, NO CHUNKS)
+# METADATA EXTRACTION (PHASE 1 — SMART HEURISTICS)
 # ============================================================
 
 def extract_document_metadata(
@@ -53,72 +54,61 @@ def extract_document_metadata(
     """
     Extract document-level metadata ONLY FROM THE FIRST PAGE.
 
-    STRICT RULES:
-    - ❌ No chunking
-    - ❌ No DB writes
-    - ❌ No guessing / hallucination
-    - ❌ NO IDENTITY FIELDS
-    - ✅ Confidence-based output
-    - ✅ SCANS PAGE 1 ONLY
+    ✅ UPDATED: Uses Regex to distinguish Document ID vs Project Name.
     """
 
     with open(elements_file, "r", encoding="utf-8") as f:
         elements: List[Dict[str, Any]] = json.load(f)
 
-    metadata: Dict[str, Dict[str, Any]] = {}
+    # Initialize with default confidence
+    metadata = {
+        "document_type": {"value": None, "confidence": 0.0},
+        "revision_code": {"value": None, "confidence": 0.0},
+        "project_name":  {"value": None, "confidence": 0.0}, # ✅ New
+        "document_number": {"value": None, "confidence": 0.0} # ✅ New
+    }
 
     # --------------------------------------------------------
-    # REQUIRED USER-EDITABLE FIELDS ONLY
-    # --------------------------------------------------------
-
-    REQUIRED_FIELDS = [
-        "document_type",
-        "revision_code",
-    ]
-
-    for key in REQUIRED_FIELDS:
-        metadata[key] = {
-            "value": None,
-            "confidence": 0.0,
-        }
-
-    # --------------------------------------------------------
-    # SAFE HEURISTICS (OPTIONAL, NON-AUTHORITATIVE)
+    # 🧠 SMART HEURISTICS (Page 1 Only)
     # --------------------------------------------------------
 
     for el in elements:
-        # ✅ NEW: Check Page Number
+        # Check Page Number (Stop scanning after page 1)
         page_number = el.get("metadata", {}).get("page_number", 1)
-        
-        # If we passed page 1, STOP scanning to save time.
         if page_number > 1:
             break
 
-        text = el.get("text") or el.get("content") or ""
+        text = (el.get("text") or el.get("content") or "").strip()
         if not text:
             continue
 
         lower = text.lower()
 
-        # --- Simple Heuristics for Page 1 ---
-        
-        # Example: Detect Document Type from Title
-        if (
-            "basis of design" in lower
-            and metadata["document_type"]["confidence"] < 0.9
-        ):
-            metadata["document_type"] = {
-                "value": "Basis of Design",
-                "confidence": 0.9,
-            }
-        elif (
-            "design basis" in lower
-            and metadata["document_type"]["confidence"] < 0.8
-        ):
-            metadata["document_type"] = {
-                "value": "Basis of Design",
-                "confidence": 0.8,
-            }
+        # --- 1. Detect Document Type ---
+        if "basis of design" in lower and metadata["document_type"]["confidence"] < 0.9:
+            metadata["document_type"] = {"value": "Basis of Design", "confidence": 0.9}
+        elif "design basis" in lower and metadata["document_type"]["confidence"] < 0.8:
+            metadata["document_type"] = {"value": "Basis of Design", "confidence": 0.8}
+
+        # --- 2. Detect Revision Code (Rev 01, Rev A) ---
+        # Regex: Starts with 'Rev' followed by short alphanumeric
+        rev_match = re.search(r'\brev\.?\s*([a-zA-Z0-9]{1,3})\b', lower)
+        if rev_match:
+            metadata["revision_code"] = {"value": rev_match.group(1).upper(), "confidence": 0.8}
+
+        # --- 3. Detect Document Number (Technical ID) ---
+        # Pattern: Long alphanumeric string with dashes (e.g., 363010-BGRB-00508)
+        # Rule: Must contain digits, >8 chars, no spaces
+        if len(text) > 8 and len(text) < 40 and any(c.isdigit() for c in text):
+            if " " not in text and re.search(r'[A-Z0-9]+[-_][A-Z0-9]+', text):
+                if metadata["document_number"]["confidence"] < 0.6:
+                    metadata["document_number"] = {"value": text, "confidence": 0.7}
+
+        # --- 4. Detect Project Name ---
+        # Rule: Contains "Project" or "Development", isn't an ID, isn't a whole paragraph
+        if "project" in lower or "development" in lower or "field" in lower:
+            if 10 < len(text) < 100:
+                metadata["project_name"] = {"value": text, "confidence": 0.6}
 
     # --------------------------------------------------------
     # AUTHORITATIVE OVERRIDES (NON-IDENTITY ONLY)
@@ -153,11 +143,6 @@ def enrich_chunks(
 ) -> Dict[str, Any]:
     """
     Enrich chunk JSON with REQUIRED RAG metadata.
-
-    STRICT RULES:
-    - ❌ Do NOT infer metadata
-    - ❌ Do NOT parse filenames
-    - ✅ Identity lives ONLY in cmetadata
     """
 
     print(f"✨ Enriching chunks from: {chunks_file}")
@@ -202,9 +187,9 @@ def enrich_chunks(
                     "tokens": count_tokens(content),
                     "created_at": created_at,
                     
-                    # ✅ NEW: Pass through location data to DB
+                    # ✅ CRITICAL: Pass Page & BBox to DB for Frontend Highlighting
                     "page_number": base_meta.get("page_number", 1),
-                    "bbox": base_meta.get("bbox", "")
+                    "bbox": base_meta.get("bbox", "") 
                 },
 
                 # -----------------------------
@@ -212,7 +197,7 @@ def enrich_chunks(
                 # -----------------------------
                 "cmetadata": {
                     "company_document_id": company_document_id,
-                    "revision_number": revision_number, # ✅ String (No int conversion)
+                    "revision_number": revision_number, 
                     "revision_code": revision_code,
                     "revision_date": revision_date,
                     "document_type": document_type,
@@ -223,7 +208,7 @@ def enrich_chunks(
                 # -----------------------------
                 "chunk_id": generate_chunk_id(
                     company_document_id,
-                    revision_number, # ✅ String
+                    revision_number,
                     content,
                 ),
                 "parent_id": base_meta.get("parent_id"), # None if parent
@@ -239,7 +224,7 @@ def enrich_chunks(
 
     return {
         "company_document_id": company_document_id,
-        "revision_number": revision_number, # ✅ String
+        "revision_number": revision_number,
         "revision_date": revision_date,
         "chunk_count": len(enriched),
         "source_file": source_file,
@@ -251,20 +236,8 @@ def enrich_chunks(
 # ============================================================
 
 if __name__ == "__main__":
-    """
-    Usage:
-    python metadata.py <chunks.json> <output.json> <pdf_path> 
-                        <company_document_id> <revision_number> 
-                        <revision_date> <source_file>
-    """
-
     if len(sys.argv) != 8:
-        print(
-            "Usage: python metadata.py "
-            "<chunks.json> <output.json> <pdf_path> "
-            "<company_document_id> <revision_number> "
-            "<revision_date> <source_file>"
-        )
+        print("Usage: python metadata.py <chunks.json> <output.json> <pdf_path> <doc_id> <rev_num> <rev_date> <filename>")
         sys.exit(1)
 
     enrich_chunks(
@@ -273,7 +246,7 @@ if __name__ == "__main__":
         pdf_path=sys.argv[3],
         company_document_id=sys.argv[4],
         extra_metadata={
-            "revision_number": sys.argv[5], # ✅ Treat as String
+            "revision_number": sys.argv[5],
             "revision_date": sys.argv[6],
             "source_file": sys.argv[7],
         },

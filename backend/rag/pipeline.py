@@ -2,11 +2,13 @@
 
 from pathlib import Path
 from typing import Dict, Any, List, Literal, Optional
+import json
 
 from langchain_core.documents import Document
 
 from backend.memory.redis_memory import clear_used_chunk_ids
-from backend.rag.preprocess import pdf_to_elements
+# ✅ NEW: Import the streaming preprocessor
+from backend.rag.preprocess import stream_pdf_to_elements
 from backend.rag.chunk import ContextAwareChunker
 from backend.rag.metadata import (
     extract_document_metadata,
@@ -52,6 +54,7 @@ def run_pipeline(
     ❌ No identity stored in `metadata`
     ✅ Identity lives ONLY in `cmetadata`
     ✅ Revision ALWAYS comes from extra_metadata
+    ✅ Uses STREAMING preprocessing to save RAM
     """
 
     # --------------------------------------------------
@@ -80,13 +83,28 @@ def run_pipeline(
     enriched_path = job_dir / "enriched_chunks.json"
 
     # --------------------------------------------------
-    # 1️⃣ PDF → ELEMENTS (ALWAYS REQUIRED)
+    # 1️⃣ PDF → ELEMENTS (STREAMING MODE)
     # --------------------------------------------------
+    # We aggregate the stream here because the next steps (Metadata/Chunking)
+    # expect a full list. For massive scale, those steps would also need to be streams,
+    # but for now, this dramatically reduces peak RAM during the heaviest step (OCR).
 
-    pdf_to_elements(
-        pdf_path=pdf_path,
-        output_json=str(elements_path),
-    )
+    if not elements_path.exists():
+        print(f"📄 Parsing PDF in Streaming Mode...")
+        all_elements = []
+        
+        # Consume the generator page-by-page
+        for batch in stream_pdf_to_elements(pdf_path, str(elements_path)):
+            all_elements.extend(batch)
+            # Optional: Emit a log here if you want granular progress
+            # print(f"   ↳ Processed batch of {len(batch)} elements...")
+
+        # Save the complete JSON once finished
+        # (This file might be large, but it's just text JSON, so it's fine)
+        with open(elements_path, "w", encoding="utf-8") as f:
+            json.dump(all_elements, f, indent=2)
+            
+        print(f"✅ Total elements extracted: {len(all_elements)}")
 
     if not elements_path.exists():
         raise RuntimeError(

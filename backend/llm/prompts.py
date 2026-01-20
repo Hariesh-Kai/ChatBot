@@ -51,36 +51,21 @@ def clean_model_output(text: str) -> str:
 CORE_SYSTEM_PROMPT = """
 You are KavinBase, a senior engineering assistant.
 
-MANDATORY BEHAVIOR:
-- Think silently before answering.
-- Answer ONLY the question asked.
-- Do NOT explain unless explicitly requested.
-- Do NOT teach unless explicitly requested.
-- Do NOT restate the question.
-- Do NOT add filler, summaries, or conclusions.
-- Do NOT include meta commentary.
-
-FACT DISCIPLINE:
-- Use ONLY the provided document context.
-- Do NOT use external knowledge.
-- Do NOT fabricate values.
-
-ALLOWED (IMPORTANT):
+CITATION RULES (MANDATORY):
+- Answer the question using ONLY the provided document context.
+- Cite the Page Number for every fact. Format: "The pressure is 50 bar [Page 12]."
 - If the document gives a RANGE, report the range clearly.
-- If the document gives multiple explicit values, summarize them briefly.
-- If the document implies a value through a table or specification,
-  state it cautiously using the document wording.
+- If the answer comes from a TABLE, format it as a Markdown Table.
 
-FORMATTING RULES:
-- If the retrieved information comes from a table, YOU MUST FORMAT YOUR ANSWER AS A MARKDOWN TABLE.
-- Do not list tabular data as bullet points. Use a standard Markdown table structure (e.g. | Column 1 | Column 2 |).
-- Format numbers clearly (e.g. use "1,000" instead of "1000" if appropriate).
+SEMANTIC DISAMBIGUATION RULES:
+- Distinguish between the **Document Title** (words describing the scope, e.g., 'Basis of Design') and the **Document Number** (alphanumeric code, e.g., '363010-BGRB').
+- If asked for the Title, prefer the descriptive text.
+- If asked for the Project Name, look for "Project" or "Field Development".
 
 FORBIDDEN:
-- Guessing unsupported values
-- Introducing new numbers
-- Explaining reasoning steps in the final answer
-- Self-justifying phrases (e.g., “I inferred”, “no inference was made”)
+- Do NOT guess values or page numbers.
+- Do NOT use external knowledge.
+- Do NOT include meta commentary like "Based on the text...".
 """.strip()
 
 
@@ -137,26 +122,11 @@ RULES:
 EXAMPLE FORMAT:
 <thinking>
 The user is asking about X.
-Document A mentions X is 500.
-Document B mentions X is 505.
+Document A mentions X is 500 [Page 2].
+Document B mentions X is 505 [Page 4].
 I should mention the range.
 </thinking>
-Based on the documents, X ranges between 500 and 505.
-""".strip()
-
-
-# ============================================================
-# DOCUMENT USAGE GUIDANCE
-# ============================================================
-
-REASONING_GUIDANCE = """
-RULES FOR ANSWERING:
-- If the document explicitly states the answer → state it directly.
-- If the document provides a clear range → report the range.
-- If the document provides tabular values → extract the relevant value.
-- If the document partially supports the answer → answer conservatively.
-- If the document does not contain the answer → say so briefly.
-- Prefer a cautious answer over silence when evidence exists.
+Based on the documents, X ranges between 500 and 505 [Page 2, 4].
 """.strip()
 
 
@@ -184,6 +154,57 @@ Just the text.
 
 
 # ============================================================
+# SHARED BUILDER (DRY Principle)
+# ============================================================
+
+def _build_generic_prompt(question, context_chunks, history, answer_style, is_cot=False):
+    
+    # ✅ FIX Q4: INJECT PAGE NUMBERS INTO CONTEXT
+    if context_chunks:
+        context_lines = []
+        for c in context_chunks:
+            # Extract metadata safely
+            meta = c.get("metadata", {})
+            page = meta.get("page_number", "?")
+            section = meta.get("section", "General")
+            content = c.get("content", "")
+            
+            # Format: [Page 5 | Section: Overview] Content...
+            context_lines.append(f"[Page {page} | Section: {section}]\n{content}")
+            
+        context_text = "\n\n".join(context_lines)
+        system_instruction = COT_SYSTEM_PROMPT if is_cot else CORE_SYSTEM_PROMPT
+    else:
+        # Fallback for "Hi" messages with no docs
+        context_text = "No document context available."
+        system_instruction = "You are KavinBase, a helpful assistant. Answer politely. Do not hallucinate."
+
+    # Style
+    style_key = getattr(answer_style, "verbosity", "short")
+    style_instruction = STYLE_INSTRUCTIONS.get(style_key, STYLE_INSTRUCTIONS["short"])
+
+    # Build Prompt
+    messages = []
+    messages.append(f"<|start_header_id|>system<|end_header_id|>\n{system_instruction}\n\n{style_instruction}\n<|eot_id|>")
+
+    if history:
+        for msg in history[-4:]:
+            clean_content = clean_model_output(msg['content'])
+            role = "user" if msg['role'] == "user" else "assistant"
+            messages.append(f"<|start_header_id|>{role}<|end_header_id|>\n{clean_content}<|eot_id|>")
+
+    messages.append(f"""<|start_header_id|>user<|end_header_id|>
+CONTEXT:
+{context_text}
+
+QUESTION:
+{question}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+""")
+
+    return "".join(messages)
+
+
+# ============================================================
 # PROMPT BUILDERS — HUGGINGFACE (CHAT MODELS)
 # ============================================================
 
@@ -196,48 +217,7 @@ def build_prompt_hf(
     """
     Balanced prompt for HF chat models (Standard/Fast Mode).
     """
-
-    if context_chunks:
-        context_text = "\n\n".join(
-            f"[{c.get('section', 'Unknown')}]\n{c['content']}"
-            for c in context_chunks
-            if c.get("content")
-        )
-    else:
-        context_text = "Document context is limited or unavailable."
-
-    # 🚀 DYNAMIC STYLE INJECTION
-    # Default to 'short' if style is missing
-    style_key = getattr(answer_style, "verbosity", "short")
-    style_instruction = STYLE_INSTRUCTIONS.get(style_key, STYLE_INSTRUCTIONS["short"])
-
-    messages = []
-
-    messages.append(
-        f"<|system|>\n{CORE_SYSTEM_PROMPT}\n\n{style_instruction}\n\n{REASONING_GUIDANCE}\n<|end|>"
-    )
-
-    if history:
-        for msg in history[-4:]:
-            messages.append(
-                f"<|{msg['role']}|>\n{msg['content']}\n<|end|>"
-            )
-
-    messages.append(
-        f"""
-<|user|>
-DOCUMENT CONTEXT:
-{context_text}
-
-QUESTION:
-{question}
-<|end|>
-
-<|assistant|>
-""".strip()
-    )
-
-    return "\n".join(messages)
+    return _build_generic_prompt(question, context_chunks, history, answer_style, is_cot=False)
 
 
 # ============================================================
@@ -251,43 +231,8 @@ def build_prompt_cot(
 ) -> str:
     """
     Builds a prompt that forces Chain of Thought reasoning.
-    Used for Base/Net models to improve accuracy without multi-call overhead.
     """
-    if context_chunks:
-        context_text = "\n\n".join(
-            f"[{c.get('section', 'Unknown')}]\n{c['content']}"
-            for c in context_chunks
-            if c.get("content")
-        )
-    else:
-        context_text = "Document context is limited or unavailable."
-
-    # 1. System Prompt (CoT Specific)
-    messages = [f"<|system|>\n{COT_SYSTEM_PROMPT}\n<|end|>"]
-
-    # 2. History (Optional context)
-    if history:
-        for msg in history[-4:]:
-            # Clean history to remove previous thinking tags to save context window
-            clean_content = clean_model_output(msg['content']) 
-            messages.append(f"<|{msg['role']}|>\n{clean_content}\n<|end|>")
-
-    # 3. User Question + Context
-    messages.append(
-        f"""
-<|user|>
-DOCUMENT CONTEXT:
-{context_text}
-
-QUESTION:
-{question}
-<|end|>
-
-<|assistant|>
-""".strip()
-    )
-
-    return "\n".join(messages)
+    return _build_generic_prompt(question, context_chunks, history, None, is_cot=True)
 
 
 # ============================================================
@@ -301,46 +246,10 @@ def build_prompt_gguf(
 ) -> str:
     """
     Balanced prompt for GGUF models.
-    Updated to use strict Llama-3 tokens to prevent infinite looping.
     """
-
-    # ✅ FIX: Handle conversational/empty context gracefully
-    if context_chunks:
-        context_text = "\n".join(
-            f"- {c['content']}"
-            for c in context_chunks
-            if c.get("content")
-        )
-        system_instruction = (
-            "You are KavinBase, a senior engineering assistant. "
-            "Answer the user's question using ONLY the provided context.\n"
-            "If the answer requires data from a table, FORMAT IT AS A MARKDOWN TABLE."
-        )
-    else:
-        # ✅ If no documents found, switch to polite assistant mode
-        context_text = "No document context provided."
-        system_instruction = (
-            "You are KavinBase, a helpful AI assistant. "
-            "Answer the user politely. Do not hallucinate document facts."
-        )
-
-    # 🚀 DYNAMIC STYLE INJECTION
-    style_key = getattr(answer_style, "verbosity", "short")
-    style_instruction = STYLE_INSTRUCTIONS.get(style_key, STYLE_INSTRUCTIONS["short"])
-
-    # 🔥 FIX: Removed <|begin_of_text|> to prevent double-init warning
-    return f"""<|start_header_id|>system<|end_header_id|>
-
-{system_instruction}
-
-{style_instruction}
-
-CONTEXT:
-{context_text}
-<|eot_id|><|start_header_id|>user<|end_header_id|>
-
-{question}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-"""
+    # GGUF often doesn't need full history or manages it differently, 
+    # but we can pass None for history if we want to save context window.
+    return _build_generic_prompt(question, context_chunks, None, answer_style, is_cot=False)
 
 
 # ============================================================

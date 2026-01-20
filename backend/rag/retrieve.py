@@ -1,6 +1,7 @@
 # backend/rag/retrieve.py
 
 import uuid
+import json # ✅ Added json import to parse bbox strings
 from typing import List, Dict, Any, Optional
 
 from langchain_core.documents import Document
@@ -85,7 +86,7 @@ def retrieve_rag_context(
     2. Deduplication
     3. Reranking (FlashRank)
     4. Parent Document Resolution
-    5. Formatting
+    5. Formatting & BBox Parsing
     """
 
     # 1. Setup Filters
@@ -133,19 +134,38 @@ def retrieve_rag_context(
         vector_store.collection_name
     )
 
-    # 7. Format Output for LLM
+    # 7. Format Output for LLM & Frontend
     rag_chunks = []
     for d in final_docs:
         cid = d.metadata.get("chunk_id") or d.metadata.get("doc_id") or str(uuid.uuid4())
         
+        # ✅ FIX: Safely parse BBOX for Frontend
+        # The DB might store it as a JSON string (e.g., "[[10, 20, 100, 200]]")
+        bbox_raw = d.metadata.get("bbox")
+        bbox_data = []
+        
+        try:
+            if isinstance(bbox_raw, str) and bbox_raw.strip().startswith("["):
+                bbox_data = json.loads(bbox_raw)
+            elif isinstance(bbox_raw, list):
+                bbox_data = bbox_raw
+        except Exception:
+            bbox_data = []
+
         rag_chunks.append({
             "id": cid,
             "content": d.page_content,
             "section": d.metadata.get("section"),
             "chunk_type": d.metadata.get("type"),
             "score": d.metadata.get("rerank_score", 0.0),
-            # Pass raw metadata for debugging/UI
-            "metadata": d.metadata 
+            
+            # ✅ Enhanced Metadata for Frontend "View Source"
+            "metadata": {
+                "page_number": int(d.metadata.get("page_number", 1)),
+                "bbox": bbox_data, # Frontend highlighting relies on this!
+                "source_file": d.metadata.get("source_file", ""),
+                "section": d.metadata.get("section", ""),
+            }
         })
 
     return rag_chunks

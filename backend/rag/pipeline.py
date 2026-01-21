@@ -3,11 +3,12 @@
 from pathlib import Path
 from typing import Dict, Any, List, Literal, Optional
 import json
+import shutil
 
 from langchain_core.documents import Document
 
 from backend.memory.redis_memory import clear_used_chunk_ids
-# ✅ NEW: Import the streaming preprocessor
+# ✅ Import the streaming preprocessor
 from backend.rag.preprocess import stream_pdf_to_elements
 from backend.rag.chunk import ContextAwareChunker
 from backend.rag.metadata import (
@@ -40,21 +41,16 @@ def run_pipeline(
     mode: PipelineMode = "commit",
 ) -> Dict[str, Any]:
     """
-    Enterprise RAG ingestion pipeline (FINAL, CONTRACT-SAFE).
+    Enterprise RAG ingestion pipeline (OPTIMIZED).
 
     MODES
     ─────────────────────────────────────
-    metadata → extract metadata ONLY
-    commit   → chunk + enrich + ingest
+    metadata → extract metadata ONLY (Page 1 scan)
+    commit   → chunk + enrich + ingest (Full document)
 
-    HARD GUARANTEES
-    ─────────────────────────────────────
-    ❌ No DB writes in metadata mode
-    ❌ No chunking in metadata mode
-    ❌ No identity stored in `metadata`
-    ✅ Identity lives ONLY in `cmetadata`
-    ✅ Revision ALWAYS comes from extra_metadata
-    ✅ Uses STREAMING preprocessing to save RAM
+    OPTIMIZATION:
+    - Metadata mode STOPS OCR after Page 1.
+    - Metadata mode uses a separate 'page1_preview.json' to avoid corrupting the full cache.
     """
 
     # --------------------------------------------------
@@ -75,41 +71,46 @@ def run_pipeline(
         raise RuntimeError("extra_metadata.source_file is required")
 
     # --------------------------------------------------
-    # PATHS
+    # PATHS & MODE HANDLING
     # --------------------------------------------------
 
-    elements_path = job_dir / "filtered_elements.json"
+    # ✅ OPTIMIZATION: Separate cache for Preview vs Full Ingest
+    # This ensures we don't accidentally treat a partial Page 1 scan as the full document later.
+    if mode == "metadata":
+        elements_path = job_dir / "page1_preview.json"
+    else:
+        elements_path = job_dir / "filtered_elements.json"
+
     chunks_path = job_dir / "chunks.json"
     enriched_path = job_dir / "enriched_chunks.json"
 
     # --------------------------------------------------
     # 1️⃣ PDF → ELEMENTS (STREAMING MODE)
     # --------------------------------------------------
-    # We aggregate the stream here because the next steps (Metadata/Chunking)
-    # expect a full list. For massive scale, those steps would also need to be streams,
-    # but for now, this dramatically reduces peak RAM during the heaviest step (OCR).
 
     if not elements_path.exists():
-        print(f"📄 Parsing PDF in Streaming Mode...")
+        print(f"📄 Parsing PDF in Streaming Mode (Mode={mode})...")
         all_elements = []
         
         # Consume the generator page-by-page
         for batch in stream_pdf_to_elements(pdf_path, str(elements_path)):
             all_elements.extend(batch)
-            # Optional: Emit a log here if you want granular progress
-            # print(f"   ↳ Processed batch of {len(batch)} elements...")
+            
+            # 🔥 CRITICAL OPTIMIZATION: 
+            # If we only need metadata, we STOP after the first batch (Page 1).
+            # This saves massive time/compute by not OCR-ing the rest of the doc.
+            if mode == "metadata":
+                print("🛑 [PIPELINE] Metadata extraction: Stopping OCR after Page 1.")
+                break
 
-        # Save the complete JSON once finished
-        # (This file might be large, but it's just text JSON, so it's fine)
+        # Save the JSON (Partial or Full)
         with open(elements_path, "w", encoding="utf-8") as f:
             json.dump(all_elements, f, indent=2)
             
-        print(f"✅ Total elements extracted: {len(all_elements)}")
+        print(f"✅ Extracted {len(all_elements)} elements.")
 
     if not elements_path.exists():
-        raise RuntimeError(
-            "Preprocess failed: filtered_elements.json not created"
-        )
+        raise RuntimeError(f"Preprocess failed: {elements_path.name} not created")
 
     # ==================================================
     # 🔹 MODE: METADATA ONLY (NO CHUNKS, NO DB)
@@ -135,9 +136,7 @@ def run_pipeline(
     # ==================================================
 
     if not db_connection:
-        raise RuntimeError(
-            "db_connection is required in commit mode"
-        )
+        raise RuntimeError("db_connection is required in commit mode")
 
     # --------------------------------------------------
     # 2️⃣ CONTEXT-AWARE CHUNKING
@@ -150,9 +149,7 @@ def run_pipeline(
     )
 
     if not chunks_path.exists():
-        raise RuntimeError(
-            "Chunking failed: chunks.json not created"
-        )
+        raise RuntimeError("Chunking failed: chunks.json not created")
 
     # --------------------------------------------------
     # 3️⃣ METADATA ENRICHMENT (AUTHORITATIVE)
@@ -192,7 +189,7 @@ def run_pipeline(
     )
 
     # --------------------------------------------------
-    # 6️⃣ RESET RAG SESSION STATE (OPTIONAL)
+    # 6️⃣ RESET RAG SESSION STATE
     # --------------------------------------------------
 
     session_id = extra_metadata.get("session_id")

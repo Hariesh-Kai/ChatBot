@@ -88,12 +88,21 @@ function SourcePage({ source, zoom }: { source: RagSource, zoom: number }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(false);
 
-    // 🔥 CRITICAL FIX: Handle legacy data ("page_number") vs new data ("page")
-    // This prevents 'undefined' in the URL if you are viewing old chat history
+    // Handle legacy data ("page_number") vs new data ("page")
     // It prioritizes 'page' (new backend), falls back to 'page_number' (old backend), or defaults to 1.
     const safePage = source.page ?? (source as any).page_number ?? 1;
 
-    const imageUrl = `${API_BASE}/render/image?file=${encodeURIComponent(source.fileName)}&page=${safePage}&company_doc_id=${source.company_doc_id}&revision=${source.revision}&bbox=${source.bbox || ""}`;
+    // ✅ CRITICAL FIX: Safe Stringify for BBOX
+    // If bbox is an array (from DB), stringify it so backend receives valid JSON
+    // If it's a string, use as is. If undefined, use empty string.
+    let safeBbox = "";
+    if (Array.isArray(source.bbox)) {
+        safeBbox = JSON.stringify(source.bbox);
+    } else if (typeof source.bbox === 'string') {
+        safeBbox = source.bbox;
+    }
+
+    const imageUrl = `${API_BASE}/render/image?file=${encodeURIComponent(source.fileName)}&page=${safePage}&company_doc_id=${source.company_doc_id}&revision=${source.revision}&bbox=${encodeURIComponent(safeBbox)}`;
 
     return (
         <div className="relative group flex flex-col items-center">

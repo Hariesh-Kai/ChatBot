@@ -62,10 +62,10 @@ def extract_document_metadata(
 
     # Initialize with default confidence
     metadata = {
-        "document_type": {"value": None, "confidence": 0.0},
+        "document_title": {"value": None, "confidence": 0.0},
         "revision_code": {"value": None, "confidence": 0.0},
-        "project_name":  {"value": None, "confidence": 0.0}, # ✅ New
-        "document_number": {"value": None, "confidence": 0.0} # ✅ New
+        "project_name":  {"value": None, "confidence": 0.0}, # ✅ New field
+        "document_number": {"value": None, "confidence": 0.0} # ✅ New field
     }
 
     # --------------------------------------------------------
@@ -73,7 +73,7 @@ def extract_document_metadata(
     # --------------------------------------------------------
 
     for el in elements:
-        # Check Page Number (Stop scanning after page 1)
+        # Check Page Number (Stop scanning after page 1 to save time/errors)
         page_number = el.get("metadata", {}).get("page_number", 1)
         if page_number > 1:
             break
@@ -84,25 +84,32 @@ def extract_document_metadata(
 
         lower = text.lower()
 
-        # --- 1. Detect Document Type ---
-        if "basis of design" in lower and metadata["document_type"]["confidence"] < 0.9:
-            metadata["document_type"] = {"value": "Basis of Design", "confidence": 0.9}
-        elif "design basis" in lower and metadata["document_type"]["confidence"] < 0.8:
-            metadata["document_type"] = {"value": "Basis of Design", "confidence": 0.8}
+        # --- 1. Detect Document Number (Technical ID) ---
+        # Pattern: Long alphanumeric string (e.g., 363010BGRB00508 or with dashes)
+        # Rule: Must contain digits, >8 chars, no spaces
+        if len(text) > 8 and len(text) < 40 and any(c.isdigit() for c in text):
+            # Check for ID-like structure (no spaces, mix of letters/numbers)
+            if " " not in text and re.search(r'[A-Z0-9]+', text):
+                if metadata["document_number"]["confidence"] < 0.8:
+                    metadata["document_number"] = {"value": text, "confidence": 0.9}
+                    continue # If it is an ID, it is not a title
 
-        # --- 2. Detect Revision Code (Rev 01, Rev A) ---
+        # --- 2. Detect Document Title ---
+        # Capture the FULL text line if it contains title keywords
+        if "basis of design" in lower:
+            clean_title = text.replace("\n", " ").strip()
+            if len(clean_title) > 10 and metadata["document_title"]["confidence"] < 0.9:
+                metadata["document_title"] = {"value": clean_title, "confidence": 0.9}
+        
+        elif "design basis" in lower and metadata["document_title"]["confidence"] < 0.8:
+            clean_title = text.replace("\n", " ").strip()
+            metadata["document_title"] = {"value": clean_title, "confidence": 0.8}
+
+        # --- 3. Detect Revision Code (Rev 01, Rev A) ---
         # Regex: Starts with 'Rev' followed by short alphanumeric
         rev_match = re.search(r'\brev\.?\s*([a-zA-Z0-9]{1,3})\b', lower)
         if rev_match:
             metadata["revision_code"] = {"value": rev_match.group(1).upper(), "confidence": 0.8}
-
-        # --- 3. Detect Document Number (Technical ID) ---
-        # Pattern: Long alphanumeric string with dashes (e.g., 363010-BGRB-00508)
-        # Rule: Must contain digits, >8 chars, no spaces
-        if len(text) > 8 and len(text) < 40 and any(c.isdigit() for c in text):
-            if " " not in text and re.search(r'[A-Z0-9]+[-_][A-Z0-9]+', text):
-                if metadata["document_number"]["confidence"] < 0.6:
-                    metadata["document_number"] = {"value": text, "confidence": 0.7}
 
         # --- 4. Detect Project Name ---
         # Rule: Contains "Project" or "Development", isn't an ID, isn't a whole paragraph
@@ -120,11 +127,13 @@ def extract_document_metadata(
             "confidence": 1.0,
         }
 
+    # Map generic doc_type to title if title wasn't found automatically
     if "document_type" in extra_metadata:
-        metadata["document_type"] = {
-            "value": extra_metadata["document_type"],
-            "confidence": 1.0,
-        }
+        if not metadata["document_title"]["value"]:
+            metadata["document_title"] = {
+                "value": extra_metadata["document_type"],
+                "confidence": 1.0,
+            }
 
     return metadata
 

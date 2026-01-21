@@ -31,7 +31,10 @@ export interface RagSource {
   id: string;
   fileName: string; // ✅ Fixed: Must be camelCase to match Backend & MessageBubble
   page: number;
-  bbox?: string;    // JSON string "[[x,y], ...]"
+  
+  // ✅ FIX: Allow array (from backend) or string to handle legacy/mismatches safely
+  bbox?: any;    
+
   company_doc_id?: string;
   revision?: number;
   text?: string;    // Snippet text

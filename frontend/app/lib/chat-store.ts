@@ -61,7 +61,7 @@ export function loadChats(): ChatSession[] {
 
     return normalized;
   } catch (err) {
-    console.error("❌ Failed to load chats. Resetting storage.", err);
+    console.error(" Failed to load chats. Resetting storage.", err);
     localStorage.removeItem(KEY);
     return [];
   }
@@ -77,6 +77,6 @@ export function saveChats(chats: ChatSession[]) {
   try {
     localStorage.setItem(KEY, JSON.stringify(chats));
   } catch (err) {
-    console.error("❌ Failed to save chats", err);
+    console.error(" Failed to save chats", err);
   }
 }

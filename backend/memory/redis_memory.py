@@ -22,7 +22,7 @@ try:
     )
     r.ping()
 except Exception as e:
-    print(f"⚠️ Redis unavailable: {e}")
+    print(f"Redis unavailable: {e}")
     r = None  # graceful degradation
 
 # ============================================================
@@ -49,7 +49,7 @@ def _key_rag_debug(session_id: str) -> str:
     return f"rag:debug:{session_id}"
 
 # ============================================================
-# 🧠 TOPIC TRACKING (TEXT, NOT HASH)
+#  TOPIC TRACKING (TEXT, NOT HASH)
 # ============================================================
 
 def get_active_topic(session_id: str) -> Optional[str]:
@@ -58,7 +58,7 @@ def get_active_topic(session_id: str) -> Optional[str]:
     try:
         return r.get(_key_topic(session_id))
     except Exception as e:
-        print(f"⚠️ Redis get topic failed: {e}")
+        print(f"Redis get topic failed: {e}")
         return None
 
 def set_active_topic(session_id: str, topic_text: str):
@@ -81,7 +81,7 @@ def set_active_topic(session_id: str, topic_text: str):
             topic_text,
         )
     except Exception as e:
-        print(f"⚠️ Redis set topic failed: {e}")
+        print(f"Redis set topic failed: {e}")
 
 def reset_topic(session_id: str):
     if not session_id or not r:
@@ -90,10 +90,10 @@ def reset_topic(session_id: str):
         r.delete(_key_topic(session_id))
         r.delete(_key_used_chunks(session_id))
     except Exception as e:
-        print(f"⚠️ Redis reset topic failed: {e}")
+        print(f"Redis reset topic failed: {e}")
 
 # ============================================================
-# 🧠 CHUNK USAGE STATE
+#  CHUNK USAGE STATE
 # ============================================================
 
 def get_used_chunk_ids(session_id: str) -> Set[str]:
@@ -110,7 +110,7 @@ def get_used_chunk_ids(session_id: str) -> Set[str]:
             return set(ids)
 
     except Exception as e:
-        print(f"⚠️ Corrupted used_chunks for {session_id}: {e}")
+        print(f"Corrupted used_chunks for {session_id}: {e}")
 
     # corrupted state → reset
     try:
@@ -134,7 +134,7 @@ def add_used_chunk_ids(session_id: str, chunk_ids: List[str]):
             json.dumps(list(updated)),
         )
     except Exception as e:
-        print(f"⚠️ Redis add_used_chunk_ids failed: {e}")
+        print(f"Redis add_used_chunk_ids failed: {e}")
 
 def clear_used_chunk_ids(session_id: str):
     if not session_id or not r:
@@ -142,10 +142,10 @@ def clear_used_chunk_ids(session_id: str):
     try:
         r.delete(_key_used_chunks(session_id))
     except Exception as e:
-        print(f"⚠️ Redis clear used_chunks failed: {e}")
+        print(f"Redis clear used_chunks failed: {e}")
 
 # ============================================================
-# 🧠 LAST REWRITTEN QUERY
+#  LAST REWRITTEN QUERY
 # ============================================================
 
 def get_last_rewritten_query(session_id: str) -> Optional[str]:
@@ -154,7 +154,7 @@ def get_last_rewritten_query(session_id: str) -> Optional[str]:
     try:
         return r.get(_key_last_query(session_id))
     except Exception as e:
-        print(f"⚠️ Redis get last_query failed: {e}")
+        print(f"Redis get last_query failed: {e}")
         return None
 
 def set_last_rewritten_query(session_id: str, query: str):
@@ -167,7 +167,7 @@ def set_last_rewritten_query(session_id: str, query: str):
             query,
         )
     except Exception as e:
-        print(f"⚠️ Redis set last_query failed: {e}")
+        print(f"Redis set last_query failed: {e}")
 
 # ============================================================
 # 🧪 RAG DEBUG SNAPSHOT
@@ -183,7 +183,7 @@ def save_rag_debug(session_id: str, payload: Dict[str, Any]):
             json.dumps(payload),
         )
     except Exception as e:
-        print(f"⚠️ Redis save_rag_debug failed: {e}")
+        print(f"Redis save_rag_debug failed: {e}")
 
 def get_rag_debug(session_id: str) -> Optional[Dict[str, Any]]:
     if not session_id or not r:
@@ -195,7 +195,7 @@ def get_rag_debug(session_id: str) -> Optional[Dict[str, Any]]:
             return None
         return json.loads(data)
     except Exception as e:
-        print(f"⚠️ Corrupted rag_debug for {session_id}: {e}")
+        print(f"Corrupted rag_debug for {session_id}: {e}")
         try:
             r.delete(_key_rag_debug(session_id))
         except Exception:
@@ -208,7 +208,7 @@ def clear_rag_debug(session_id: str):
     try:
         r.delete(_key_rag_debug(session_id))
     except Exception as e:
-        print(f"⚠️ Redis clear_rag_debug failed: {e}")
+        print(f"Redis clear_rag_debug failed: {e}")
 
 def reset_rag_state(session_id: str):
     """
@@ -228,5 +228,5 @@ def reset_rag_state(session_id: str):
             _key_rag_debug(session_id),
         )
     except Exception as e:
-        print(f"⚠️ Redis reset_rag_state failed: {e}")
+        print(f"Redis reset_rag_state failed: {e}")
 

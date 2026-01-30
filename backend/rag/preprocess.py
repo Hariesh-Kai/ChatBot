@@ -28,7 +28,8 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
     Yields:
         List[dict]: A batch of processed elements (e.g., one page worth).
     """
-    
+    print(f"[PREPROCESS] Starting PDF parse: {pdf_path}")
+
     pdf_path = Path(pdf_path)
     output_json = Path(output_json)
     
@@ -62,7 +63,7 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
         total_pages = len(reader.pages)
         print(f"📄 Document has {total_pages} pages. Starting stream...")
     except Exception as e:
-        print(f"❌ Failed to read PDF: {e}")
+        print(f" Failed to read PDF: {e}")
         return
 
     elements_buffer = []
@@ -117,7 +118,7 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
             gc.collect()
 
         except Exception as e:
-            print(f"⚠️ Error processing page {i+1}: {e}")
+            print(f"Error processing page {i+1}: {e}")
             # Don't crash the whole job for one bad page
             continue
             
@@ -128,7 +129,9 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
                     temp_filename.unlink()
                 except Exception:
                     pass
-
+        
     # 7. Final Cleanup
-    print("✅ Streaming preprocessing complete.")
+
+    
+    print("Streaming preprocessing complete.")
     gc.collect()

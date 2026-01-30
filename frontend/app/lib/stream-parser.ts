@@ -21,6 +21,7 @@ export type StreamFrame =
 
 export class StreamParser {
   private buffer = "";
+  private textBuffer = ""; // 🔥 NEW: token coalescing buffer
 
   /**
    * Push raw streamed chunk into parser.
@@ -36,10 +37,25 @@ export class StreamParser {
       const eventIdx = this.buffer.indexOf(UI_EVENT_PREFIX);
 
       // -------------------------------------------------
-      // No UI event prefix found → emit nothing yet
-      // (wait for more data to avoid partial loss)
+      // NO UI EVENT → accumulate text safely
       // -------------------------------------------------
       if (eventIdx === -1) {
+        this.textBuffer += this.buffer;
+        this.buffer = "";
+
+        // 🔥 Flush only when it "looks human"
+        const shouldFlush =
+          this.textBuffer.length > 20 ||
+          /[\s.,!?]\s*$/.test(this.textBuffer);
+
+        if (shouldFlush) {
+          frames.push({
+            type: "text",
+            value: this.textBuffer,
+          });
+          this.textBuffer = "";
+        }
+
         break;
       }
 
@@ -47,10 +63,12 @@ export class StreamParser {
       // Emit text BEFORE UI event
       // -------------------------------------------------
       if (eventIdx > 0) {
+        this.textBuffer += this.buffer.slice(0, eventIdx);
         frames.push({
           type: "text",
-          value: this.buffer.slice(0, eventIdx),
+          value: this.textBuffer,
         });
+        this.textBuffer = "";
         this.buffer = this.buffer.slice(eventIdx);
       }
 
@@ -59,8 +77,7 @@ export class StreamParser {
       // -------------------------------------------------
       const newlineIdx = this.buffer.indexOf("\n");
       if (newlineIdx === -1) {
-        // Incomplete UI event → wait for more data
-        break;
+        break; // wait for more data
       }
 
       const line = this.buffer.slice(0, newlineIdx);
@@ -89,25 +106,25 @@ export class StreamParser {
    * MUST be called when stream completes.
    */
   flush(): StreamFrame[] {
-    if (!this.buffer) return [];
+    const frames: StreamFrame[] = [];
 
-    const remaining = this.buffer;
-    this.buffer = "";
-
-    // Try parse as UI event first
-    if (remaining.startsWith(UI_EVENT_PREFIX)) {
-      try {
-        const evt = parseLLMUIEvent(remaining);
-        if (evt) {
-          return [{ type: "event", value: evt }];
-        }
-      } catch {
-        // fall through
-      }
+    if (this.textBuffer) {
+      frames.push({
+        type: "text",
+        value: this.textBuffer,
+      });
+      this.textBuffer = "";
     }
 
-    // Fallback: emit remaining text
-    return [{ type: "text", value: remaining }];
+    if (this.buffer) {
+      frames.push({
+        type: "text",
+        value: this.buffer,
+      });
+      this.buffer = "";
+    }
+
+    return frames;
   }
 
   /**
@@ -115,5 +132,6 @@ export class StreamParser {
    */
   reset(): void {
     this.buffer = "";
+    this.textBuffer = "";
   }
 }

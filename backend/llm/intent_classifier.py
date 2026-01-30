@@ -63,7 +63,7 @@ _GREETINGS = {
     "good morning", "good afternoon", "good evening",
 }
 
-# ✅ UPDATED: Added "more detail" triggers
+#  UPDATED: Added "more detail" triggers
 _FOLLOW_UP_TRIGGERS = {
     "this", "that", "it", "again", "above", "previous",
     "same", "earlier", "explain more", "tell more",
@@ -81,7 +81,7 @@ def _fast_intent_check(question: str) -> Intent | None:
     if not q:
         return "fact_lookup"
 
-    if q in _GREETINGS:
+    if any(q.startswith(g) for g in _GREETINGS):
         return "greeting"
 
     tokens = token_count(q)

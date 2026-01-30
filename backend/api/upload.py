@@ -15,13 +15,13 @@ from backend.state.job_state import (
     mark_job_ready,
 )
 
-# ✅ Import MinIO Upload Function
+#  Import MinIO Upload Function
 from backend.storage.minio_client import upload_pdf as minio_upload_pdf
 
-# ✅ Import active document persistence
-from backend.memory.pg_memory import save_active_document
+#  Import active document persistence
+from backend.state.job_state import save_active_document
 
-# ✅ Import duplicate checker
+#  Import duplicate checker
 from backend.rag.ingest import metadata_exists
 
 # ============================================================
@@ -99,6 +99,9 @@ class CommitResponse(BaseModel):
     status: str
 
 
+CONFIDENCE_THRESHOLD = 0.6
+
+
 # ============================================================
 # PHASE 1 — UPLOAD + METADATA EXTRACTION ONLY
 # ============================================================
@@ -143,15 +146,19 @@ def upload_pdf(
             shutil.copyfileobj(file.file, f)
         print(f"💾 [PHASE 1] File saved locally: {pdf_path}")
     except Exception as e:
-        print(f"❌ [PHASE 1] Save Failed: {e}")
+        print(f" [PHASE 1] Save Failed: {e}")
         raise HTTPException(500, f"Failed to save PDF: {e}")
 
+
     # --------------------------------------------------------
-    # METADATA-ONLY PIPELINE
+    # METADATA-ONLY PIPELINE (PHASE 1)
     # --------------------------------------------------------
+
+    metadata: Dict[str, MetadataField] = {}
+    missing: List[str] = []
+
     try:
-        print(f"🔍 [PHASE 1] Extracting Metadata...")
-        result = run_pipeline(
+        for event in run_pipeline(
             pdf_path=str(pdf_path),
             job_dir=str(job_dir),
             company_document_id=company_document_id,
@@ -159,50 +166,30 @@ def upload_pdf(
                 "company_document_id": company_document_id,
                 "revision_number": str(revision_number),
                 "source_file": file.filename,
-                "session_id": session_id,
             },
             mode="metadata",
-        )
-        print(f"✅ [PHASE 1] Metadata Extracted.")
+        ):
+            # We only care about metadata extraction result
+            if isinstance(event, dict) and event.get("type") == "REQUEST_METADATA":
+                for field in event["fields"]:
+                    key = field["key"]
+                    value = field.get("value")
+                    confidence = field.get("confidence")
+
+                    metadata[key] = MetadataField(
+                        key=key,
+                        value=value,
+                        confidence=confidence,
+                    )
+
+                    # 🔥 CONFIDENCE → MISSING LOGIC
+                    if not value or confidence is None or confidence < CONFIDENCE_THRESHOLD:
+                        missing.append(key)
+
     except Exception as e:
-        print(f"❌ [PHASE 1] Metadata Pipeline Failed: {e}")
-        raise HTTPException(500, f"Pipeline failed: {e}")
+        print(f"[PHASE 1] Metadata extraction failed: {e}")
+        raise HTTPException(500, "Metadata extraction failed")
 
-    metadata: Dict[str, MetadataField] = {}
-    missing: List[str] = []
-
-    extracted = result.get("metadata", {})
-
-    # --------------------------------------------------------
-    # 🔥 LOGIC FIX: Ask User if Confidence Low or Missing
-    # --------------------------------------------------------
-
-    # 1. Document Type
-    doc_type_val = extracted.get("document_type", {}).get("value")
-    doc_type_conf = extracted.get("document_type", {}).get("confidence", 0.0)
-    
-    metadata["document_type"] = MetadataField(
-        key="document_type", 
-        value=doc_type_val, 
-        confidence=doc_type_conf
-    )
-    
-    # If missing or low confidence, add to missing list (Triggers Popup)
-    if not doc_type_val or doc_type_conf < 0.8:
-        missing.append("document_type")
-
-    # 2. Revision Code
-    rev_code_val = extracted.get("revision_code", {}).get("value")
-    rev_code_conf = extracted.get("revision_code", {}).get("confidence", 0.0)
-
-    metadata["revision_code"] = MetadataField(
-        key="revision_code", 
-        value=rev_code_val, 
-        confidence=rev_code_conf
-    )
-
-    if not rev_code_val or rev_code_conf < 0.8:
-        missing.append("revision_code")
 
     # --------------------------------------------------------
     # 🔥 DUPLICATE CHECK (Force Popup if Exists)
@@ -218,7 +205,7 @@ def upload_pdf(
     )
 
     if is_duplicate:
-        print(f"⚠️ [PHASE 1] Duplicate detected! Forcing metadata popup.")
+        print(f"[PHASE 1] Duplicate detected! Forcing metadata popup.")
         # Trigger popup by flagging a field as 'missing' even if it isn't
         if "revision_code" not in missing:
             missing.append("revision_code")
@@ -233,14 +220,12 @@ def upload_pdf(
             "source_file": file.filename,
             "pdf_path": str(pdf_path),
             "db_connection": db_connection,
-            "document_type": doc_type_val,
-            "revision_code": rev_code_val,
         },
         missing_fields=missing,
     )
 
     # If missing is NOT empty, frontend will show the form
-    next_action = "WAIT_FOR_METADATA" if missing else "READY_TO_COMMIT"
+    next_action = "WAIT_FOR_METADATA" if missing else "READY_FOR_PROCESSING"
     print(f"👉 [PHASE 1] Decision: {next_action}")
 
     return UploadResponse(
@@ -270,6 +255,13 @@ def commit_upload(payload: CommitRequest):
     if not job:
         raise HTTPException(404, "Invalid job_id")
 
+    if job.status != "PROCESSING":
+        raise HTTPException(
+            400,
+            f"Job not ready for commit (state={job.status})"
+        )
+
+
     # Only block if NOT forced
     if job.missing_fields and not payload.force:
         # Check if user actually provided the missing fields in payload
@@ -290,10 +282,16 @@ def commit_upload(payload: CommitRequest):
             "company_document_id and revision_number cannot be overridden",
         )
 
+
+
+    job.metadata.update(payload.metadata)
+    job.missing_fields = []
+
     final_metadata = {
         **job.metadata,
         **payload.metadata,
     }
+    
 
     # --------------------------------------------------------
     # 1. UPLOAD TO MINIO
@@ -311,9 +309,9 @@ def commit_upload(payload: CommitRequest):
             filename=final_metadata["source_file"],
             overwrite=True
         )
-        print(f"✅ [MINIO] Upload Success! Path: {minio_path}")
+        print(f"[MINIO] Upload Success! Path: {minio_path}")
     except Exception as e:
-        print(f"❌ [MINIO] Upload Failed: {e}")
+        print(f"[MINIO] Upload Failed: {e}")
         raise HTTPException(500, f"MinIO Backup Failed: {e}")
 
     # --------------------------------------------------------
@@ -321,28 +319,31 @@ def commit_upload(payload: CommitRequest):
     # --------------------------------------------------------
     try:
         print(f"⚙️  [RAG] Starting Chunking & Embedding...")
-        run_pipeline(
+        for _ in run_pipeline(
             pdf_path=final_metadata["pdf_path"],
             job_dir=str(TMP_DIR / payload.job_id),
             company_document_id=final_metadata["company_document_id"],
             db_connection=final_metadata["db_connection"],
             extra_metadata=final_metadata,
             mode="commit",
-        )
-        print(f"✅ [RAG] Pipeline Complete. Chunks saved to DB.")
+        ):
+            pass
+        print(f" [RAG] Pipeline Complete. Chunks saved to DB.")
     except Exception as e:
-        print(f"❌ [RAG] Pipeline Failed: {e}")
+        print(f" [RAG] Pipeline Failed: {e}")
         raise HTTPException(500, f"Commit failed: {e}")
 
-    # ✅ MARK JOB READY
+    #  MARK JOB READY
     mark_job_ready(payload.job_id)
 
-    # ✅ SAVE ACTIVE DOC
+    #  SAVE ACTIVE DOC
     save_active_document(
         session_id=job.session_id,
         company_document_id=final_metadata["company_document_id"],
-        revision_number=str(final_metadata["revision_number"]), 
+        revision_number=str(final_metadata["revision_number"]),
+        filename=final_metadata.get("source_file"),
     )
+
 
     return CommitResponse(
         job_id=payload.job_id,

@@ -9,10 +9,10 @@ Purpose:
 - Human / developer debugging only
 
 Rules:
-- ❌ No LLM calls
-- ❌ No DB writes
-- ❌ No content leakage
-- ✅ Redis only
+-  No LLM calls
+-  No DB writes
+-  No content leakage
+-  Redis only
 """
 
 from fastapi import APIRouter, HTTPException

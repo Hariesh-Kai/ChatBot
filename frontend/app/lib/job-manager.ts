@@ -2,13 +2,18 @@
    JOB MANAGER (FRONTEND)
    ---------------------------------------------------------
    Responsibilities:
-   - Ensure only ONE active streaming job per session
-   - Abort previous job before starting a new one
-   - Reset abort state correctly
-   - Clean up on errors and stream end
+   - Ensure only ONE active CHAT streaming job at a time
+   - Abort previous CHAT job before starting a new one
+   - NEVER reset abort from frontend
+   - NEVER interfere with upload / metadata jobs
+   - Clean up correctly on completion or abort
 ========================================================= */
 
 import { API_BASE } from "./config";
+
+/* =========================================================
+   TYPES
+========================================================= */
 
 type JobHandle = {
   controller: AbortController;
@@ -16,11 +21,18 @@ type JobHandle = {
   active: boolean;
 };
 
-let currentJob: JobHandle | null = null;
+/* =========================================================
+   STATE (CHAT ONLY)
+========================================================= */
 
-/* ---------------------------------------------------------
+// 🔥 IMPORTANT:
+// This job manager controls CHAT STREAMS ONLY.
+// Uploads / metadata must NOT go through this.
+let currentChatJob: JobHandle | null = null;
+
+/* =========================================================
    INTERNAL HELPERS
---------------------------------------------------------- */
+========================================================= */
 
 async function sendAbort(sessionId: string) {
   try {
@@ -30,57 +42,42 @@ async function sendAbort(sessionId: string) {
       body: JSON.stringify({ session_id: sessionId }),
     });
   } catch {
-    // best-effort only
+    // best-effort only — never block UI
   }
 }
 
-async function resetAbort(sessionId: string) {
-  try {
-    await fetch(`${API_BASE}/abort/reset`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId }),
-    });
-  } catch {
-    // best-effort only
-  }
-}
-
-/* ---------------------------------------------------------
+/* =========================================================
    PUBLIC API
---------------------------------------------------------- */
+========================================================= */
 
 /**
- * Start a new streaming job.
- * Automatically aborts any previous job.
+ * Start a new CHAT streaming job.
+ * Automatically aborts any previous CHAT job.
  */
 export function startJob(sessionId: string): AbortController {
-  // Abort existing job if any
-  if (currentJob) {
+  // 🔥 Abort ONLY previous chat job
+  if (currentChatJob) {
     abortJob("superseded");
   }
 
   const controller = new AbortController();
 
-  currentJob = {
+  currentChatJob = {
     controller,
     sessionId,
     active: true,
   };
 
-  // 🔥 CRITICAL: reset abort BEFORE new request
-  resetAbort(sessionId);
-
   return controller;
 }
 
 /**
- * Abort the currently running job.
+ * Abort the currently running CHAT job.
  */
 export function abortJob(reason: string = "user") {
-  if (!currentJob) return;
+  if (!currentChatJob) return;
 
-  const { controller, sessionId } = currentJob;
+  const { controller, sessionId } = currentChatJob;
 
   try {
     controller.abort(reason);
@@ -88,25 +85,27 @@ export function abortJob(reason: string = "user") {
     // ignore
   }
 
+  // 🔥 Inform backend — backend is authoritative
   sendAbort(sessionId);
 
-  currentJob.active = false;
-  currentJob = null;
+  currentChatJob.active = false;
+  currentChatJob = null;
 }
 
 /**
- * Mark job as finished (stream completed normally).
+ * Mark CHAT job as finished (stream completed normally).
+ * MUST be called when stream ends cleanly.
  */
 export function finishJob() {
-  if (!currentJob) return;
+  if (!currentChatJob) return;
 
-  currentJob.active = false;
-  currentJob = null;
+  currentChatJob.active = false;
+  currentChatJob = null;
 }
 
 /**
- * Check if a job is currently active.
+ * Check if a CHAT job is currently active.
  */
 export function hasActiveJob(): boolean {
-  return Boolean(currentJob?.active);
+  return Boolean(currentChatJob?.active);
 }

@@ -41,7 +41,7 @@ class ContextAwareChunker:
         self.text_buffer = []
         self.current_buffer_page = 1
         
-        # ✅ NEW: Splitter configuration for Text content
+        #  NEW: Splitter configuration for Text content
         # Chunk size ~3000 chars (approx 750 tokens) is optimal for BGE-M3
         # Overlap of 400 chars ensures context isn't lost between splits
         self.splitter = RecursiveCharacterTextSplitter(
@@ -82,7 +82,7 @@ class ContextAwareChunker:
             self.text_buffer = []
             return
 
-        # ✅ NEW: Split massive sections into smaller overlapping chunks
+        #  NEW: Split massive sections into smaller overlapping chunks
         # This prevents the embedding model from truncating important data
         chunks = self.splitter.split_text(full_content)
 
@@ -93,9 +93,9 @@ class ContextAwareChunker:
                     "type": "text", 
                     "section": self.current_section, 
                     "is_parent": False,
-                    # ✅ Save Page Number (from the buffer tracking)
+                    #  Save Page Number (from the buffer tracking)
                     "page_number": self.current_buffer_page,
-                    # ✅ Add index to keep order intact during retrieval
+                    #  Add index to keep order intact during retrieval
                     "chunk_index": i 
                 }
             ))
@@ -117,11 +117,11 @@ class ContextAwareChunker:
             category = element.category
             text = normalize_numbers(element.text or "")
             
-            # ✅ Safely Extract Metadata (Page + Coordinates)
+            #  Safely Extract Metadata (Page + Coordinates)
             meta = getattr(element, "metadata", None)
             page_num = meta.page_number if meta else 1
 
-            # ✅ Extract Coordinates for Source Viewer
+            #  Extract Coordinates for Source Viewer
             # We store it as a JSON string for lightweight DB storage
             bbox_json = ""
             if meta and hasattr(meta, "coordinates") and meta.coordinates:
@@ -162,8 +162,8 @@ class ContextAwareChunker:
                         "section": self.current_section,
                         "doc_id": parent_id,  # Unique ID for linking
                         "is_parent": True,    # Flag to identify parent
-                        "page_number": page_num, # ✅ Save Page
-                        "bbox": bbox_json     # ✅ Save Highlight Box
+                        "page_number": page_num, #  Save Page
+                        "bbox": bbox_json     #  Save Highlight Box
                     }
                 )
                 final_documents.append(parent_doc)
@@ -188,8 +188,8 @@ class ContextAwareChunker:
                                 "section": self.current_section,
                                 "parent_id": parent_id,  # Link back to parent
                                 "is_parent": False,
-                                "page_number": page_num, # ✅ Child inherits Page
-                                "bbox": bbox_json     # ✅ Child inherits Box
+                                "page_number": page_num, #  Child inherits Page
+                                "bbox": bbox_json     #  Child inherits Box
                             }
                         )
                         final_documents.append(child_doc)
@@ -212,7 +212,7 @@ class ContextAwareChunker:
         # Final flush
         self._flush_text_buffer(final_documents)
 
-        print(f"\n✅ Created {len(final_documents)} chunks (Parents + Children).")
+        print(f"\n Created {len(final_documents)} chunks (Parents + Children).")
         
         # ----------------------------------------------------
         # SAVE OUTPUT
@@ -240,7 +240,7 @@ if __name__ == "__main__":
     # python chunk.py <filtered_elements.json> <chunks.json>
 
     if len(sys.argv) != 3:
-        print("❌ Usage: python chunk.py <filtered_elements.json> <chunks.json>")
+        print(" Usage: python chunk.py <filtered_elements.json> <chunks.json>")
         sys.exit(1)
 
     input_file = sys.argv[1]
@@ -248,4 +248,4 @@ if __name__ == "__main__":
 
     chunker = ContextAwareChunker()
     chunker.process(input_file, output_file)
-    print("✅ Chunking completed.")
+    print(" Chunking completed.")

@@ -1,24 +1,21 @@
-# backend/learning/retrieval_feedback.py
+# backend/learning/retrieval_stats.py
 
 """
-Retrieval Feedback Store (Read-Only Learning Signal)
+Retrieval Statistics (Passive Observability)
 
 Purpose:
-- Capture explicit feedback about RAG answers
-- Store evaluator judgment for later analysis
-- MUST NOT affect live retrieval or answers
+- Record WHAT retrieval did
+- NO judgments
+- NO learning
+- NO effect on live answers
 
-Design:
-- Append-only
-- Session + document + revision aware
-- Chunk-level optional
-- Safe to fail (never breaks chat)
+This is telemetry, not intelligence.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import List, Dict, Any, Optional
 import os
-from datetime import datetime
 from contextlib import contextmanager
+from datetime import datetime
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -35,6 +32,10 @@ LEARNING_DB_URL = os.getenv(
         "postgresql://postgres:1@localhost:5432/chat_memory_db",
     ),
 )
+
+MAX_SECTIONS_STORED = 10
+MAX_TYPES_STORED = 5
+
 
 # =========================================================
 # DB CONNECTION (SAFE)
@@ -61,12 +62,8 @@ def get_connection():
 # =========================================================
 
 def _init_db():
-    """
-    Create feedback table if missing.
-    Safe to run multiple times.
-    """
     query = """
-    CREATE TABLE IF NOT EXISTS retrieval_feedback (
+    CREATE TABLE IF NOT EXISTS retrieval_stats (
         id SERIAL PRIMARY KEY,
 
         session_id TEXT,
@@ -76,14 +73,18 @@ def _init_db():
         revision_number TEXT NOT NULL,
 
         question TEXT NOT NULL,
-        answer TEXT NOT NULL,
 
-        feedback_label TEXT NOT NULL,
-        feedback_score INTEGER,
+        chunk_count INTEGER NOT NULL,
+        chunk_types TEXT[],
+        sections TEXT[],
 
-        comment TEXT,
+        avg_score REAL,
+        max_score REAL,
 
-        chunk_ids TEXT[],
+        confidence REAL,
+        confidence_level TEXT,
+
+        latency_ms INTEGER,
 
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -93,69 +94,102 @@ def _init_db():
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(query)
-        print("Learning DB: retrieval_feedback table ready.")
+        print("Learning DB: retrieval_stats table ready.")
     except Exception as e:
-        print(f"Learning DB init warning: {e}")
+        print(f"Retrieval stats DB init warning: {e}")
 
 
-# Initialize immediately
 _init_db()
+
+
+# =========================================================
+# INTERNAL HELPERS
+# =========================================================
+
+def _extract_types(chunks: List[Dict[str, Any]]) -> List[str]:
+    seen = []
+    for c in chunks:
+        t = c.get("chunk_type")
+        if t and t not in seen:
+            seen.append(t)
+        if len(seen) >= MAX_TYPES_STORED:
+            break
+    return seen
+
+
+def _extract_sections(chunks: List[Dict[str, Any]]) -> List[str]:
+    seen = []
+    for c in chunks:
+        s = c.get("section")
+        if s and s not in seen:
+            seen.append(s)
+        if len(seen) >= MAX_SECTIONS_STORED:
+            break
+    return seen
+
+
+def _score_stats(chunks: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    scores = [c.get("score") for c in chunks if isinstance(c.get("score"), (int, float))]
+    if not scores:
+        return {"avg": None, "max": None}
+
+    return {
+        "avg": round(sum(scores) / len(scores), 4),
+        "max": round(max(scores), 4),
+    }
 
 
 # =========================================================
 # PUBLIC API
 # =========================================================
 
-def save_retrieval_feedback(
+def record_retrieval_stats(
     *,
     session_id: Optional[str],
     job_id: Optional[str],
     company_document_id: str,
     revision_number: str,
     question: str,
-    answer: str,
-    feedback_label: str,
-    feedback_score: Optional[int] = None,
-    comment: Optional[str] = None,
-    chunk_ids: Optional[List[str]] = None,
+    rag_chunks: List[Dict[str, Any]],
+    confidence: Optional[float] = None,
+    confidence_level: Optional[str] = None,
+    latency_ms: Optional[int] = None,
 ) -> None:
     """
-    Store evaluator feedback.
+    Record passive retrieval statistics.
 
-    feedback_label examples:
-    - "correct"
-    - "partial"
-    - "incorrect"
-    - "hallucination"
-    - "missing_context"
-
-    feedback_score:
-    - Optional numeric (e.g. 1–5)
-
-    This function MUST NEVER raise to caller.
+    MUST NEVER raise.
     """
 
     if not company_document_id or not revision_number:
         return
 
     try:
+        chunk_count = len(rag_chunks)
+        chunk_types = _extract_types(rag_chunks)
+        sections = _extract_sections(rag_chunks)
+        score_stats = _score_stats(rag_chunks)
+
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO retrieval_feedback (
+                    INSERT INTO retrieval_stats (
                         session_id,
                         job_id,
                         company_document_id,
                         revision_number,
                         question,
-                        answer,
-                        feedback_label,
-                        feedback_score,
-                        comment,
-                        chunk_ids
+                        chunk_count,
+                        chunk_types,
+                        sections,
+                        avg_score,
+                        max_score,
+                        confidence,
+                        confidence_level,
+                        latency_ms
                     )
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
                         session_id,
@@ -163,38 +197,38 @@ def save_retrieval_feedback(
                         company_document_id,
                         str(revision_number),
                         question,
-                        answer,
-                        feedback_label,
-                        feedback_score,
-                        comment,
-                        chunk_ids,
+                        chunk_count,
+                        chunk_types,
+                        sections,
+                        score_stats["avg"],
+                        score_stats["max"],
+                        confidence,
+                        confidence_level,
+                        latency_ms,
                     ),
                 )
     except Exception as e:
-        # 🔥 ABSOLUTE RULE: feedback must never break chat
-        print(f"Failed to save retrieval feedback: {e}")
+        # 🔥 Telemetry must NEVER affect production
+        print(f"Failed to record retrieval stats: {e}")
 
 
 # =========================================================
-# READ (OPTIONAL – FOR ANALYSIS TOOLS)
+# READ (OPTIONAL – ANALYTICS)
 # =========================================================
 
-def get_feedback_for_document(
+def get_recent_stats(
     *,
     company_document_id: str,
     revision_number: str,
     limit: int = 100,
 ) -> List[Dict[str, Any]]:
-    """
-    Fetch recent feedback for offline analysis.
-    """
     try:
         with get_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
                     """
                     SELECT *
-                    FROM retrieval_feedback
+                    FROM retrieval_stats
                     WHERE company_document_id = %s
                       AND revision_number = %s
                     ORDER BY created_at DESC

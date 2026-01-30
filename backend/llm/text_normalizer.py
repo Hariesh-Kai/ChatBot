@@ -3,6 +3,8 @@
 Text Normalizer for KavinBase
 
 Purpose:
+- Normalize raw user text BEFORE intent, rewrite, and generation
+- Applied globally (RAG and non-RAG paths)
 - Clean and normalize raw user input before intent classification
 - Improve zero-shot and rule-based intent accuracy
 - Keep behavior deterministic and lightweight
@@ -32,7 +34,7 @@ def normalize_text(text: Optional[str]) -> str:
     6. Collapse extra spaces
     """
 
-    if not text:
+    if text is None:
         return ""
 
     # Convert to string defensively

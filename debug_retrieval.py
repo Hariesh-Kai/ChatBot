@@ -26,9 +26,9 @@ def debug_retrieval():
             collection_name=COLLECTION_NAME,
             connection=DB_CONNECTION,
         )
-        print("✅ Vector Store initialized")
+        print("Vector Store initialized")
     except Exception as e:
-        print(f"❌ Failed to init vector store: {e}")
+        print(f" Failed to init vector store: {e}")
         return
 
     # 2. Filter
@@ -77,10 +77,10 @@ def debug_retrieval():
         if not chunk_id and hasattr(d, "cmetadata"):
              chunk_id = d.cmetadata.get("chunk_id")
 
-        status = "✅ Found ID"
+        status = "Found ID"
         if not chunk_id:
             chunk_id = str(uuid.uuid4())
-            status = "⚠️ Generated ID"
+            status = "Generated ID"
             
         print(f"  Doc {i}: {status} -> {chunk_id}")
         merged.setdefault(chunk_id, d)
@@ -88,9 +88,9 @@ def debug_retrieval():
     print(f"\n📊 Final Merged Count: {len(merged)}")
     
     if len(merged) == 0:
-        print("❌ CRITICAL: Merged list is empty! Chatbot receives nothing.")
+        print(" CRITICAL: Merged list is empty! Chatbot receives nothing.")
     else:
-        print("✅ SUCCESS: Merged list has data. The issue is likely in the LLM Prompt.")
+        print("SUCCESS: Merged list has data. The issue is likely in the LLM Prompt.")
 
 if __name__ == "__main__":
     debug_retrieval()

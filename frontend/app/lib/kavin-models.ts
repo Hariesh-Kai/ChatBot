@@ -50,7 +50,7 @@ const _KAVIN_MODELS: Record<KavinModelId, KavinModel> = {
 };
 
 /**
- * ✅ Public immutable registry
+ *  Public immutable registry
  */
 export const KAVIN_MODELS = Object.freeze({ ..._KAVIN_MODELS });
 

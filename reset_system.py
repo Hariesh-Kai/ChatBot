@@ -36,7 +36,7 @@ def clean_minio():
         )
 
         if not client.bucket_exists(MINIO_BUCKET):
-            print(f"   ⚠️ Bucket '{MINIO_BUCKET}' does not exist. Skipping.")
+            print(f"Bucket '{MINIO_BUCKET}' does not exist. Skipping.")
             return
 
         # List all objects (recursive)
@@ -47,14 +47,14 @@ def clean_minio():
             client.remove_object(MINIO_BUCKET, obj.object_name)
             count += 1
             
-        print(f"   ✅ Deleted {count} files from MinIO.")
+        print(f"Deleted {count} files from MinIO.")
 
     except Exception as e:
-        print(f"   ❌ MinIO Error: {e}")
+        print(f"    MinIO Error: {e}")
 
 
 def clean_rag_db():
-    print(f"\n🗑️  Cleaning RAG Database: 'rag_db'...")
+    print(f"\nCleaning RAG Database: 'rag_db'...")
     try:
         conn = psycopg2.connect(
             dbname="rag_db",
@@ -72,17 +72,17 @@ def clean_rag_db():
         conn.commit()
         cur.close()
         conn.close()
-        print("   ✅ RAG Vectors/Chunks deleted successfully.")
+        print("RAG Vectors/Chunks deleted successfully.")
         
     except psycopg2.errors.UndefinedTable:
-        print("   ⚠️ Table 'langchain_pg_embedding' not found (DB might be empty).")
+        print("Table 'langchain_pg_embedding' not found (DB might be empty).")
         if conn: conn.rollback()
     except Exception as e:
-        print(f"   ❌ RAG DB Error: {e}")
+        print(f"RAG DB Error: {e}")
 
 
 def clean_chat_db():
-    print(f"\n🗑️  Cleaning Chat Memory: 'chat_memory_db'...")
+    print(f"\nCleaning Chat Memory: 'chat_memory_db'...")
     tables = [
         "chat_messages", 
         "chat_sessions", 
@@ -114,10 +114,10 @@ def clean_chat_db():
         conn.commit()
         cur.close()
         conn.close()
-        print("   ✅ Chat Memory cleared successfully.")
+        print("Chat Memory cleared successfully.")
 
     except Exception as e:
-        print(f"   ❌ Chat DB Error: {e}")
+        print(f"    Chat DB Error: {e}")
 
 
 # ============================================================
@@ -135,4 +135,4 @@ if __name__ == "__main__":
         clean_chat_db()
         print("\n✨ System Reset Complete. You can now start fresh.")
     else:
-        print("❌ Operation aborted.")
+        print(" Operation aborted.")

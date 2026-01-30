@@ -4,14 +4,15 @@
 # 1. LOAD ENV VARS FIRST (CRITICAL FIX)
 # ============================================================
 from dotenv import load_dotenv
-load_dotenv()  # <-- This must happen before other backend imports
+load_dotenv()  # <-- REQUIRED BEFORE ANY BACKEND IMPORTS
 
-import psutil  # ✅ Required for system checks
+import psutil
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# ✅ NEW: Import the CPU limiter from our Traffic Cop
+#  EXISTING: CPU limiter
 from backend.rag.resource_planner import limit_cpu_usage
+from backend.llm.model_selector import resolve_model_id
 
 # ============================================================
 # IMPORT API ROUTERS
@@ -26,16 +27,21 @@ from backend.api.update import router as metadata_commit_router
 from backend.api.metadata import router as metadata_correct_router
 
 # Net & Debug routers
-from backend.api.net import router as net_router            # /net/*
-from backend.api.net_key import router as net_key_router    # /net-key/*
-from backend.api.debug_rag import router as debug_router    # 🐞 Debug RAG
-from backend.api.retrieve import router as retrieve_router  # Optional retrieval APIs
+from backend.api.net import router as net_router
+from backend.api.net_key import router as net_key_router
+from backend.api.debug_rag import router as debug_router
+from backend.api.retrieve import router as retrieve_router
 
-# ✅ Render Router for Source Viewer
-from backend.api.render import router as render_router 
-
-# ✅ DevTools Router
+# Render & DevTools
+from backend.api.render import router as render_router
 from backend.api.devtools import router as devtools_router
+
+# ============================================================
+#  NEW IMPORT (LEARNING – FEEDBACK API)
+# ============================================================
+from backend.api.feedback import router as feedback_router
+# ↑ ADDED: registers /feedback endpoint
+
 
 # ============================================================
 # IMPORT HEALTH CHECK DEPENDENCIES
@@ -46,7 +52,7 @@ from backend.storage.minio_client import get_minio_client
 
 
 # ============================================================
-# FASTAPI APPLICATION (SINGLE ENTRY POINT)
+# FASTAPI APPLICATION
 # ============================================================
 
 app = FastAPI(
@@ -63,36 +69,38 @@ app = FastAPI(
 
 
 # ============================================================
-# 🚦 STARTUP EVENT (GLOBAL RESOURCE SAFETY)
+# 🚦 STARTUP EVENT (CPU SAFETY)
 # ============================================================
+
 @app.on_event("startup")
 async def startup_event():
-    """
-    On server start, restrict Python to specific CPU cores
-    to prevent freezing the OS/UI during heavy RAG tasks.
-    """
+    # CPU safety
     try:
         total_cores = psutil.cpu_count(logical=True) or 2
-        
-        # Strategy: Use 75% of cores for AI, leave 25% for Windows/Chrome
-        # Example: On 12 cores, use 9, leave 3 free.
         safe_cores = max(1, int(total_cores * 0.75))
-        
-        print(f"🚦 [STARTUP] Optimizing CPU Affinity (Using {safe_cores}/{total_cores} cores)...")
+        print(f"🚦 [STARTUP] CPU Affinity {safe_cores}/{total_cores}")
         limit_cpu_usage(safe_cores)
     except Exception as e:
-        print(f"⚠️ [STARTUP] CPU Affinity configuration failed (OS might limit this): {e}")
+        print(f"[STARTUP] CPU affinity failed: {e}")
+
+    # Model warmup
+    try:
+        from backend.llm.loader import get_llm
+        get_llm(resolve_model_id("lite"))
+        print("[STARTUP] Lite model warmed")
+    except Exception as e:
+        print(f"[STARTUP] Model warmup skipped: {e}")
+
+
 
 
 # ============================================================
 # CORS CONFIGURATION
 # ============================================================
-# ⚠️ OPEN FOR DEVELOPMENT ONLY
-# Lock origins in production
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],          # Dev only
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -103,26 +111,28 @@ app.add_middleware(
 # ROUTER REGISTRATION (ORDER MATTERS)
 # ============================================================
 
-# Core chat & RAG APIs
-app.include_router(chat_router)        # POST /chat
-app.include_router(upload_router)      # POST /upload
-app.include_router(metadata_correct_router)   # POST /metadata/correct
-app.include_router(metadata_commit_router)    # POST /metadata/update
-app.include_router(abort_router)       # POST /abort
+# Core APIs
+app.include_router(chat_router)                 # POST /chat
+app.include_router(upload_router)               # POST /upload
+app.include_router(metadata_correct_router)     # POST /metadata/correct
+app.include_router(metadata_commit_router)      # POST /metadata/update
+app.include_router(abort_router)                # POST /abort
 
-# 🐞 Debug APIs (READ-ONLY, SAFE)
-app.include_router(debug_router)       # GET /debug/rag/{session_id}
+# ============================================================
+#  NEW ROUTER REGISTRATION (LEARNING FEEDBACK)
+# ============================================================
+app.include_router(feedback_router)              # POST /feedback
+# ↑ ADDED: stores user feedback safely
 
-# 🔑 Net APIs (External LLMs)
-app.include_router(net_router)         # /net/*
-app.include_router(net_key_router)     # /net-key/*
-app.include_router(retrieve_router)    # /retrieve/* (optional)
+# Debug & external services
+app.include_router(debug_router)                # GET /debug/rag/{session_id}
+app.include_router(net_router)                  # /net/*
+app.include_router(net_key_router)              # /net-key/*
+app.include_router(retrieve_router)             # /retrieve/*
 
-# ✅ Render API (Source Viewer)
-app.include_router(render_router)      # GET /render/image
-
-# ✅ DevTools API (Dashboard)
-app.include_router(devtools_router)    # POST /devtools/*
+# Viewer & Dev tools
+app.include_router(render_router)               # GET /render/image
+app.include_router(devtools_router)             # POST /devtools/*
 
 
 # ============================================================
@@ -144,20 +154,20 @@ def root_info():
             "Answer Confidence Scoring",
             "Source Highlighting & Rendering",
             "Developer Method Dashboard",
-            "Resource Aware Dispatcher"
+            "Resource Aware Dispatcher",
+            #  NEW FEATURE FLAG
+            "Learning Telemetry (Stats + Feedback)",
         ],
     }
 
 
 # ============================================================
-# DEEP HEALTH CHECK (DB + REDIS + MINIO)
+# HEALTH CHECK ENDPOINT
 # ============================================================
 
 @app.get("/health", tags=["Health"])
 def health_check():
-    """
-    Checks connectivity to all critical infrastructure.
-    """
+
     status = {
         "status": "ok",
         "services": {
@@ -166,39 +176,36 @@ def health_check():
             "minio": "unknown"
         }
     }
-    
+
     all_ok = True
 
-    # 1. Check Postgres
+    # Postgres
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
         status["services"]["postgres"] = "ok"
     except Exception as e:
-        status["services"]["postgres"] = f"error: {str(e)}"
+        status["services"]["postgres"] = f"error: {e}"
         all_ok = False
 
-    # 2. Check Redis
+    # Redis
     try:
         if redis_client and redis_client.ping():
             status["services"]["redis"] = "ok"
         else:
             status["services"]["redis"] = "disabled/error"
-            # Redis is optional for some local configs, usually not critical fail
     except Exception as e:
-        status["services"]["redis"] = f"error: {str(e)}"
-        # all_ok = False (Optional: uncomment if Redis is strictly required)
+        status["services"]["redis"] = f"error: {e}"
 
-    # 3. Check MinIO
+    # MinIO
     try:
-        # Initializing client is cheap; listing buckets proves auth works
         client = get_minio_client()
-        if client: 
-             client.list_buckets()
-             status["services"]["minio"] = "ok"
+        if client:
+            client.list_buckets()
+            status["services"]["minio"] = "ok"
     except Exception as e:
-        status["services"]["minio"] = f"error: {str(e)}"
+        status["services"]["minio"] = f"error: {e}"
         all_ok = False
 
     if not all_ok:

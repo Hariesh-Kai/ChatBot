@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from pdf2image import convert_from_bytes
 from PIL import Image, ImageDraw
 
-# ✅ NEW: Import _get_config to read bucket from env safely
+#  NEW: Import _get_config to read bucket from env safely
 from backend.storage.minio_client import get_minio_client, _get_config
 
 router = APIRouter(prefix="/render", tags=["Render"])
@@ -26,7 +26,7 @@ def render_page_image(
     """
     client = get_minio_client()
     
-    # ✅ FIX: Get dynamic bucket name from config instead of hardcoding
+    #  FIX: Get dynamic bucket name from config instead of hardcoding
     try:
         conf = _get_config()
         bucket = conf["bucket"]
@@ -43,13 +43,13 @@ def render_page_image(
         response.close()
         response.release_conn()
     except Exception as e:
-        print(f"❌ MinIO Download Error: {e}")
+        print(f" MinIO Download Error: {e}")
         # Helpful error message for debugging
         raise HTTPException(404, f"File not found in bucket '{bucket}': {object_path}. Error: {e}")
 
     # 3. Convert Page to Image
     try:
-        # ✅ If on Windows without Poppler in PATH, you might need to uncomment and set this:
+        #  If on Windows without Poppler in PATH, you might need to uncomment and set this:
         # poppler_path = r"C:\Program Files\poppler\bin"
         
         images = convert_from_bytes(
@@ -64,7 +64,7 @@ def render_page_image(
             raise ValueError("Page out of range")
         image = images[0]
     except Exception as e:
-        print(f"❌ PDF Rendering Error: {e}")
+        print(f" PDF Rendering Error: {e}")
         raise HTTPException(500, f"Rendering failed. Is Poppler installed and in PATH? Error: {e}")
 
     # 4. Draw Highlight
@@ -75,7 +75,7 @@ def render_page_image(
             
             points = json.loads(bbox)
             
-            # ✅ FIX: Handle Nested List structures from Unstructured safely
+            #  FIX: Handle Nested List structures from Unstructured safely
             # Sometimes it returns [[x,y], [x,y]] or [[x,y,x,y]]
             scaled_points = []
             
@@ -93,7 +93,7 @@ def render_page_image(
                 draw.polygon(scaled_points, outline="red", width=5, fill=(255, 0, 0, 40))
             
         except Exception as e:
-            print(f"⚠️ Highlight failed (rendering image without highlight): {e}")
+            print(f"Highlight failed (rendering image without highlight): {e}")
 
     # 5. Return Image
     img_byte_arr = io.BytesIO()

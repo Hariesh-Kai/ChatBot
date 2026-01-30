@@ -68,7 +68,7 @@ export default function NetKeyModal({
         throw new Error(data.detail || "Verification failed");
       }
 
-      // ✅ VERIFIED
+      //  VERIFIED
       setNetApiKey(value.trim());
       setVerified(true);
       onSaved?.();

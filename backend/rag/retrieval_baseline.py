@@ -83,13 +83,13 @@ def run_baseline(question, doc_id, rev_num):
 
     print(tabulate(table_data, headers=["#", "Score", "Type", "Section", "Content"], tablefmt="simple"))
     print("-" * 60)
-    print(f"✅ Found {len(chunks)} chunks in {duration:.2f}s")
+    print(f"Found {len(chunks)} chunks in {duration:.2f}s")
 
 if __name__ == "__main__":
     # Usage: python backend/rag/retrieval_baseline.py <question> <doc_id> <revision>
     
     if len(sys.argv) < 4:
-        print("❌ Usage: python backend/rag/retrieval_baseline.py <question> <doc_id> <revision>")
+        print(" Usage: python backend/rag/retrieval_baseline.py <question> <doc_id> <revision>")
         print('   Example: python backend/rag/retrieval_baseline.py "What is the design pressure?" "a1b2-c3d4" "1"')
         sys.exit(1)
         

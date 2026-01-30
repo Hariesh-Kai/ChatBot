@@ -20,10 +20,10 @@ def fix():
         conn.commit()
         cur.close()
         conn.close()
-        print("✅ Table dropped. Restart Backend to recreate it correctly.")
+        print("Table dropped. Restart Backend to recreate it correctly.")
         
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f" Error: {e}")
 
 if __name__ == "__main__":
     fix()       

@@ -33,15 +33,15 @@ try:
     
     # 3. Validation
     if "company_document_id" in meta and meta["company_document_id"] == "TEST_ID":
-        print("\n✅ SUCCESS: Metadata is FLATTENED correctly.")
+        print("\n SUCCESS: Metadata is FLATTENED correctly.")
     elif "cmetadata" in meta:
-        print("\n❌ FAILURE: Metadata is still NESTED inside 'cmetadata'.")
+        print("\n FAILURE: Metadata is still NESTED inside 'cmetadata'.")
         print("👉 You did not save the updated ingest.py file correctly.")
     else:
-        print("\n❌ FAILURE: Identity keys are missing completely.")
+        print("\n FAILURE: Identity keys are missing completely.")
 
 except Exception as e:
-    print(f"\n❌ CRITICAL ERROR: {e}")
+    print(f"\n CRITICAL ERROR: {e}")
 
 finally:
     if os.path.exists("dummy_chunks.json"):

@@ -129,7 +129,7 @@ def _groq_stream(
 
     if response.status_code == 429:
         response.close()
-        raise NetRateLimitError("Groq quota exceeded")
+        raise NetRateLimitError("rate_limited:groq")
 
     if response.status_code >= 400:
         text = response.text
@@ -206,7 +206,8 @@ def _xai_stream(
 
     if response.status_code == 429:
         response.close()
-        raise NetRateLimitError("xAI quota exceeded")
+        raise NetRateLimitError("rate_limited:xai")
+
 
     if response.status_code >= 400:
         text = response.text

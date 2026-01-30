@@ -159,7 +159,7 @@ Just the text.
 
 def _build_generic_prompt(question, context_chunks, history, answer_style, is_cot=False):
     
-    # ✅ FIX Q4: INJECT PAGE NUMBERS INTO CONTEXT
+    #  FIX Q4: INJECT PAGE NUMBERS INTO CONTEXT
     if context_chunks:
         context_lines = []
         for c in context_chunks:

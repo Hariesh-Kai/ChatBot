@@ -1,13 +1,13 @@
 // frontend/app/page.tsx
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Sidebar from "@/app/components/sidebar/Sidebar";
 import ChatWindow from "@/app/components/chat/ChatWindow";
 import { ChatSession, Message } from "@/app/lib/types";
 import { KavinModelId } from "@/app/lib/kavin-models";
 import { loadChats, saveChats } from "@/app/lib/chat-store";
-import { commitUpload } from "@/app/lib/api"; 
+import { commitUpload } from "@/app/lib/api";
 import { MetadataRequestField } from "@/app/lib/llm-ui-events";
 import { UploadStatus } from "@/app/hooks/useSmartUpload";
 
@@ -19,28 +19,43 @@ function uuidv4() {
     return crypto.randomUUID();
   }
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
-    const r = (Math.random() * 16) | 0,
-      v = c === "x" ? r : (r & 0x3) | 0x8;
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
 }
 
+
+
+/* =========================================================
+    NORMALIZE MESSAGES
+  ========================================================= */
+
 export default function Home() {
+  /* ================= PIPELINE STATE (UPLOAD / SYSTEM) ================= */
+  const [uploadPipeline, setUploadPipeline] = useState<{
+    percent: number;
+    label: string;
+  } | null>(null);
+
   /* ================= STATE ================= */
   const [chats, setChats] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  
-  // ✅ NEW: Sidebar metadata request state (replaces Modal)
+
   const [sidebarMetadataRequest, setSidebarMetadataRequest] = useState<{
-      jobId: string;
-      fields: MetadataRequestField[];
-      filename: string;
+    jobId: string;
+    fields: MetadataRequestField[];
+    filename: string;
   } | null>(null);
 
-  const [sidebarUploadMsgId, setSidebarUploadMsgId] = useState<string | null>(null);
 
-  // Load state on mount
+  // 🔥 FIX: track upload lifecycle to avoid race
+  const uploadSessionRef = useRef<string | null>(null);
+  
+  
+  /* ================= LOAD / SAVE ================= */
+
   useEffect(() => {
     const loaded = loadChats();
     setChats(loaded);
@@ -51,19 +66,30 @@ export default function Home() {
     }
   }, []);
 
-  // Save state on change
   useEffect(() => {
     if (chats.length > 0) saveChats(chats);
   }, [chats]);
 
-  /* ================= DERIVED STATE ================= */
+  /* ================= DERIVED ================= */
+
   const activeChat = chats.find((c) => c.id === activeId);
 
-  const isTyping = activeChat
-    ? activeChat.messages.some(
-        (m) => m.status === "typing" || m.status === "streaming"
-      )
-    : false;
+  const isTyping = Boolean(
+    activeChat &&
+    !sidebarMetadataRequest &&
+    activeChat.messages.some(
+      (m) => m.status === "typing" || m.status === "streaming"
+    )
+  );
+  /* ================= RESET UPLOAD ON CHAT CHANGE ================= */
+  useEffect(() => {
+  if (!activeChat && !sidebarMetadataRequest) {
+    setUploadPipeline(null);
+    uploadSessionRef.current = null;
+  }
+}, [activeChat, sidebarMetadataRequest]);
+
+
 
   /* ================= ACTIONS ================= */
 
@@ -72,7 +98,7 @@ export default function Home() {
       id: uuidv4(),
       title: "New Chat",
       messages: [],
-      model: "lite", // Default to lite
+      model: "lite",
       pinned: false,
     };
     setChats((prev) => [newChat, ...prev]);
@@ -83,9 +109,7 @@ export default function Home() {
   const handleDeleteChat = useCallback(
     (id: string) => {
       setChats((prev) => prev.filter((c) => c.id !== id));
-      if (activeId === id) {
-        setActiveId(null);
-      }
+      if (activeId === id) setActiveId(null);
     },
     [activeId]
   );
@@ -113,150 +137,121 @@ export default function Home() {
 
   /* ================= MESSAGE UPDATER ================= */
 
-  const updateMessages = useCallback(
-    (updater: Message[] | ((prev: Message[]) => Message[])) => {
-      if (!activeId) return;
+ const updateMessages = useCallback(
+  (updater: Message[] | ((prev: Message[]) => Message[])) => {
+    if (!activeId) return;
 
-      setChats((prev) =>
-        prev.map((c) => {
-          if (c.id !== activeId) return c;
-          const newMessages =
-            typeof updater === "function" ? updater(c.messages) : updater;
-          return { ...c, messages: newMessages };
-        })
-      );
-    },
-    [activeId]
-  );
+    setChats((prev) =>
+      prev.map((c) => {
+        if (c.id !== activeId) return c;
 
-  /* ================= SIDEBAR UPLOAD HANDLERS ================= */
+        const next =
+          typeof updater === "function"
+            ? updater(c.messages)
+            : updater;
+
+        // ✅ DO NOT NORMALIZE DURING STREAM
+        return { ...c, messages: next };
+      })
+    );
+  },
+  [activeId]
+);
+
+
+  /* ================= SIDEBAR UPLOAD ================= */
 
   const handleSidebarUploadStart = () => {
-    if (!activeId) return;
-    const msgId = uuidv4();
-    setSidebarUploadMsgId(msgId);
-    
-    updateMessages((prev) => [...prev, {
-        id: msgId,
-        role: "assistant",
-        content: "",
-        createdAt: Date.now(),
-        status: "progress",
-        progress: 0,
-        progressLabel: "Starting upload...",
-    }]);
-  };
+  if (!activeId) return;
 
-  const handleSidebarUploadProgress = (status: UploadStatus, percent: number, label: string) => {
-    if (!activeId || !sidebarUploadMsgId) return;
-    
-    updateMessages((prev) => prev.map((m) => 
-        m.id === sidebarUploadMsgId 
-            ? { ...m, progress: percent, progressLabel: label } 
-            : m
-    ));
+  uploadSessionRef.current = uuidv4();
+
+  setUploadPipeline({
+    percent: 0,
+    label: "Starting upload…",
+  });
+};
+
+  const handleSidebarUploadProgress = (
+    _status: UploadStatus,
+    percent: number,
+    label: string
+  ) => {
+    setUploadPipeline({
+      percent,
+      label,
+    });
   };
 
   const handleSidebarUploadSuccess = async (result: any) => {
     if (!activeId) return;
-
-    // WAIT_FOR_METADATA logic
+    if (!uploadSessionRef.current) return;
+    
     if (result.next_action === "WAIT_FOR_METADATA") {
-        const fields: MetadataRequestField[] = Object.entries(result.metadata).map(
-            ([key, meta]: [string, any]) => ({
-                key: key,
-                label: key.replace(/_/g, " ").toUpperCase(),
-                value: meta.value || "",
-                placeholder: `Enter ${key}...`,
-                reason: "Please verify this field"
-            })
-        );
+      setUploadPipeline(null);
+      
+      const fields: MetadataRequestField[] = Object.entries(result.metadata).map(
+        ([key, meta]: [string, any]) => ({
+          key,
+          label: key.replace(/_/g, " ").toUpperCase(),
+          value: meta.value || "",
+          placeholder: `Enter ${key}...`,
+          reason: "Please verify this field",
+        })
+      );
 
-        // ✅ Instead of opening Modal, we trigger ChatWindow's inline logic via props
-        setSidebarMetadataRequest({
-            jobId: result.job_id,
-            fields: fields,
-            filename: result.filename
-        });
-        
-        // Remove progress bar (Inline Prompt will take over UI focus)
-        if (sidebarUploadMsgId) {
-            updateMessages(prev => prev.filter(m => m.id !== sidebarUploadMsgId));
-            setSidebarUploadMsgId(null);
-        }
-        return; 
+      setSidebarMetadataRequest({
+        jobId: result.job_id,
+        fields,
+        filename: result.filename,
+      });
+
+      return;
     }
 
-    // READY_TO_COMMIT logic
     if (result.next_action === "READY_TO_COMMIT") {
-        try {
-            handleSidebarUploadProgress("processing", 95, "Finalizing index...");
-            
-            await commitUpload({
-                job_id: result.job_id,
-                metadata: {},
-                force: true
-            });
-            
-            finalizeUploadSuccess(result.filename, result.revision_number);
-        } catch (err: any) {
-            handleSidebarUploadError(err.message || "Failed to commit document.");
-        }
+      try {
+        handleSidebarUploadProgress("processing", 95, "Finalizing index...");
+        await commitUpload({
+          job_id: result.job_id,
+          metadata: {},
+          force: true,
+        });
+
+        setUploadPipeline(null);
+        finalizeUploadSuccess(result.filename, result.revision_number);
+      } catch (err: any) {
+        setUploadPipeline(null);
+        handleSidebarUploadError(err.message || "Failed to commit document.");
+      }
     }
   };
 
   const finalizeUploadSuccess = (filename: string, revision: any) => {
-    if (sidebarUploadMsgId) {
-        updateMessages((prev) => prev.map(m => m.id === sidebarUploadMsgId ? {
-            ...m,
-            role: "system",
-            status: "done",
-            content: `✅ Successfully processed "${filename}" (v${revision}). \n\nYou can now ask questions about this document.`
-        } : m));
-        setSidebarUploadMsgId(null);
-    } else {
-        const successMsg: Message = {
-            id: uuidv4(),
-            role: "system",
-            content: `✅ Successfully processed "${filename}" (v${revision}). \n\nYou can now ask questions about this document.`,
-            createdAt: Date.now(),
-            status: "done",
-        };
-        updateMessages((prev) => [...prev, successMsg]);
-    }
+    uploadSessionRef.current = null;
+
+    
 
     if (activeChat && activeChat.messages.length === 0) {
-        handleRenameChat(activeId!, filename.replace(".pdf", ""));
+      handleRenameChat(activeId!, filename.replace(".pdf", ""));
     }
   };
 
   const handleSidebarUploadError = (errorMsg: string) => {
-    if (!activeId) return;
+    uploadSessionRef.current = null;
+    setUploadPipeline(null);
 
-    if (sidebarUploadMsgId) {
-        updateMessages((prev) => prev.map(m => m.id === sidebarUploadMsgId ? {
-            ...m,
-            status: "error",
-            content: `⚠️ **Upload Failed**: ${errorMsg}`
-        } : m));
-        setSidebarUploadMsgId(null);
-    } else {
-        const errorMsgBubble: Message = {
-            id: uuidv4(),
-            role: "assistant",
-            content: `⚠️ **Upload Failed**: ${errorMsg}`,
-            createdAt: Date.now(),
-            status: "error",
-        };
-        updateMessages((prev) => [...prev, errorMsgBubble]);
-    }
+    
   };
 
-  /* ================= RENDER ================= */
 
-  if (!activeChat && chats.length > 0 && !activeId) {
-     setActiveId(chats[0].id);
-  }
+  /* ================= RENDER ================= */
+  
+  useEffect(() => {
+    if (!activeChat && chats.length > 0 && !activeId) {
+      setActiveId(chats[0].id);
+    }
+  }, [activeChat, chats, activeId]);
 
   return (
     <div className="flex h-full w-full bg-black text-white">
@@ -276,33 +271,37 @@ export default function Home() {
         onUploadStart={handleSidebarUploadStart}
         onUploadSuccess={handleSidebarUploadSuccess}
         onUploadError={handleSidebarUploadError}
-        onUploadProgress={handleSidebarUploadProgress} 
+        onUploadProgress={handleSidebarUploadProgress}
       />
 
       <main
-        className={`
-          flex-1 h-full relative transition-all duration-300 ease-in-out
-          ${sidebarOpen ? "md:ml-72" : "md:ml-14"}
-        `}
+        className={`flex-1 h-full relative transition-all duration-300 ease-in-out ${
+          sidebarOpen ? "md:ml-72" : "md:ml-14"
+        }`}
       >
         {activeChat ? (
-          <div className="flex h-full flex-col">
-            <ChatWindow
-              messages={activeChat.messages}
-              onUpdateMessages={updateMessages}
-              model={activeChat.model}
-              sessionId={activeChat.id}
-              onRenameSession={(newTitle) => handleRenameChat(activeChat.id, newTitle)}
-              
-              // ✅ PASS THE SIDEBAR REQUEST DOWN
-              externalMetadataRequest={sidebarMetadataRequest}
-              onExternalMetadataSubmit={() => setSidebarMetadataRequest(null)}
-            />
-          </div>
+          <ChatWindow
+            messages={activeChat.messages}
+            onUpdateMessages={updateMessages}
+            model={activeChat.model}
+            sessionId={activeChat.id}
+            uploadPipeline={uploadPipeline} 
+            onRenameSession={(t) => handleRenameChat(activeChat.id, t)}
+            externalMetadataRequest={sidebarMetadataRequest}
+            metadataActive={!!sidebarMetadataRequest} 
+            onExternalMetadataSubmit={() => {
+              setSidebarMetadataRequest(null);
+              uploadSessionRef.current = null;
+            }}
+
+          />
         ) : (
           <div className="flex h-full items-center justify-center text-gray-500">
-            <button onClick={createNewChat} className="underline hover:text-white">
-                Create a new chat
+            <button
+              onClick={createNewChat}
+              className="underline hover:text-white"
+            >
+              Create a new chat
             </button>
           </div>
         )}

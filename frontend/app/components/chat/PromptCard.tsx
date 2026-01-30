@@ -4,7 +4,7 @@ type PromptCardProps = {
   title: string;
   description: string;
   onClick?: () => void;
-  disabled?: boolean; // ✅ NEW PROP
+  disabled?: boolean; //  NEW PROP
 };
 
 export default function PromptCard({

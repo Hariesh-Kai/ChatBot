@@ -10,7 +10,7 @@ import { useRef, useState } from "react";
  * - Validate type (PDF only)
  * - Hand off file to upload flow
  *
- * ❌ Does NOT:
+ *  Does NOT:
  * - Call APIs directly
  * - Handle metadata popup
  * - Handle chunking / commit
@@ -99,7 +99,7 @@ export default function PdfUpload({
       {/* Error */}
       {error && (
         <div className="text-xs text-red-400">
-          ⚠️ {error}
+          {error}
         </div>
       )}
 

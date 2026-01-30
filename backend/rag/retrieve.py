@@ -1,7 +1,6 @@
 # backend/rag/retrieve.py
 
-import uuid
-import json # ✅ Added json import to parse bbox strings
+import json #  Added json import to parse bbox strings
 from typing import List, Dict, Any, Optional
 
 from langchain_core.documents import Document
@@ -38,9 +37,13 @@ def resolve_parent_chunks(
         if doc.metadata.get("type") == "child" and doc.metadata.get("parent_id"):
             parent_ids_to_fetch.add(doc.metadata["parent_id"])
         else:
-            # It's already a parent or standard text, keep it
-            doc_id = doc.metadata.get("chunk_id") or str(uuid.uuid4())
-            final_docs_map[doc_id] = doc
+            cid = doc.metadata.get("chunk_id")
+            if not cid:
+                # 🔥 HARD SKIP — identity must exist
+                continue
+            final_docs_map[cid] = doc
+
+        
 
     if not parent_ids_to_fetch:
         return list(final_docs_map.values())
@@ -59,7 +62,7 @@ def resolve_parent_chunks(
                 final_docs_map[pid] = parent
                 
     except Exception as e:
-        print(f"⚠️ Parent lookup failed: {e}")
+        print(f"Parent lookup failed: {e}")
         # Fallback: Just use the children if parents fail
         return child_docs
 
@@ -116,7 +119,10 @@ def retrieve_rag_context(
     # 4. Deduplicate (Union of Vector + Keyword)
     unique_map = {}
     for d in vector_docs + keyword_docs:
-        unique_map[d.page_content] = d
+        cid = d.metadata.get("chunk_id")
+        if not cid:
+            continue
+        unique_map[cid] = d
     candidates = list(unique_map.values())
 
     # 5. Reranking
@@ -136,10 +142,13 @@ def retrieve_rag_context(
 
     # 7. Format Output for LLM & Frontend
     rag_chunks = []
-    for d in final_docs:
-        cid = d.metadata.get("chunk_id") or d.metadata.get("doc_id") or str(uuid.uuid4())
-        
-        # ✅ FIX: Safely parse BBOX for Frontend
+    for d in final_docs:        
+        cid = d.metadata.get("chunk_id")
+        if not cid:
+            # 🔥 Skip corrupted chunks — never invent identity
+            continue
+
+        #  FIX: Safely parse BBOX for Frontend
         # The DB might store it as a JSON string (e.g., "[[10, 20, 100, 200]]")
         bbox_raw = d.metadata.get("bbox")
         bbox_data = []
@@ -159,7 +168,7 @@ def retrieve_rag_context(
             "chunk_type": d.metadata.get("type"),
             "score": d.metadata.get("rerank_score", 0.0),
             
-            # ✅ Enhanced Metadata for Frontend "View Source"
+            #  Enhanced Metadata for Frontend "View Source"
             "metadata": {
                 "page_number": int(d.metadata.get("page_number", 1)),
                 "bbox": bbox_data, # Frontend highlighting relies on this!

@@ -95,11 +95,16 @@ def compute_confidence(
     confidence = max(0.0, min(1.0, confidence))
     confidence = round(confidence, 2)
 
-    return {
-        "confidence": confidence,
-        "level": _confidence_level(confidence),
+    sections = {
+        c.get("section")
+        for c in chunks
+        if c.get("section")
     }
 
+    return {
+        "confidence": confidence,
+        "level": _confidence_level(confidence, distinct_sections=len(sections)),
+    }
 
 # ============================================================
 # INTERNAL SCORING FUNCTIONS
@@ -167,7 +172,7 @@ def _redundancy_score(chunks: List[Dict]) -> float:
     unique = set(sections)
 
     if len(unique) == 1:
-        return 0.6
+        return 0.3
 
     ratio = len(unique) / len(sections)
 
@@ -180,11 +185,11 @@ def _redundancy_score(chunks: List[Dict]) -> float:
     return 0.4
 
 
-def _confidence_level(value: float) -> str:
+def _confidence_level(value: float, distinct_sections: int = 0) -> str:
     """
     Map numeric confidence to label.
     """
-    if value >= HIGH_CONFIDENCE:
+    if value >= HIGH_CONFIDENCE and distinct_sections >= 2:
         return "high"
     if value >= MEDIUM_CONFIDENCE:
         return "medium"

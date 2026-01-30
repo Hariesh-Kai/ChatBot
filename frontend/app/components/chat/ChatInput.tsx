@@ -16,7 +16,7 @@ interface Props {
   onUploadStart?: () => void;
   onUploadSuccess?: (result: any) => void;
   onUploadError?: (error: string) => void;
-  // ✅ NEW: Progress Prop
+  //  NEW: Progress Prop
   onUploadProgress?: (status: UploadStatus, percent: number, label: string) => void;
 
   /* Hidden power features */
@@ -39,7 +39,7 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
       onUploadStart,
       onUploadSuccess,
       onUploadError,
-      onUploadProgress, // ✅ Destructure
+      onUploadProgress, //  Destructure
       onArrowUp,
       onEscape,
       disabled = false,
@@ -69,7 +69,7 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
                 onUploadStart={onUploadStart}
                 onUploadSuccess={onUploadSuccess}
                 onUploadError={onUploadError}
-                onUploadProgress={onUploadProgress} // ✅ Pass it down
+                onUploadProgress={onUploadProgress} //  Pass it down
             />
         </div>
 

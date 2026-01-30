@@ -52,12 +52,11 @@ def system_message_event(text: str) -> Dict[str, Any]:
 # METADATA REQUEST
 # ==========================================================
 
-def request_metadata_event(fields: List[str]) -> Dict[str, Any]:
+def request_metadata_event(fields) -> Dict[str, Any]:
     """
-    Request missing metadata fields from the user.
-
-    Example input:
-        ["revision_code", "approved_by"]
+    Accepts:
+    - List[str]
+    - List[Dict] (frontend structured metadata fields)
     """
 
     safe_fields = fields or []
@@ -67,10 +66,22 @@ def request_metadata_event(fields: List[str]) -> Dict[str, Any]:
         {
             "fields": [
                 {
-                    "key": field,
-                    "label": _humanize(field),
-                    "placeholder": f"Enter {_humanize(field)}",
-                    "reason": "Missing or low confidence",
+                    "key": field["key"] if isinstance(field, dict) else field,
+                    "label": (
+                                field.get("label")
+                                if isinstance(field, dict) and field.get("label")
+                                else _humanize(field)
+                            ),
+                    "placeholder": (
+                        field.get("placeholder")
+                        if isinstance(field, dict)
+                        else f"Enter {_humanize(field)}"
+                    ),
+                    "reason": (
+                        field.get("reason")
+                        if isinstance(field, dict)
+                        else "Missing or low confidence"
+                    ),
                 }
                 for field in safe_fields
             ],
@@ -167,6 +178,41 @@ def answer_confidence_event(
 
 
 # ==========================================================
+# 🟦 MODEL STAGE EVENT (LIVE PIPELINE STATE)
+# ==========================================================
+
+def model_stage_event(
+    *,
+    stage: str,
+    message: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Live pipeline stage update for frontend animation.
+
+    Examples:
+    - stage="intent"
+    - stage="retrieval"
+    - stage="reranking"
+    - stage="generation"
+
+    Emitted DURING answer generation.
+    """
+
+    safe_stage = str(stage).lower().strip()
+
+    return _base_event(
+        "MODEL_STAGE",
+        {
+            "stage": safe_stage,
+            "message": message,
+            "model": model,
+        },
+    )
+
+
+
+# ==========================================================
 # ERROR EVENT
 # ==========================================================
 
@@ -190,15 +236,56 @@ def error_event(message: str) -> Dict[str, Any]:
 # HELPERS
 # ==========================================================
 
-def _humanize(key: str) -> str:
+def _humanize(field) -> str:
     """
-    Convert snake_case keys into human-readable labels.
+    Accepts:
+    - string keys: "revision_number"
+    - dict fields: { key, label, value, ... }
+    """
+    if isinstance(field, dict):
+        key = field.get("label") or field.get("key") or ""
+    else:
+        key = str(field)
 
-    Example:
-        revision_code -> Revision Code
-    """
     return key.replace("_", " ").strip().title()
 
+# ==========================================================
+# 🟥 NET RATE LIMITED EVENT
+# ==========================================================
+
+def net_rate_limited_event(
+    *,
+    retry_after_sec: int,
+    provider: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Emitted when Net / Cloud model is rate-limited.
+
+    Frontend will:
+    - block Net model temporarily
+    - show retry timer
+    - open NetKeyModal if needed
+    """
+    try:
+        retry_after_sec = int(retry_after_sec)
+    except Exception:
+        retry_after_sec = 30
+
+    retry_after_sec = max(1, retry_after_sec)
+
+    return _base_event(
+        "NET_RATE_LIMITED",
+        {
+            "retryAfterSec": retry_after_sec,
+            "provider": provider,
+        },
+    )
+
+def text_event(text: str) -> Dict[str, Any]:
+    return {
+        "type": "TEXT",
+        "content": text,
+    }
 
 # ==========================================================
 # PUBLIC EXPORTS (CONTRACT GUARANTEE)
@@ -209,6 +296,9 @@ __all__ = [
     "request_metadata_event",
     "metadata_confirmed_event",
     "progress_event",
+    "model_stage_event",
+    "net_rate_limited_event",   #  ADD
     "answer_confidence_event",
     "error_event",
+    "text_event",
 ]

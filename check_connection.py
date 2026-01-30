@@ -23,25 +23,25 @@ def check_postgres():
         cur.execute("SELECT 1")
         cur.close()
         conn.close()
-        print("✅ OK")
+        print("OK")
         return True
     except Exception as e:
-        print(f"❌ FAILED: {e}")
+        print(f" FAILED: {e}")
         return False
 
 def check_redis():
-    print(f"🧠 Testing Redis ({REDIS_HOST}:{REDIS_PORT})... ", end="")
+    print(f" Testing Redis ({REDIS_HOST}:{REDIS_PORT})... ", end="")
     try:
         r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, socket_connect_timeout=3)
         r.ping()
-        print("✅ OK")
+        print("OK")
         return True
     except Exception as e:
-        print(f"❌ FAILED: {e}")
+        print(f" FAILED: {e}")
         return False
 
 def check_minio():
-    print(f"🪣  Testing MinIO ({MINIO_ENDPOINT})... ", end="")
+    print(f"Testing MinIO ({MINIO_ENDPOINT})... ", end="")
     try:
         client = Minio(
             MINIO_ENDPOINT,
@@ -51,21 +51,21 @@ def check_minio():
         )
         # Listing buckets proves auth and connectivity work
         client.list_buckets()
-        print("✅ OK")
+        print("OK")
         return True
     except Exception as e:
-        print(f"❌ FAILED: {e}")
+        print(f" FAILED: {e}")
         return False
 
 if __name__ == "__main__":
-    print("--- 🛠️ CONNECTION DIAGNOSTIC 🛠️ ---")
+    print("--- CONNECTION DIAGNOSTIC 🛠️ ---")
     pg = check_postgres()
     rd = check_redis()
     mn = check_minio()
     
     if all([pg, rd, mn]):
-        print("\n✨ All systems go!")
+        print("\nAll systems go!")
         sys.exit(0)
     else:
-        print("\n🔥 Some services are unreachable.")
+        print("\nSome services are unreachable.")
         sys.exit(1)

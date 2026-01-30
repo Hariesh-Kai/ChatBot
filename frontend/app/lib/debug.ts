@@ -8,10 +8,10 @@
  * - Used ONLY by developer debug UI
  *
  * Rules:
- * - ❌ No retries
- * - ❌ No caching
- * - ❌ No writes
- * - ✅ Read-only
+ * -  No retries
+ * -  No caching
+ * -  No writes
+ * -  Read-only
  */
 
 import { API_BASE } from "./config";

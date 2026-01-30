@@ -27,7 +27,7 @@ def check_chat_db():
         cur.execute("SELECT session_id, company_document_id, revision_number FROM session_active_documents;")
         rows = cur.fetchall()
         if not rows:
-            print("   ⚠️  TABLE IS EMPTY! (Did you upload a file after wiping?)")
+            print("    TABLE IS EMPTY! (Did you upload a file after wiping?)")
         for row in rows:
             print(f"   - Session: {row[0]}")
             print(f"     Doc ID:  {row[1]}")
@@ -36,7 +36,7 @@ def check_chat_db():
 
         conn.close()
     except Exception as e:
-        print(f"❌ Chat DB Error: {e}")
+        print(f" Chat DB Error: {e}")
 
 def check_rag_db():
     print("\n🔎 --- CHECKING VECTOR DB (RAG) ---")
@@ -51,7 +51,7 @@ def check_rag_db():
         rows = cur.fetchall()
         
         if not rows:
-            print("   ⚠️  VECTOR DB IS EMPTY! (You must upload a PDF to populate it)")
+            print("    VECTOR DB IS EMPTY! (You must upload a PDF to populate it)")
         
         for i, row in enumerate(rows):
             meta = row[0]
@@ -62,7 +62,7 @@ def check_rag_db():
 
         conn.close()
     except Exception as e:
-        print(f"❌ RAG DB Error: {e}")
+        print(f" RAG DB Error: {e}")
 
 if __name__ == "__main__":
     check_chat_db()

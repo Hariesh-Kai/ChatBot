@@ -26,7 +26,7 @@ export default function InlineMetadataPrompt({
   useEffect(() => {
     const initial: Record<string, string> = {};
     for (const f of fields) {
-      // ✅ FIX: Use the pre-filled value from the backend if available
+      //  FIX: Use the pre-filled value from the backend if available
       initial[f.key] = f.value || "";
     }
     setValues(initial);
@@ -95,7 +95,7 @@ export default function InlineMetadataPrompt({
               </label>
 
               <input
-                // ✅ UX: Auto-focus the first field so user can type immediately
+                //  UX: Auto-focus the first field so user can type immediately
                 autoFocus={index === 0} 
                 type="text"
                 value={values[field.key] ?? ""}

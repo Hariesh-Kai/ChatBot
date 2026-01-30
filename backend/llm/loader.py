@@ -57,7 +57,7 @@ def _detect_device() -> str:
 DEVICE = _detect_device()
 DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
 
-print(f"🖥️ LLM device detected: {DEVICE}")
+print(f"LLM device detected: {DEVICE}")
 
 
 # ============================================================
@@ -119,7 +119,7 @@ def _load_gguf(model_id: str) -> Any:
         if model_id in _llama_cache:
             return _llama_cache[model_id]
 
-        print(f"🧠 Loading GGUF model [{model_id}] …")
+        print(f"Loading GGUF model [{model_id}] …")
         gpu_layers = -1 if DEVICE in ("cuda", "mps") else 0
 
         llm = Llama(
@@ -131,7 +131,7 @@ def _load_gguf(model_id: str) -> Any:
         )
 
         _llama_cache[model_id] = llm
-        print(f"✅ GGUF model loaded [{model_id}] | gpu_layers={gpu_layers}")
+        print(f"GGUF model loaded [{model_id}] | gpu_layers={gpu_layers}")
         return llm
 
 
@@ -163,7 +163,7 @@ def _gguf_stream_wrapper(
 
     for item in gen:
         if session_id and is_aborted(session_id):
-            print(f"🛑 [GGUF] Abort detected for session {session_id}")
+            print(f"[GGUF] Abort detected for session {session_id}")
             break
 
         if isinstance(item, dict):
@@ -204,7 +204,7 @@ def _load_hf(model_id: str) -> Tuple[Any, Any]:
         if model_id in _hf_model_cache:
             return _hf_model_cache[model_id], _hf_tokenizer_cache[model_id]
 
-        print(f"🧠 Loading HF model [{model_id}] on {DEVICE} …")
+        print(f" Loading HF model [{model_id}] on {DEVICE} …")
 
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
@@ -228,7 +228,7 @@ def _load_hf(model_id: str) -> Tuple[Any, Any]:
         _hf_model_cache[model_id] = model
         _hf_tokenizer_cache[model_id] = tokenizer
 
-        print(f"✅ HF model loaded [{model_id}]")
+        print(f"HF model loaded [{model_id}]")
         return model, tokenizer
 
 
@@ -271,7 +271,7 @@ def hf_stream_generate(
     try:
         for token in streamer:
             if session_id and is_aborted(session_id):
-                print(f"🛑 [HF] Abort detected for session {session_id}")
+                print(f"[HF] Abort detected for session {session_id}")
                 try:
                     thread.join(timeout=0.2)
                 except Exception:
@@ -301,7 +301,7 @@ def load_intent_classifier():
         if _intent_classifier is not None:
             return _intent_classifier
 
-        print("🧭 Loading intent classifier [bart-large-mnli]…")
+        print("Loading intent classifier [bart-large-mnli]…")
         device_id = 0 if DEVICE == "cuda" else -1
 
         _intent_classifier = pipeline(
@@ -312,7 +312,7 @@ def load_intent_classifier():
             local_files_only=True,
         )
 
-        print("✅ Intent classifier loaded")
+        print("Intent classifier loaded")
         return _intent_classifier
 
 
@@ -321,6 +321,7 @@ def load_intent_classifier():
 # ============================================================
 
 def get_llm(model_id: str) -> Dict[str, Any]:
+    
     """
     Returns:
     - GGUF: {"type": "gguf", "llm": callable}

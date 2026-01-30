@@ -10,7 +10,7 @@
    - Parser is stream-safe and never throws
 ========================================================= */
 
-// ✅ IMPORT Source Type
+//  IMPORT Source Type
 import { RagSource } from "./types";
 
 /* =========================================================
@@ -37,6 +37,8 @@ export type MetadataRequestField = {
   label: string;
   placeholder?: string;
   reason?: string;
+  value?: string | null;
+  confidence?: number | null;
 };
 
 export type RequestMetadataEvent = {
@@ -45,19 +47,8 @@ export type RequestMetadataEvent = {
 };
 
 export type MetadataConfirmedEvent = {
-  type: "METADATA_CONFIRMED";
+ type: "METADATA_CONFIRMED";
   message?: string;
-};
-
-/* ---------- Loading (legacy / optional) ---------- */
-
-export type ShowLoadingEvent = {
-  type: "SHOW_LOADING";
-  text?: string;
-};
-
-export type HideLoadingEvent = {
-  type: "HIDE_LOADING";
 };
 
 /* ---------- Progress ---------- */
@@ -66,6 +57,15 @@ export type ProgressEvent = {
   type: "PROGRESS";
   value: number; // 0–100
   label?: string;
+};
+
+/* ---------- 🟦 Model Stage (Live Pipeline State) ---------- */
+
+export type ModelStageEvent = {
+  type: "MODEL_STAGE";
+  stage: string;          // e.g. "intent" | "retrieval" | "reranking" | "generation"
+  message?: string;       // Human-readable text
+  model?: string;         // lite | base | net
 };
 
 /* ---------- Error ---------- */
@@ -77,23 +77,29 @@ export type ErrorEvent = {
 
 /* ---------- Net ---------- */
 
-export type NetStatusEvent = {
-  type: "NET_STATUS";
-  available: boolean;
-  provider?: string;
-};
+
 
 export type NetRateLimitedEvent = {
   type: "NET_RATE_LIMITED";
   retryAfterSec: number;
+  provider?: string;
 };
 
-/* ---------- ✅ NEW: Sources ---------- */
+/* ----------  NEW: Sources ---------- */
 
 export type SourcesEvent = {
   type: "SOURCES";
   data: RagSource[];
 };
+
+export type AnswerConfidenceEvent = {
+  type: "ANSWER_CONFIDENCE";
+  confidence: number;
+  level: "high" | "medium" | "low";
+};
+
+
+
 
 
 /* =========================================================
@@ -104,14 +110,12 @@ export type LLMUIEvent =
   | SystemMessageEvent
   | RequestMetadataEvent
   | MetadataConfirmedEvent
-  | ShowLoadingEvent
-  | HideLoadingEvent
   | ProgressEvent
+  | ModelStageEvent
   | ErrorEvent
-  | NetStatusEvent
   | NetRateLimitedEvent
-  | SourcesEvent; // ✅ Added here
-
+  | SourcesEvent
+  | AnswerConfidenceEvent;
 
 
 /* =========================================================
@@ -128,13 +132,13 @@ export function isLLMUIEvent(obj: unknown): obj is LLMUIEvent {
       case "SYSTEM_MESSAGE":
       case "REQUEST_METADATA":
       case "METADATA_CONFIRMED":
-      case "SHOW_LOADING":
-      case "HIDE_LOADING":
       case "PROGRESS":
+      case "MODEL_STAGE":
       case "ERROR":
-      case "NET_STATUS":
       case "NET_RATE_LIMITED":
-      case "SOURCES": // ✅ Added here
+      case "SOURCES": 
+      case "ANSWER_CONFIDENCE":
+
         return true;
       default:
         return false;
@@ -178,3 +182,4 @@ export function parseLLMUIEvent(
     return null;
   }
 }
+

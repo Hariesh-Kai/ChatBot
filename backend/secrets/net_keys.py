@@ -68,7 +68,7 @@ def _load_from_disk():
                 _NET_KEYS[k] = v
 
     except Exception as e:
-        print(f"⚠️ Corrupted net_keys.json ignored: {e}")
+        print(f"Corrupted net_keys.json ignored: {e}")
         try:
             SECRET_FILE.unlink()
         except Exception:
@@ -86,7 +86,7 @@ def _save_to_disk():
     try:
         os.chmod(SECRET_FILE, 0o600)
     except Exception as e:
-        print(f"⚠️ Failed to chmod net_keys.json: {e}")
+        print(f"Failed to chmod net_keys.json: {e}")
 
 # Load once at import
 _load_from_disk()
@@ -125,7 +125,7 @@ def clear_net_api_keys() -> None:
 
         if SECRET_FILE.exists():
             try:
-                print("⚠️ Corrupted net_keys.json preserved for inspection")
+                print("Corrupted net_keys.json preserved for inspection")
             except Exception:
                 pass
 

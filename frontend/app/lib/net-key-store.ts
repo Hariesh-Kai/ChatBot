@@ -90,7 +90,7 @@ export function clearNetApiKey(): void {
 /**
  * Indicates whether a key exists locally.
  *
- * ⚠️ DOES NOT mean Net is enabled.
+ * DOES NOT mean Net is enabled.
  * Always check backend /net/status.
  */
 export function hasNetApiKey(): boolean {

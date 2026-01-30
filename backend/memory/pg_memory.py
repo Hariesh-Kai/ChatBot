@@ -1,6 +1,6 @@
 # backend/memory/pg_memory.py
 
-from typing import List, Dict, Optional, Any  # ✅ Added 'Any'
+from typing import List, Dict, Optional, Any  #  Added 'Any'
 import os
 from contextlib import contextmanager
 
@@ -19,7 +19,7 @@ CHAT_DB_URL = os.getenv(
     "postgresql://postgres:1@localhost:5432/chat_memory_db",
 )
 
-# ✅ NEW: RAG Database Connection (for retrieving chunk text)
+#  NEW: RAG Database Connection (for retrieving chunk text)
 # We strip '+psycopg2' because the driver doesn't need it in the connection string
 RAG_DB_URL = os.getenv(
     "DB_CONNECTION", 
@@ -104,9 +104,9 @@ def _init_db():
             with conn.cursor() as cur:
                 for q in queries:
                     cur.execute(q)
-        print("✅ Chat Database initialized (Tables verified/created).")
+        print("Chat Database initialized (Tables verified/created).")
     except Exception as e:
-        print(f"⚠️ Database initialization warning: {e}")
+        print(f"Database initialization warning: {e}")
 
 # Run immediately on import
 _init_db()
@@ -241,26 +241,30 @@ def get_last_topic_hint(session_id: str) -> Optional[str]:
     return row[0] if row else None
 
 # =========================================================
-# ✅ ACTIVE DOCUMENT PERSISTENCE (SELF-HEALING)
+#  ACTIVE DOCUMENT PERSISTENCE (SELF-HEALING)
 # =========================================================
 
 def save_active_document(
     session_id: str,
     company_document_id: str,
-    revision_number: str, 
+    revision_number: str,
+    filename: Optional[str] = None,   # ✅ ADD THIS
 ):
     """
     Persist active document for a session.
-    
+
     🔥 SELF-HEALING: If table is missing, it re-creates it and retries.
     """
     if not session_id or not company_document_id:
         return
 
-    # Ensure revision number is treated as string for TEXT column
     rev_str = str(revision_number)
 
-    print(f"💾 [PG] Saving Active Doc: Session={session_id}, Doc={company_document_id}, Rev={rev_str}")
+    print(
+        f"💾 [PG] Saving Active Doc: "
+        f"Session={session_id}, Doc={company_document_id}, "
+        f"Rev={rev_str}, File={filename}"
+    )
 
     def _execute_insert():
         with get_connection() as conn:
@@ -268,29 +272,29 @@ def save_active_document(
                 cur.execute(
                     """
                     INSERT INTO session_active_documents
-                        (session_id, company_document_id, revision_number)
-                    VALUES (%s, %s, %s)
+                        (session_id, company_document_id, revision_number, filename)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT (session_id)
                     DO UPDATE SET
                         company_document_id = EXCLUDED.company_document_id,
                         revision_number = EXCLUDED.revision_number,
+                        filename = EXCLUDED.filename,
                         updated_at = NOW()
                     """,
-                    (session_id, company_document_id, rev_str),
+                    (session_id, company_document_id, rev_str, filename),
                 )
 
     try:
         _execute_insert()
     except psycopg2.errors.UndefinedTable:
-        # 🔥 The table was missing. Auto-fix it!
-        print("⚠️ [PG] Table 'session_active_documents' missing. Re-creating now...")
+        print("[PG] Table 'session_active_documents' missing. Re-creating now...")
         _init_db()
-        # Retry the insert once
         try:
             _execute_insert()
-            print("✅ [PG] Table created and document saved.")
+            print(" [PG] Table created and document saved.")
         except Exception as e:
-            print(f"❌ [PG] Failed to auto-heal table: {e}")
+            print(f" [PG] Failed to auto-heal table: {e}")
+
 
 def get_active_document(session_id: str) -> Optional[Dict[str, object]]:
     """
@@ -306,7 +310,7 @@ def get_active_document(session_id: str) -> Optional[Dict[str, object]]:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
                     """
-                    SELECT company_document_id, revision_number
+                    SELECT company_document_id, revision_number, filename
                     FROM session_active_documents
                     WHERE session_id = %s
                     """,
@@ -315,14 +319,14 @@ def get_active_document(session_id: str) -> Optional[Dict[str, object]]:
                 row = cur.fetchone()
         
         if row:
-            print(f"   ✅ Found: {dict(row)}")
+            print(f"    Found: {dict(row)}")
         else:
-            print(f"   ❌ Not Found (Session {session_id} has no active document)")
+            print(f"    Not Found (Session {session_id} has no active document)")
 
         return dict(row) if row else None
         
     except psycopg2.errors.UndefinedTable:
-        print("⚠️ [PG] Table missing during fetch. Returning None.")
+        print("[PG] Table missing during fetch. Returning None.")
         return None
 
 def clear_active_document(session_id: str):
@@ -387,7 +391,7 @@ def get_chunks_by_ids(chunk_ids: List[str]) -> List[Dict[str, Any]]:
             )
             rows = cur.fetchall() or []
     except Exception as e:
-        print(f"❌ [PG] Failed to fetch chunks by IDs: {e}")
+        print(f" [PG] Failed to fetch chunks by IDs: {e}")
         return []
     finally:
         if conn:

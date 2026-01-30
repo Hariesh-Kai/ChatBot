@@ -82,7 +82,7 @@ export interface AnalyticsPayload {
 
 /**
  * Rough token cost estimates (USD / 1K tokens)
- * ⚠️ Approximate, frontend-only
+ * Approximate, frontend-only
  */
 const NET_TOKEN_COST_USD_PER_1K: Record<
   "groq" | "xai",

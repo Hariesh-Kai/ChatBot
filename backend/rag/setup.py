@@ -24,9 +24,9 @@ def install_packages():
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install"] + packages
         )
-        print("✅ Python packages installed successfully.")
+        print("Python packages installed successfully.")
     except subprocess.CalledProcessError as e:
-        print(f"❌ Package installation failed: {e}")
+        print(f"Package installation failed: {e}")
         sys.exit(1)
 
 
@@ -52,10 +52,10 @@ def verify_system_tools():
             missing = True
 
     if missing:
-        print("\n❌ Missing system dependencies. Install them and rerun setup.py.")
+        print("\nMissing system dependencies. Install them and rerun setup.py.")
         sys.exit(1)
 
-    print("\n✅ System environment is ready.")
+    print("\nSystem environment is ready.")
 
 
 if __name__ == "__main__":

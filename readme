@@ -8,7 +8,7 @@ The system features a **Hybrid Search** engine (Vector + Keyword), a **Self-Heal
 
 ## 🌟 Key Features
 
-### 🧠 Advanced RAG Capabilities
+###  Advanced RAG Capabilities
 * **Hybrid Retrieval:** Combines **Vector Similarity** (`pgvector` with `all-MiniLM-L6-v2`) and **Keyword Search** (SQL `ILIKE`) to capture both semantic meaning and exact matches (e.g., "Table 8-4", "NDU-101").
 * **Table-Aware Chunking:** Uses `unstructured` to detect tables in PDFs, converts them to Markdown, and preserves row-level context during chunking.
 * **Confidence Scoring:** Calculates a confidence score for every answer based on retrieval density and similarity.

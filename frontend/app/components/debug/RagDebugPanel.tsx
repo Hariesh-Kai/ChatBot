@@ -9,9 +9,9 @@
  * - Safe for streaming chat UI
  *
  * Rules:
- * - ❌ No LLM calls
- * - ❌ No chat mutations
- * - ❌ No prompt injection
+ * -  No LLM calls
+ * -  No chat mutations
+ * -  No prompt injection
  */
 
 import { useEffect, useState } from "react";

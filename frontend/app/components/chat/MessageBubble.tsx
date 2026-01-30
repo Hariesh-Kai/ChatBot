@@ -9,6 +9,7 @@ import ThinkingDisclosure from "./ThinkingDisclosure";
 import TypingIndicator from "./TypingIndicator";
 import { Copy, Trash2, RotateCcw, BookOpen, FileText } from "lucide-react"; 
 import remarkGfm from "remark-gfm";
+import FeedbackBar from "./FeedbackBar";
 
 /* ================= PROPS ================= */
 
@@ -20,7 +21,13 @@ interface Props {
   onRetry?: () => void;
   onDelete?: () => void;
   onViewSources?: (sources: RagSource[]) => void;
+
+  // 🔥 ADD THESE
+  sessionId?: string | null;
+  companyDocumentId?: string;
+  revisionNumber?: number;
 }
+
 
 /* ================= HELPERS ================= */
 
@@ -41,6 +48,9 @@ export default function MessageBubble({
   onRetry,
   onDelete,
   onViewSources,
+  sessionId,
+  companyDocumentId,
+  revisionNumber,
 }: Props) {
   const isAssistant = message.role === "assistant";
   const isUser = message.role === "user";
@@ -155,6 +165,22 @@ export default function MessageBubble({
             <ThinkingDisclosure content={thoughtContent} />
           )}
 
+          {/* FEEDBACK BAR FOR LAST ASSISTANT MESSAGE */} 
+          {isLastAssistant &&
+            message.role === "assistant" &&
+            message.status === "done" &&
+            sessionId &&
+            companyDocumentId &&
+            revisionNumber !== undefined && (
+              <FeedbackBar
+                message={message}
+                sessionId={sessionId}
+                companyDocumentId={companyDocumentId}
+                revisionNumber={revisionNumber}
+              />
+          )}
+
+          {/* ================= BUBBLE ================= */}
           <div
             className={`
               relative rounded-xl px-4 py-3

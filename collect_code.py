@@ -65,7 +65,7 @@ def dump_by_subfolder(source_dir: str, output_base: str):
                     txt.write(content)
                     txt.write("\n\n")
 
-        print(f"✅ Saved: {output_file}")
+        print(f"Saved: {output_file}")
 
 
 # ==============================

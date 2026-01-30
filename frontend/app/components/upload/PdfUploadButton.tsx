@@ -9,7 +9,7 @@ import { useSmartUpload, UploadStatus } from "@/app/hooks/useSmartUpload";
 type Props = {
   sessionId: string | null;
   onUploadStart?: () => void;
-  // ✅ NEW: Receive progress callback from parent
+  //  NEW: Receive progress callback from parent
   onUploadProgress?: (status: UploadStatus, percent: number, label: string) => void;
   onUploadSuccess?: (result: any) => void;
   onUploadError?: (error: string) => void;

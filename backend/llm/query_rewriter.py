@@ -3,7 +3,7 @@
 import re
 from typing import List, Optional
 
-# ✅ NEW: Import Lite LLM loader to perform the correction
+#  NEW: Import Lite LLM loader to perform the correction
 from backend.llm.loader import get_llm
 
 # ============================================================
@@ -25,7 +25,7 @@ NON_INFORMATIVE_MESSAGES = {
 }
 
 # ============================================================
-# 🧠 LLM-BASED CORRECTION (The Fix)
+#  LLM-BASED CORRECTION (The Fix)
 # ============================================================
 
 def _clean_with_llm(text: str) -> str:
@@ -58,7 +58,7 @@ Output:<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
         cleaned = ""
 
-        # ✅ FIX: Handle Streaming Generator & Remove 'echo' arg
+        #  FIX: Handle Streaming Generator & Remove 'echo' arg
         if llm_info["type"] == "gguf":
             # The loader returns a generator, so we must consume it loop-by-loop.
             # We removed 'echo=False' because the loader wrapper doesn't support it.
@@ -94,7 +94,7 @@ Output:<|eot_id|><|start_header_id|>assistant<|end_header_id|>
         return cleaned
 
     except Exception as e:
-        print(f"⚠️ Query correction failed: {e}")
+        print(f"Query correction failed: {e}")
         return text
 
 

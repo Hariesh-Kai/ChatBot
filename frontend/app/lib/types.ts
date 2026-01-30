@@ -29,17 +29,20 @@ export type MessageStatus =
 
 export interface RagSource {
   id: string;
-  fileName: string; // ✅ Fixed: Must be camelCase to match Backend & MessageBubble
+  fileName: string;
   page: number;
-  
-  // ✅ FIX: Allow array (from backend) or string to handle legacy/mismatches safely
-  bbox?: any;    
 
-  company_doc_id?: string;
-  revision?: number;
-  text?: string;    // Snippet text
+  bbox?: any;
+
+  company_document_id?: string;
+  revision_number?: number;
+  chunk_id?: string;
+
+  text?: string;
   score?: number;
 }
+
+
 
 /* ================= MESSAGE ================= */
 

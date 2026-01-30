@@ -5,7 +5,7 @@ import sys
 import hashlib
 import tiktoken
 import time
-import re  # ✅ Added for Regex patterns
+import re  #  Added for Regex patterns
 from datetime import datetime
 from typing import Dict, Any, List
 
@@ -54,7 +54,7 @@ def extract_document_metadata(
     """
     Extract document-level metadata ONLY FROM THE FIRST PAGE.
 
-    ✅ UPDATED: Uses Regex to distinguish Document ID vs Project Name.
+     UPDATED: Uses Regex to distinguish Document ID vs Project Name.
     """
 
     with open(elements_file, "r", encoding="utf-8") as f:
@@ -64,12 +64,12 @@ def extract_document_metadata(
     metadata = {
         "document_title": {"value": None, "confidence": 0.0},
         "revision_code": {"value": None, "confidence": 0.0},
-        "project_name":  {"value": None, "confidence": 0.0}, # ✅ New field
-        "document_number": {"value": None, "confidence": 0.0} # ✅ New field
+        "project_name":  {"value": None, "confidence": 0.0}, #  New field
+        "document_number": {"value": None, "confidence": 0.0} #  New field
     }
 
     # --------------------------------------------------------
-    # 🧠 SMART HEURISTICS (Page 1 Only)
+    #  SMART HEURISTICS (Page 1 Only)
     # --------------------------------------------------------
 
     for el in elements:
@@ -159,7 +159,7 @@ def enrich_chunks(
     with open(chunks_file, "r", encoding="utf-8") as f:
         chunks = json.load(f)
 
-    # ✅ FIX: Treat revision as String (do not cast to int)
+    #  FIX: Treat revision as String (do not cast to int)
     revision_number = str(extra_metadata.get("revision_number", ""))
     revision_code = extra_metadata.get("revision_code")
     revision_date = extra_metadata.get("revision_date", int(time.time()))
@@ -196,7 +196,7 @@ def enrich_chunks(
                     "tokens": count_tokens(content),
                     "created_at": created_at,
                     
-                    # ✅ CRITICAL: Pass Page & BBox to DB for Frontend Highlighting
+                    #  CRITICAL: Pass Page & BBox to DB for Frontend Highlighting
                     "page_number": base_meta.get("page_number", 1),
                     "bbox": base_meta.get("bbox", "") 
                 },
@@ -228,7 +228,7 @@ def enrich_chunks(
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(enriched, f, indent=2, ensure_ascii=False)
 
-    print(f"✅ Enriched {len(enriched)} chunks.")
+    print(f" Enriched {len(enriched)} chunks.")
     print(f"💾 Saved to: {output_file}")
 
     return {
@@ -260,4 +260,4 @@ if __name__ == "__main__":
             "source_file": sys.argv[7],
         },
     )
-    print("✅ Chunk enrichment completed.")
+    print("Chunk enrichment completed.")

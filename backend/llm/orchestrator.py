@@ -46,7 +46,7 @@ def _run_model_once(
     """
 
     start = time.time()
-    print(f"🧠 [ORCH:{role}] START {model_id}")
+    print(f"[ORCH:{role}] START {model_id}")
 
     info = get_llm(model_id)
     tokens: List[str] = []
@@ -59,7 +59,7 @@ def _run_model_once(
                 stream=True,
             ):
                 if session_id and is_aborted(session_id):
-                    print(f"🛑 [ORCH:{role}] aborted")
+                    print(f"[ORCH:{role}] aborted")
                     return ""
 
                 text = ""
@@ -79,19 +79,19 @@ def _run_model_once(
                 session_id=session_id,
             ):
                 if session_id and is_aborted(session_id):
-                    print(f"🛑 [ORCH:{role}] aborted")
+                    print(f"[ORCH:{role}] aborted")
                     return ""
 
                 if t:
                     tokens.append(t)
 
     except Exception as e:
-        print(f"🔥 [ORCH:{role}] ERROR {model_id}: {repr(e)}")
+        print(f"[ORCH:{role}] ERROR {model_id}: {repr(e)}")
         return ""
 
     output = clean_model_output("".join(tokens))
     elapsed = round(time.time() - start, 2)
-    print(f"✅ [ORCH:{role}] END {model_id} | {elapsed}s")
+    print(f"[ORCH:{role}] END {model_id} | {elapsed}s")
 
     return output
 

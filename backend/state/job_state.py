@@ -13,7 +13,7 @@ Single source of truth for:
 GUARANTEES:
 - One active document per session
 - RAG survives backend restart (via DB persistence)
-- ERROR jobs never block chat
+- ERROR jobs are visible to callers
 - READY jobs are immutable
 """
 
@@ -21,9 +21,10 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from threading import Lock
 
-from backend.state.abort_signals import reset_abort_signal
+# Abort reset must be called ONLY when a job is fully done
+from backend.state.abort_signals import reset_abort_signal, signal_abort
 
-# ✅ NEW: Import DB functions to persist state across reloads
+# DB-backed active document persistence
 from backend.memory.pg_memory import (
     save_active_document as db_save_active_doc,
     get_active_document as db_get_active_doc,
@@ -35,8 +36,11 @@ from backend.memory.pg_memory import (
 # ==========================================================
 
 STATUS_WAIT_FOR_METADATA = "WAIT_FOR_METADATA"
+STATUS_PROCESSING = "PROCESSING"
 STATUS_READY = "READY"
 STATUS_ERROR = "ERROR"
+
+TERMINAL_STATES = {STATUS_READY, STATUS_ERROR}
 
 # ==========================================================
 # JOB STATE MODEL
@@ -55,7 +59,7 @@ class JobState:
 
 
 # ==========================================================
-# IN-MEMORY STORES (PROCESS LOCAL - JOBS ARE TRANSIENT)
+# IN-MEMORY STORES (PROCESS-LOCAL)
 # ==========================================================
 
 _JOB_STORE: Dict[str, JobState] = {}
@@ -63,18 +67,23 @@ _SESSION_JOB_MAP: Dict[str, str] = {}
 
 _LOCK = Lock()
 
+
 # ==========================================================
 # INTERNAL HELPERS
 # ==========================================================
 
 def _remove_job(job_id: str) -> None:
+    """
+    Remove job from all in-memory mappings.
+    Does NOT touch abort signals.
+    """
     job = _JOB_STORE.pop(job_id, None)
     if job and job.session_id:
         _SESSION_JOB_MAP.pop(job.session_id, None)
 
 
 # ==========================================================
-# ACTIVE DOCUMENT (🔥 FIXED: CONNECTED TO DB)
+# ACTIVE DOCUMENT (DB-BACKED)
 # ==========================================================
 
 def save_active_document(
@@ -86,13 +95,13 @@ def save_active_document(
 ) -> None:
     """
     Persist the active document for a session.
-    Routes to Postgres so it survives server reloads.
+    Survives backend restarts.
     """
-    # We cast revision to string here to match the DB schema TEXT column
     db_save_active_doc(
         session_id=session_id,
         company_document_id=company_document_id,
         revision_number=str(revision_number),
+        filename=filename,
     )
 
 
@@ -125,20 +134,21 @@ def create_job(
     Create a new job.
 
     RULE:
-    - Replaces any existing job bound to the session
+    - Replaces any existing job bound to the same session
+    - Old job is marked ERROR explicitly
     """
 
     with _LOCK:
         if session_id and session_id in _SESSION_JOB_MAP:
-            old_job_id = _SESSION_JOB_MAP.get(session_id)
-            old_job = _JOB_STORE.get(old_job_id)
+            old_job_id = _SESSION_JOB_MAP.pop(session_id)
+            old_job = _JOB_STORE.pop(old_job_id, None)
 
             if old_job:
+                signal_abort(old_job.session_id)
                 old_job.status = STATUS_ERROR
                 old_job.error = "Replaced by new job"
-
-            _SESSION_JOB_MAP.pop(session_id, None)
-            _JOB_STORE.pop(old_job_id, None)
+                if old_job.session_id:
+                    clear_active_document(old_job.session_id)
 
         metadata = dict(metadata or {})
         missing_fields = list(missing_fields or [])
@@ -146,7 +156,7 @@ def create_job(
         status = (
             STATUS_WAIT_FOR_METADATA
             if missing_fields
-            else STATUS_READY
+            else STATUS_PROCESSING
         )
 
         job = JobState(
@@ -166,6 +176,9 @@ def create_job(
 
 
 def bind_session_to_job(session_id: str, job_id: str) -> None:
+    """
+    Explicitly bind a session to an existing job.
+    """
     with _LOCK:
         job = _JOB_STORE.get(job_id)
         if not job:
@@ -173,6 +186,7 @@ def bind_session_to_job(session_id: str, job_id: str) -> None:
 
         old_job_id = _SESSION_JOB_MAP.get(session_id)
         if old_job_id and old_job_id != job_id:
+            signal_abort(session_id)
             _remove_job(old_job_id)
 
         job.session_id = session_id
@@ -189,19 +203,17 @@ def get_job_state(identifier: str) -> Optional[JobState]:
     - job_id OR
     - session_id
 
-    ERROR jobs are ignored.
+    🔥 FIX:
+    - ERROR jobs are RETURNED (not hidden)
     """
-
     with _LOCK:
         job = _JOB_STORE.get(identifier)
-        if job and job.status != STATUS_ERROR:
+        if job:
             return job
 
         job_id = _SESSION_JOB_MAP.get(identifier)
         if job_id:
-            job = _JOB_STORE.get(job_id)
-            if job and job.status != STATUS_ERROR:
-                return job
+            return _JOB_STORE.get(job_id)
 
         return None
 
@@ -216,6 +228,10 @@ def update_job_metadata(
 ) -> JobState:
     """
     Merge user metadata and advance state automatically.
+
+    🔥 FIX:
+    - Metadata can ONLY be updated in WAIT_FOR_METADATA
+    - READY jobs are immutable
     """
 
     with _LOCK:
@@ -223,7 +239,7 @@ def update_job_metadata(
         if not job:
             raise KeyError("Job not found")
 
-        if job.status not in (STATUS_WAIT_FOR_METADATA, STATUS_READY):
+        if job.status != STATUS_WAIT_FOR_METADATA:
             raise RuntimeError(
                 f"Cannot update metadata for job in state '{job.status}'"
             )
@@ -236,7 +252,7 @@ def update_job_metadata(
         ]
 
         if not job.missing_fields:
-            job.status = STATUS_READY
+            job.status = STATUS_PROCESSING
 
         return job
 
@@ -246,16 +262,27 @@ def update_job_metadata(
 # ==========================================================
 
 def mark_job_ready(job_id: str) -> None:
+    """
+    Mark job READY explicitly.
+    """
     with _LOCK:
         job = _JOB_STORE.get(job_id)
         if not job:
             raise KeyError("Job not found")
+        
+        if job.status != STATUS_PROCESSING:
+            raise RuntimeError(
+                f"Cannot mark job READY from state '{job.status}'"
+            )
 
         job.status = STATUS_READY
         job.error = None
 
 
 def mark_job_error(job_id: str, error: str) -> None:
+    """
+    Mark job ERROR and clean session bindings.
+    """
     with _LOCK:
         job = _JOB_STORE.get(job_id)
         if not job:
@@ -270,10 +297,17 @@ def mark_job_error(job_id: str, error: str) -> None:
 
 
 # ==========================================================
-# CLEANUP
+# CLEANUP (CALL ONLY AFTER STREAM END)
 # ==========================================================
 
 def clear_job_for_session(session_id: str) -> None:
+    """
+    Clear job bound to a session.
+
+    IMPORTANT:
+    - Must be called ONLY after stream fully finishes
+    - Safe place to reset abort signal
+    """
     with _LOCK:
         job_id = _SESSION_JOB_MAP.pop(session_id, None)
         if job_id:
@@ -281,10 +315,14 @@ def clear_job_for_session(session_id: str) -> None:
 
         clear_active_document(session_id)
 
+    # 🔥 Abort reset happens ONLY here
     reset_abort_signal(session_id)
 
 
 def delete_job(job_id: str) -> None:
+    """
+    Delete a job explicitly by job_id.
+    """
     with _LOCK:
         job = _JOB_STORE.get(job_id)
         if job and job.session_id:

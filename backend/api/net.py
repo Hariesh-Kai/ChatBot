@@ -39,6 +39,7 @@ _REQUEST_LOG: Dict[str, list[float]] = {}
 # active net streams
 _ACTIVE_STREAMS = 0
 
+_RATE_LIMIT_LOCK = Lock()
 
 # ============================================================
 # HELPERS
@@ -53,26 +54,34 @@ def check_rate_limit(session_id: str):
     """
     Best-effort per-session rate limit.
     """
-    global _REQUEST_LOG
+    if not session_id:
+        raise HTTPException(400, "session_id required for Net access")
+    
+    with _RATE_LIMIT_LOCK:
+        global _REQUEST_LOG
+        now = time.time()
+        logs = _REQUEST_LOG.get(session_id, [])
+        logs = _prune_old(logs)
+        
+        if not logs:
+            _REQUEST_LOG.pop(session_id, None)
+        
 
-    now = time.time()
-    logs = _REQUEST_LOG.get(session_id, [])
-    logs = _prune_old(logs)
+        if len(logs) >= NET_MAX_REQUESTS_PER_MIN:
+            raise HTTPException(
+                status_code=429,
+                detail="Net rate limit exceeded. Please wait.",
+            )
 
-    if len(logs) >= NET_MAX_REQUESTS_PER_MIN:
-        raise HTTPException(
-            status_code=429,
-            detail="Net rate limit exceeded. Please wait.",
-        )
-
-    logs.append(now)
-    _REQUEST_LOG[session_id] = logs
+        logs.append(now)
+        _REQUEST_LOG[session_id] = logs
 
 _STREAM_LOCK = Lock()
 
 def acquire_stream_slot():
     """
     Guard concurrent Net streams.
+    MUST be paired with release_stream_slot() in a finally block.
     """
     global _ACTIVE_STREAMS
     
@@ -90,6 +99,11 @@ def release_stream_slot():
     with _STREAM_LOCK:
         _ACTIVE_STREAMS = max(0, _ACTIVE_STREAMS - 1)
 
+def reset_net_limits():
+    global _REQUEST_LOG, _ACTIVE_STREAMS
+    with _STREAM_LOCK:
+        _ACTIVE_STREAMS = 0
+    _REQUEST_LOG.clear()
 
 # ============================================================
 # STATUS ENDPOINT

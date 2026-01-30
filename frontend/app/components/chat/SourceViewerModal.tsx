@@ -92,7 +92,7 @@ function SourcePage({ source, zoom }: { source: RagSource, zoom: number }) {
     // It prioritizes 'page' (new backend), falls back to 'page_number' (old backend), or defaults to 1.
     const safePage = source.page ?? (source as any).page_number ?? 1;
 
-    // ✅ CRITICAL FIX: Safe Stringify for BBOX
+    //  CRITICAL FIX: Safe Stringify for BBOX
     // If bbox is an array (from DB), stringify it so backend receives valid JSON
     // If it's a string, use as is. If undefined, use empty string.
     let safeBbox = "";
@@ -102,7 +102,8 @@ function SourcePage({ source, zoom }: { source: RagSource, zoom: number }) {
         safeBbox = source.bbox;
     }
 
-    const imageUrl = `${API_BASE}/render/image?file=${encodeURIComponent(source.fileName)}&page=${safePage}&company_doc_id=${source.company_doc_id}&revision=${source.revision}&bbox=${encodeURIComponent(safeBbox)}`;
+    const imageUrl = `${API_BASE}/render/image?file=${encodeURIComponent(source.fileName)}&page=${safePage}&company_document_id=${source.company_document_id}&revision_number=${source.revision_number}&bbox=${encodeURIComponent(safeBbox)}`;
+
 
     return (
         <div className="relative group flex flex-col items-center">

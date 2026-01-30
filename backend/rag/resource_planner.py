@@ -20,7 +20,7 @@ def get_optimal_strategy(file_size_mb: float):
 
     # 2. Critical Safety Valve (If system is dying, go slow)
     if mem.percent > 85 or cpu_usage > 90:
-        print("⚠️ [SYSTEM] High Load Detected! Forcing 'Serial' mode to save crash.")
+        print("[SYSTEM] High Load Detected! Forcing 'Serial' mode to save crash.")
         return "serial_stream", 1, 1  # 1 core, 1 page at a time
 
     # 3. Strategy Selection based on File Size
@@ -56,4 +56,4 @@ def limit_cpu_usage(cores=1):
         p.cpu_affinity(selected_cores)
         print(f"🔧 [SYSTEM] Pinned process to Cores: {selected_cores}")
     except Exception as e:
-        print(f"⚠️ [SYSTEM] Could not pin CPU affinity: {e}")
+        print(f"[SYSTEM] Could not pin CPU affinity: {e}")

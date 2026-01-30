@@ -1,5 +1,5 @@
 🔴 PHASE 1 — CHAT-BREAKING BUGS (DO FIRST)
-✅📁 backend/state/abort_signals.py
+📁 backend/state/abort_signals.py
 
 ☐ Replace unsafe env parsing
 
@@ -12,7 +12,7 @@ _USE_REDIS = os.getenv("USE_ABORT_REDIS", "0").lower() in ("1", "true", "yes")
 
 ☐ Ensure abort is reset before starting any new generation
 
-✅📁 backend/state/job_state.py
+📁 backend/state/job_state.py
 
 ☐ On clear_job_for_session(session_id) → call:
 
@@ -31,7 +31,7 @@ if session_id in _SESSION_JOB_MAP:
 ☐ (Optional) Add debug log on job transitions
 
 🔴 PHASE 2 — EMPTY / MISSING RESPONSES
-✅ 📁 backend/llm/generate.py
+ 📁 backend/llm/generate.py
 
 ☐ After final apply_response_policy(...) → YIELD IT
 
@@ -44,20 +44,20 @@ yield apply_response_policy(draft, verbosity=style.verbosity)
 
 ☐ Ensure conversational intent routes to lite correctly
 
-✅ 📁  backend/llm/answer_policy.py
+ 📁  backend/llm/answer_policy.py
 
 ☐ Do NOT mark greetings as needs_clarification=True
 
 ☐ Ensure verbosity="one_line" for greetings
 
-✅ 📁  backend/llm/loader.py
+ 📁  backend/llm/loader.py
 
 ☐ After abort → try short thread.join(timeout=0.2)
 
 ☐ Ensure GGUF wrapper always yields normalized dict
 
 🔴 PHASE 3 — RAG FAILURES & SQL ERRORS
-✅ 📁  backend/rag/ingest.py
+ 📁  backend/rag/ingest.py
 
 ☐ Replace ALL SQL references:
 
@@ -76,7 +76,7 @@ SET cmetadata = cmetadata || %s::jsonb
 
 ☐ Ensure connection string normalization everywhere
 
-✅ 📁  backend/rag/keyword_search.py
+ 📁  backend/rag/keyword_search.py
 
 ☐ Replace wrong column name:
 
@@ -87,14 +87,14 @@ document → page_content
 
 ☐ Limit keyword search results to ≤10
 
-✅ 📁  backend/rag/confidence.py
+ 📁  backend/rag/confidence.py
 
 ☐ Guard against empty similarity scores AFTER sanitization
 
 ☐ Ensure confidence always ∈ [0,1]
 
 🟠 PHASE 4 — MEMORY CONSISTENCY
-✅ 📁  backend/memory/pg_memory.py
+ 📁  backend/memory/pg_memory.py
 
 ☐ Make ensure_session + insert message atomic
 
@@ -102,7 +102,7 @@ document → page_content
 
 ☐ Cap limit in get_chat_messages() (≤200)
 
-✅ 📁  backend/memory/redis_memory.py
+ 📁  backend/memory/redis_memory.py
 
 ☐ Store topic text, not hash only
 
@@ -111,15 +111,15 @@ document → page_content
 ☐ Reset used chunks when topic changes
 
 🟠 PHASE 5 — STORAGE & SECURITY
-✅ 📁  backend/storage/minio_client.py
+ 📁  backend/storage/minio_client.py
 
-☐ Remove default credentials ❌
+☐ Remove default credentials 
 ☐ Fail fast if creds missing
 ☐ Make secure configurable via env
 ☐ Handle bucket creation race
 ☐ Prevent overwrite (use UUID or revision path)
 
-✅ 📁  backend/secrets/net_keys.py
+ 📁  backend/secrets/net_keys.py
 
 ☐ Fix misleading “encrypted-at-rest” comment
 ☐ Remove unused NET_API_KEY_ENV
@@ -127,7 +127,7 @@ document → page_content
 ☐ Log corrupted key file instead of silent pass
 
 🟢 PHASE 6 — FRONTEND (FINAL STEP)
-✅ 📁 frontend/lib/stream-parser.ts
+ 📁 frontend/lib/stream-parser.ts
 
 ☐ Never drop partial chunks
 ☐ Flush buffer on stream end
@@ -148,7 +148,7 @@ document → page_content
 
 
 
- ✅ 📁 upload.py
+  📁 upload.py
 
   Split pipeline:
 
@@ -156,7 +156,7 @@ document → page_content
 
  chunking phase
 
- ✅ 📁 rag.pipeline
+  📁 rag.pipeline
 
  Add skip_embedding=True
 
@@ -170,7 +170,7 @@ Filter by latest revision
 
 Frontend
 
-Metadata popup (already exists ✅)
+Metadata popup (already exists )
 
 Warning modal on duplicate metadata 
 Explicit “Proceed anyway” button
@@ -257,22 +257,22 @@ backend/storage/minio_client.py
 
 
 Metadata:
-Company Document ID ✅ 
-Revision Number ✅
-Revision Code ✅
-Validity Status ✅
+Company Document ID  
+Revision Number 
+Revision Code 
+Validity Status 
 PDF Name:
-Date of Revision✅ 
+Date of Revision 
 
 backend/rag/metadata.py
 
-✅ backend/rag/chunk.py
+ backend/rag/chunk.py
 
-✅ backend/rag/ingest.py
+ backend/rag/ingest.py
 
-✅ backend/rag/keyword_search.py
+ backend/rag/keyword_search.py
 
-✅ backend/api/chat.py
+ backend/api/chat.py
 
 retrieve.py
 2️⃣ upload.py
@@ -282,9 +282,9 @@ retrieve.py
 
 
 File	Alignment	Needs Metadata?
-metadata.py	🟡 1 fix needed	✅ Yes
-ingest.py	✅ Correct	✅ Yes
-keyword_search.py	✅ Correct	✅ Yes
+metadata.py	🟡 1 fix needed	 Yes
+ingest.py	 Correct	 Yes
+keyword_search.py	 Correct	 Yes
 
 
 pipeline.py still uses old document_id / revision logic
@@ -302,7 +302,7 @@ Fix progress bar sync
 
 
 
-✅ FILES YOU MUST CHANGE (AUTHORITATIVE LIST)
+ FILES YOU MUST CHANGE (AUTHORITATIVE LIST)
 🔴 MUST CHANGE (Core – without this RAG will break)
 1️⃣ backend/state/job_state.py
 
@@ -389,14 +389,14 @@ Metadata flow is an alternate commit path.
 Problem (CRITICAL BUG):
 You send sessionId as job_id.
 
-updateMetadata({ job_id: sessionId }) // ❌ wrong
+updateMetadata({ job_id: sessionId }) //  wrong
 
 
 Fix:
 Store and use the real job_id returned by upload.
 
 updateMetadata({
-  job_id: uploadResponse.job_id, // ✅ correct
+  job_id: uploadResponse.job_id, //  correct
   metadata: values,
 });
 
@@ -471,4 +471,4 @@ analytics
 
 document switching
 
-✅ SUMMARY TABLE (C
+ SUMMARY TABLE (C

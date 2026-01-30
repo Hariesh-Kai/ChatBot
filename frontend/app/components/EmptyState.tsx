@@ -13,7 +13,7 @@ interface Props {
   onUploadStart?: () => void;
   onUploadSuccess?: (result: any) => void;
   onUploadError?: (error: string) => void;
-  // ✅ NEW: Receive progress callback
+  //  NEW: Receive progress callback
   onUploadProgress?: (status: UploadStatus, percent: number, label: string) => void;
 }
 
@@ -24,7 +24,7 @@ export default function EmptyState({
   onUploadStart,
   onUploadSuccess,
   onUploadError,
-  onUploadProgress, // ✅ Destructure
+  onUploadProgress, //  Destructure
 }: Props) {
   const [value, setValue] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -54,7 +54,7 @@ export default function EmptyState({
                     onUploadStart={onUploadStart}
                     onUploadSuccess={onUploadSuccess}
                     onUploadError={onUploadError}
-                    onUploadProgress={onUploadProgress} // ✅ Pass it down
+                    onUploadProgress={onUploadProgress} //  Pass it down
                 />
             </div>
 

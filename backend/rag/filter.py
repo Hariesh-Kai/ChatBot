@@ -26,7 +26,7 @@ def filter_document_elements(input_file, output_file):
     try:
         elements = elements_from_json(filename=input_file)
     except FileNotFoundError:
-        print("❌ Error: input file not found. Please run partition.py first.")
+        print(" Error: input file not found. Please run partition.py first.")
         sys.exit(1)
 
     print(f"   Loaded {len(elements)} raw elements.")
@@ -56,12 +56,12 @@ def filter_document_elements(input_file, output_file):
 
     print("\n   Discarded Items Breakdown:")
     for cat, count in discard_stats.items():
-        print(f"   ❌ {cat}: {count} removed")
+        print(f"    {cat}: {count} removed")
 
     # Save
     print(f"\n💾 Saving filtered elements to: {output_file}")
     elements_to_json(filtered_elements, filename=output_file)
-    print("✅ Filtering complete. Ready for chunking.")
+    print(" Filtering complete. Ready for chunking.")
 
 
 if __name__ == "__main__":
@@ -69,7 +69,7 @@ if __name__ == "__main__":
     # python filter.py <elements.json> <filtered_elements.json>
 
     if len(sys.argv) != 3:
-        print("❌ Usage: python filter.py <elements.json> <filtered_elements.json>")
+        print(" Usage: python filter.py <elements.json> <filtered_elements.json>")
         sys.exit(1)
 
     input_json = sys.argv[1]

@@ -10,15 +10,41 @@ from backend.llm.query_rewriter import rewrite_question
 from backend.llm.text_normalizer import normalize_text
 from backend.rag.keyword_search import extract_keywords
 
-# ✅ NEW: Import retrieval logic for testing
+#  NEW: Import retrieval logic for testing
 from backend.rag.retrieve import retrieve_rag_context
-from backend.api.chat import vector_store # Reuse the DB connection
+from langchain_postgres import PGVector
+from langchain_huggingface import HuggingFaceEmbeddings
+import os
 
 from backend.memory.pg_memory import get_chat_messages
 from backend.memory.redis_memory import get_active_topic, get_used_chunk_ids
 from backend.state.job_state import _JOB_STORE
 
 router = APIRouter(prefix="/devtools", tags=["Developer Tools"])
+
+#-- Setup Vector Store for Retrieval Testing ---
+
+DB_CONNECTION = os.getenv(
+    "DB_CONNECTION",
+    "postgresql+psycopg2://postgres:1@localhost:5432/rag_db",
+)
+
+COLLECTION_NAME = "rag_documents"
+
+_embedding_model = HuggingFaceEmbeddings(
+    model_name="BAAI/bge-m3",
+    model_kwargs={"device": "cpu"},
+    encode_kwargs={"normalize_embeddings": True},
+)
+
+vector_store = PGVector.from_existing_index(
+    embedding=_embedding_model,
+    collection_name=COLLECTION_NAME,
+    connection=DB_CONNECTION,
+)
+
+
+
 
 # --- Models ---
 class TextPayload(BaseModel):
@@ -57,35 +83,54 @@ def debug_keywords(payload: TextPayload):
 
 @router.get("/jobs")
 def debug_jobs():
-    """Inspect in-memory job states (uploads)."""
-    # Convert internal _JOB_STORE to readable list
+    """Inspect in-memory job states (SAFE SUMMARY)."""
     return {
         "active_jobs": len(_JOB_STORE),
-        "details": {k: v.status for k, v in _JOB_STORE.items()}
+        "statuses": {
+            job_id: job.status
+            for job_id, job in _JOB_STORE.items()
+        }
     }
+
 
 @router.post("/retrieve")
 def debug_retrieval(req: RetrievalDebugReq):
     """Test the full RAG pipeline (Vector + Keyword + Rerank)"""
+
+    if not req.company_document_id:
+        raise HTTPException(400, "company_document_id required")
+
+    if not req.revision_number:
+        raise HTTPException(400, "revision_number required")
+
     chunks = retrieve_rag_context(
         question=req.question,
         vector_store=vector_store,
         company_document_id=req.company_document_id,
-        revision_number=req.revision_number,
+        revision_number=str(req.revision_number),
         force_detailed=True
     )
-    return {"count": len(chunks), "chunks": chunks}
+
+    return {
+        "count": len(chunks),
+        "chunk_ids": [c["id"] for c in chunks],
+        "preview": chunks[:3],  # 🔥 DO NOT dump everything
+    }
 
 @router.get("/session-state/{session_id}")
 def inspect_session(session_id: str):
-    """View raw memory state for a session"""
+    """View SAFE memory state for a session"""
+
     pg_history = get_chat_messages(session_id, limit=10)
     redis_topic = get_active_topic(session_id)
     redis_chunks = get_used_chunk_ids(session_id)
-    
+
     return {
-        "postgres_history_count": len(pg_history),
-        "active_topic_redis": redis_topic,
-        "used_chunk_ids_redis": list(redis_chunks),
-        "recent_messages": pg_history
+        "session_id": session_id,
+        "postgres_message_count": len(pg_history),
+        "recent_user_messages": [
+            m["content"] for m in pg_history if m["role"] == "user"
+        ][-3:],
+        "active_topic": redis_topic,
+        "used_chunk_ids_count": len(redis_chunks),
     }

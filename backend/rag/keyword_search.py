@@ -78,6 +78,16 @@ def keyword_search(
     keywords = extract_keywords(question)
     if not keywords:
         return []
+    
+    if not metadata_filter:
+        return []
+
+    if (
+        "company_document_id" not in metadata_filter
+        or "revision_number" not in metadata_filter
+    ):
+        return []
+
 
     clauses = []
     params: Dict[str, str] = {}
@@ -93,16 +103,6 @@ def keyword_search(
     # 🔒 METADATA FILTER (FINAL SCHEMA)
     # --------------------------------------------------------
     if metadata_filter:
-        if "company_document_id" not in metadata_filter:
-            raise ValueError(
-                "metadata_filter must include company_document_id"
-            )
-
-        if "revision_number" not in metadata_filter:
-            raise ValueError(
-                "metadata_filter must include revision_number"
-            )
-
         for k, v in metadata_filter.items():
             where_sql += f" AND cmetadata->>'{k}' = :val_{k}"
             params[f"val_{k}"] = str(v)
@@ -122,7 +122,7 @@ def keyword_search(
         with engine.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
     except Exception as e:
-        print(f"⚠️ Keyword search failed: {e}")
+        print(f"Keyword search failed: {e}")
         return []
 
     documents: List[Document] = []

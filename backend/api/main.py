@@ -3,11 +3,13 @@
 # ============================================================
 # 1. LOAD ENV VARS FIRST (CRITICAL FIX)
 # ============================================================
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()  # <-- REQUIRED BEFORE ANY BACKEND IMPORTS
+# Always load the repo-root `.env` (works even if uvicorn is started from a different cwd).
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 
 import psutil
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 #  EXISTING: CPU limiter
@@ -35,6 +37,10 @@ from backend.api.retrieve import router as retrieve_router
 # Render & DevTools
 from backend.api.render import router as render_router
 from backend.api.devtools import router as devtools_router
+
+# Auth
+from backend.api.auth import router as auth_router
+from backend.auth.deps import require_user
 
 # ============================================================
 #  NEW IMPORT (LEARNING – FEEDBACK API)
@@ -100,7 +106,8 @@ async def startup_event():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # Dev only
+    # Cookie auth requires explicit origins (not "*") when allow_credentials=True.
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -111,28 +118,32 @@ app.add_middleware(
 # ROUTER REGISTRATION (ORDER MATTERS)
 # ============================================================
 
-# Core APIs
-app.include_router(chat_router)                 # POST /chat
-app.include_router(upload_router)               # POST /upload
-app.include_router(metadata_correct_router)     # POST /metadata/correct
-app.include_router(metadata_commit_router)      # POST /metadata/update
-app.include_router(abort_router)                # POST /abort
+# Auth (public)
+app.include_router(auth_router)                 # /auth/*
+
+# Core APIs (protected)
+_auth = [Depends(require_user)]
+app.include_router(chat_router, dependencies=_auth)                 # POST /chat
+app.include_router(upload_router, dependencies=_auth)               # POST /upload
+app.include_router(metadata_correct_router, dependencies=_auth)     # POST /metadata/correct
+app.include_router(metadata_commit_router, dependencies=_auth)      # POST /metadata/update
+app.include_router(abort_router, dependencies=_auth)                # POST /abort
 
 # ============================================================
 #  NEW ROUTER REGISTRATION (LEARNING FEEDBACK)
 # ============================================================
-app.include_router(feedback_router)              # POST /feedback
+app.include_router(feedback_router, dependencies=_auth)              # POST /feedback
 # ↑ ADDED: stores user feedback safely
 
 # Debug & external services
-app.include_router(debug_router)                # GET /debug/rag/{session_id}
-app.include_router(net_router)                  # /net/*
-app.include_router(net_key_router)              # /net-key/*
-app.include_router(retrieve_router)             # /retrieve/*
+app.include_router(debug_router, dependencies=_auth)                # GET /debug/rag/{session_id}
+app.include_router(net_router, dependencies=_auth)                  # /net/*
+app.include_router(net_key_router, dependencies=_auth)              # /net-key/*
+app.include_router(retrieve_router, dependencies=_auth)             # /retrieve/*
 
 # Viewer & Dev tools
-app.include_router(render_router)               # GET /render/image
-app.include_router(devtools_router)             # POST /devtools/*
+app.include_router(render_router, dependencies=_auth)               # GET /render/image
+app.include_router(devtools_router, dependencies=_auth)             # POST /devtools/*
 
 
 # ============================================================

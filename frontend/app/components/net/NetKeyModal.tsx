@@ -59,6 +59,7 @@ export default function NetKeyModal({
       const res = await fetch(`${API_BASE}/net-key/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ api_key: value.trim() }),
       });
 

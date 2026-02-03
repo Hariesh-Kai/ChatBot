@@ -17,6 +17,9 @@ from typing import Dict, Any, Generator, Tuple, Optional, Iterable
 
 import torch
 
+# Developer-managed model config (persisted under models/model_config.json)
+from backend.llm.model_config_store import load_model_config
+
 # Optional imports (guarded)
 try:
     from llama_cpp import Llama
@@ -74,17 +77,21 @@ GGUF_DIR = os.path.join(MODELS_DIR, "gguf")
 # MODEL REGISTRY
 # ============================================================
 
-GGUF_MODELS: Dict[str, str] = {
+_BUILTIN_GGUF_MODELS: Dict[str, str] = {
     "lite_llama_8b": os.path.join(GGUF_DIR, "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"),
     "lite_qwen_q4": os.path.join(GGUF_DIR, "Qwen2.5-7B-Instruct-Q4_K_M.gguf"),
 }
 
-HF_MODELS: Dict[str, str] = {
+_BUILTIN_HF_MODELS: Dict[str, str] = {
     "base_qwen_7b": "Qwen/Qwen2.5-7B-Instruct",
     "base_qwen_3b": "Qwen/Qwen2.5-3B-Instruct",
 }
 
 INTENT_CLASSIFIER_MODEL = "facebook/bart-large-mnli"
+
+# Effective registries (include dev-installed models)
+GGUF_MODELS: Dict[str, str] = dict(_BUILTIN_GGUF_MODELS)
+HF_MODELS: Dict[str, str] = dict(_BUILTIN_HF_MODELS)
 
 
 # ============================================================
@@ -97,6 +104,53 @@ _hf_model_cache: Dict[str, Any] = {}
 _hf_tokenizer_cache: Dict[str, Any] = {}
 _intent_classifier: Optional[Any] = None
 
+
+# ============================================================
+# DEV MODEL CONFIG (OPTIONAL)
+# ============================================================
+
+def reload_model_config() -> Dict[str, Any]:
+    """
+    Reload custom model registrations from `models/model_config.json`.
+
+    This lets the Developer Dashboard add HF/GGUF models without code changes.
+    """
+    cfg = load_model_config()
+
+    hf = cfg.get("hf_models", {})
+    gguf = cfg.get("gguf_models", {})
+
+    with _lock:
+        GGUF_MODELS.clear()
+        GGUF_MODELS.update(_BUILTIN_GGUF_MODELS)
+
+        HF_MODELS.clear()
+        HF_MODELS.update(_BUILTIN_HF_MODELS)
+
+        if isinstance(hf, dict):
+            for model_id, repo_or_path in hf.items():
+                if isinstance(model_id, str) and model_id.strip() and isinstance(repo_or_path, str) and repo_or_path.strip():
+                    HF_MODELS[model_id.strip()] = repo_or_path.strip()
+
+        if isinstance(gguf, dict):
+            for model_id, path in gguf.items():
+                if not (isinstance(model_id, str) and model_id.strip() and isinstance(path, str) and path.strip()):
+                    continue
+                p = path.strip()
+                if not os.path.isabs(p):
+                    # Accept relative paths under `models/` or `models/gguf/`.
+                    candidate_1 = os.path.join(MODELS_DIR, p)
+                    candidate_2 = os.path.join(GGUF_DIR, p)
+                    p = candidate_1 if os.path.exists(candidate_1) else candidate_2
+                GGUF_MODELS[model_id.strip()] = p
+
+    return cfg
+
+
+try:
+    reload_model_config()
+except Exception as _e:
+    print(f"[LLM] Failed to load model_config.json: {_e}")
 
 # ============================================================
 # GGUF (llama_cpp) LOADER + STREAM WRAPPER

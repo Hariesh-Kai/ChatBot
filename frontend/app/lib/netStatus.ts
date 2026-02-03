@@ -1,5 +1,7 @@
 // frontend/lib/netStatus.ts
 
+import { API_BASE } from "./config";
+
 /**
  * Net status helper
  *
@@ -36,9 +38,10 @@ export async function getNetStatus(force = false): Promise<NetStatus> {
   }
 
   try {
-    const res = await fetch("/net/status", {
+    const res = await fetch(`${API_BASE}/net/status`, {
       method: "GET",
       headers: { "Accept": "application/json" },
+      credentials: "include",
     });
 
     // -----------------------------

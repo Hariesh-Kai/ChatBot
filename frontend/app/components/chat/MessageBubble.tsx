@@ -21,6 +21,7 @@ interface Props {
   onRetry?: () => void;
   onDelete?: () => void;
   onViewSources?: (sources: RagSource[]) => void;
+  userLabel?: string;
 
   // 🔥 ADD THESE
   sessionId?: string | null;
@@ -51,6 +52,7 @@ export default function MessageBubble({
   sessionId,
   companyDocumentId,
   revisionNumber,
+  userLabel,
 }: Props) {
   const isAssistant = message.role === "assistant";
   const isUser = message.role === "user";
@@ -86,12 +88,19 @@ export default function MessageBubble({
 
   /* ================= 2. PROGRESS / UPLOAD STATE ================= */
   if (isProgress) {
+      const label = message.progressLabel || "Processing...";
+      const lower = label.toLowerCase();
+      const indicatorType =
+        lower.includes("upload") || lower.includes("backing up")
+          ? "uploading"
+          : "processing";
+
       return (
         <div className="w-full py-2">
             <TypingIndicator 
-                modelLabel="System" 
-                type="uploading"
-                label={message.progressLabel || "Processing..."} 
+                modelLabel={message.role === "assistant" ? modelLabel : "System"} 
+                type={indicatorType}
+                label={label} 
                 progress={message.progress}
             />
         </div>
@@ -309,7 +318,7 @@ export default function MessageBubble({
         </div>
 
         {/* User avatar */}
-        {isUser && <Avatar role="user" />}
+        {isUser && <Avatar role="user" label={userLabel} />}
       </div>
     </div>
   );

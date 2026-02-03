@@ -57,6 +57,7 @@ export async function submitFeedback(
       headers: {
         "Content-Type": "application/json",
       },
+      credentials: "include",
       body: JSON.stringify(payload),
     });
   } catch {

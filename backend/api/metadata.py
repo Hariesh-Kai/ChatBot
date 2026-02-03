@@ -2,6 +2,7 @@
 
 import json
 from typing import Dict, Any, Generator
+from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -13,6 +14,7 @@ from backend.contracts.ui_events import (
 )
 
 from backend.api.chat import UI_EVENT_PREFIX
+from backend.rag.pipeline import run_pipeline
 
 from backend.state.job_state import (
     get_job_state,
@@ -85,13 +87,14 @@ def update_metadata(req: MetadataUpdateRequest):
                 yield emit_event(error_event("Job not found"))
                 return
 
-            if job_state.status != "WAIT_FOR_METADATA":
+            if job_state.status not in ("WAIT_FOR_METADATA", "PROCESSING"):
                 yield emit_event(
                     error_event(
-                        f"Job not waiting for metadata (status={job_state.status})"
+                        f"Job not accepting metadata (status={job_state.status})"
                     )
                 )
                 return
+
 
             # ---------------------------------------------
             # VALIDATE METADATA KEYS
@@ -124,12 +127,35 @@ def update_metadata(req: MetadataUpdateRequest):
                 updated_metadata=req.metadata,
             )
             
+            # --------------------------------------------------
+            # 🔥 START RAG PIPELINE AFTER METADATA
+            # --------------------------------------------------
+
+            job_dir = (
+                Path(__file__).resolve().parents[1]
+                / "tmp"
+                / "jobs"
+                / job_id
+            )
+
+            # for _ in run_pipeline(
+            #     pdf_path=updated_job.metadata["pdf_path"],
+            #     job_dir=str(job_dir),
+            #     company_document_id=updated_job.metadata["company_document_id"],
+            #     db_connection=updated_job.metadata["db_connection"],
+            #     extra_metadata=updated_job.metadata,
+            #     mode="commit",
+            # ):
+            #     pass
             
-            if updated_job.status != "PROCESSING":
-                yield emit_event(
-                    error_event(f"Job state invalid after metadata update: {updated_job.status}")
-                )
-                return
+            
+                        
+            
+            # if updated_job.status != "PROCESSING":
+            #     yield emit_event(
+            #         error_event(f"Job state invalid after metadata update: {updated_job.status}")
+            #     )
+            #     return
         
             # ---------------------------------------------
             # RESET RAG STATE

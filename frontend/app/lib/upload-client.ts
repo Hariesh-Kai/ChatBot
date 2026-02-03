@@ -15,6 +15,7 @@ export function uploadPdfWithProgress({
 }: UploadOptions): Promise<any> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    xhr.withCredentials = true;
     const formData = new FormData();
     
     formData.append("file", file);

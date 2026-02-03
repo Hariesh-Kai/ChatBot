@@ -2,12 +2,14 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useRouter } from "next/navigation";
 import Sidebar from "@/app/components/sidebar/Sidebar";
 import ChatWindow from "@/app/components/chat/ChatWindow";
 import { ChatSession, Message } from "@/app/lib/types";
 import { KavinModelId } from "@/app/lib/kavin-models";
 import { loadChats, saveChats } from "@/app/lib/chat-store";
-import { commitUpload } from "@/app/lib/api";
+import { authLogout, authMe, updateMetadata } from "@/app/lib/api";
+import type { AuthUser } from "@/app/lib/api";
 import { MetadataRequestField } from "@/app/lib/llm-ui-events";
 import { UploadStatus } from "@/app/hooks/useSmartUpload";
 
@@ -32,6 +34,57 @@ function uuidv4() {
   ========================================================= */
 
 export default function Home() {
+  const router = useRouter();
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    authMe()
+      .then((u) => {
+        if (!u) {
+          router.replace("/signin");
+          return;
+        }
+        setUser(u);
+      })
+      .finally(() => setAuthChecked(true));
+  }, [router]);
+
+  const handleSignOut = useCallback(async () => {
+    try {
+      await authLogout();
+    } finally {
+      setUser(null);
+      router.replace("/signin");
+    }
+  }, [router]);
+
+  if (!authChecked) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-black text-gray-400">
+        Loading...
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-black text-gray-400">
+        Redirecting...
+      </div>
+    );
+  }
+
+  return <AuthedHome user={user} onSignOut={handleSignOut} />;
+}
+
+function AuthedHome({
+  user,
+  onSignOut,
+}: {
+  user: AuthUser;
+  onSignOut: () => void;
+}) {
   /* ================= PIPELINE STATE (UPLOAD / SYSTEM) ================= */
   const [uploadPipeline, setUploadPipeline] = useState<{
     percent: number;
@@ -52,6 +105,9 @@ export default function Home() {
 
   // 🔥 FIX: track upload lifecycle to avoid race
   const uploadSessionRef = useRef<string | null>(null);
+  const uploadChatIdRef = useRef<string | null>(null);
+  const uploadProgressMsgIdRef = useRef<string | null>(null);
+  const uploadFileNameRef = useRef<string | null>(null);
   
   
   /* ================= LOAD / SAVE ================= */
@@ -137,40 +193,83 @@ export default function Home() {
 
   /* ================= MESSAGE UPDATER ================= */
 
- const updateMessages = useCallback(
-  (updater: Message[] | ((prev: Message[]) => Message[])) => {
-    if (!activeId) return;
+  const updateMessagesForChat = useCallback(
+    (
+      chatId: string,
+      updater: Message[] | ((prev: Message[]) => Message[])
+    ) => {
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id !== chatId) return c;
 
-    setChats((prev) =>
-      prev.map((c) => {
-        if (c.id !== activeId) return c;
+          const next =
+            typeof updater === "function" ? updater(c.messages) : updater;
 
-        const next =
-          typeof updater === "function"
-            ? updater(c.messages)
-            : updater;
+          // ✅ DO NOT NORMALIZE DURING STREAM
+          return { ...c, messages: next };
+        })
+      );
+    },
+    []
+  );
 
-        // ✅ DO NOT NORMALIZE DURING STREAM
-        return { ...c, messages: next };
-      })
-    );
-  },
-  [activeId]
-);
+  const updateMessages = useCallback(
+    (updater: Message[] | ((prev: Message[]) => Message[])) => {
+      if (!activeId) return;
+      updateMessagesForChat(activeId, updater);
+    },
+    [activeId, updateMessagesForChat]
+  );
 
 
   /* ================= SIDEBAR UPLOAD ================= */
 
-  const handleSidebarUploadStart = () => {
-  if (!activeId) return;
+  const mapCommitProgress = (raw: number) => {
+    const clamped = Math.min(100, Math.max(0, raw));
+    return Math.round(40 + (clamped / 100) * 60);
+  };
 
-  uploadSessionRef.current = uuidv4();
+  const handleSidebarUploadStart = (file: File) => {
+    if (!activeId) return;
 
-  setUploadPipeline({
-    percent: 0,
-    label: "Starting upload…",
-  });
-};
+    uploadChatIdRef.current = activeId;
+    uploadFileNameRef.current = file.name;
+    uploadSessionRef.current = uuidv4();
+
+    const progressMsgId = uuidv4();
+    uploadProgressMsgIdRef.current = progressMsgId;
+
+    // If this is a fresh chat, name it after the uploaded document.
+    if (activeChat && activeChat.id === activeId && activeChat.messages.length === 0) {
+      handleRenameChat(activeId, file.name.replace(/\.pdf$/i, ""));
+    }
+
+    // ChatGPT-style: user "uploads" + assistant starts processing immediately
+    updateMessagesForChat(activeId, (prev) => [
+      ...prev,
+      {
+        id: uuidv4(),
+        role: "user",
+        content: `Uploaded PDF: ${file.name}`,
+        createdAt: Date.now(),
+        status: "done",
+      },
+      {
+        id: progressMsgId,
+        role: "assistant",
+        content: "",
+        createdAt: Date.now(),
+        status: "progress",
+        progress: 0,
+        progressLabel: "Uploading PDF...",
+      },
+    ]);
+
+    setUploadPipeline({
+      percent: 0,
+      label: "Uploading PDF...",
+    });
+  };
 
   const handleSidebarUploadProgress = (
     _status: UploadStatus,
@@ -181,14 +280,51 @@ export default function Home() {
       percent,
       label,
     });
+
+    const chatId = uploadChatIdRef.current;
+    const msgId = uploadProgressMsgIdRef.current;
+    if (!chatId || !msgId) return;
+
+    updateMessagesForChat(chatId, (prev) =>
+      prev.map((m) =>
+        m.id === msgId
+          ? {
+              ...m,
+              status: "progress",
+              progress: percent,
+              progressLabel: label,
+            }
+          : m
+      )
+    );
   };
 
   const handleSidebarUploadSuccess = async (result: any) => {
     if (!activeId) return;
-    if (!uploadSessionRef.current) return;
+    if (!uploadSessionRef.current) {
+    handleSidebarUploadError("Upload session mismatch. Please retry the upload.");
+    return;
+  }
     
     if (result.next_action === "WAIT_FOR_METADATA") {
       setUploadPipeline(null);
+
+      const chatId = uploadChatIdRef.current ?? activeId;
+      const msgId = uploadProgressMsgIdRef.current;
+      if (chatId && msgId) {
+        updateMessagesForChat(chatId, (prev) =>
+          prev.map((m) =>
+            m.id === msgId
+              ? {
+                  ...m,
+                  status: "progress",
+                  progress: 40,
+                  progressLabel: "Waiting for metadata...",
+                }
+              : m
+          )
+        );
+      }
       
       const fields: MetadataRequestField[] = Object.entries(result.metadata).map(
         ([key, meta]: [string, any]) => ({
@@ -209,40 +345,243 @@ export default function Home() {
       return;
     }
 
-    if (result.next_action === "READY_TO_COMMIT") {
+    // Accept either backend string to be robust
+    if (
+      result.next_action === "READY_FOR_PROCESSING" ||
+      result.next_action === "READY_TO_COMMIT" ||
+      result.next_action === "READY_FOR_COMMIT"
+    ) {
       try {
-        handleSidebarUploadProgress("processing", 95, "Finalizing index...");
-        await commitUpload({
-          job_id: result.job_id,
-          metadata: {},
-          force: true,
-        });
+        const chatId = uploadChatIdRef.current ?? activeId;
+        const msgId = uploadProgressMsgIdRef.current;
+
+        setUploadPipeline({ percent: 40, label: "Preparing document..." });
+        if (chatId && msgId) {
+          updateMessagesForChat(chatId, (prev) =>
+            prev.map((m) =>
+              m.id === msgId
+                ? {
+                    ...m,
+                    status: "progress",
+                    progress: 40,
+                    progressLabel: "Preparing document...",
+                  }
+                : m
+            )
+          );
+        }
+
+        // Streaming commit: shows chunking / embedding / indexing progress
+        await updateMetadata(
+          { job_id: result.job_id, metadata: {}, force: true },
+          (evt) => {
+            if (!evt) return;
+            const raw = typeof evt.progress === "number" ? evt.progress : 50;
+            const pct = mapCommitProgress(raw);
+            const lbl = evt.message ?? "Processing document...";
+
+            setUploadPipeline({ percent: pct, label: lbl });
+
+            if (chatId && msgId) {
+              updateMessagesForChat(chatId, (prev) =>
+                prev.map((m) =>
+                  m.id === msgId
+                    ? {
+                        ...m,
+                        status: "progress",
+                        progress: pct,
+                        progressLabel: lbl,
+                      }
+                    : m
+                )
+              );
+            }
+          }
+        );
 
         setUploadPipeline(null);
         finalizeUploadSuccess(result.filename, result.revision_number);
+
+        if (chatId && msgId) {
+          updateMessagesForChat(chatId, (prev) =>
+            prev.map((m) =>
+              m.id === msgId
+                ? {
+                    ...m,
+                    status: "done",
+                    content:
+                      "Document indexed and ready. Ask a question about it.",
+                    progress: undefined,
+                    progressLabel: undefined,
+                  }
+                : m
+            )
+          );
+        }
       } catch (err: any) {
         setUploadPipeline(null);
-        handleSidebarUploadError(err.message || "Failed to commit document.");
+        handleSidebarUploadError(err?.message || "Failed to process document.");
       }
     }
+
   };
 
-  const finalizeUploadSuccess = (filename: string, revision: any) => {
+  const finalizeUploadSuccess = (_filename: string, _revision: any) => {
     uploadSessionRef.current = null;
-
-    
-
-    if (activeChat && activeChat.messages.length === 0) {
-      handleRenameChat(activeId!, filename.replace(".pdf", ""));
-    }
+    uploadChatIdRef.current = null;
+    uploadProgressMsgIdRef.current = null;
+    uploadFileNameRef.current = null;
   };
 
   const handleSidebarUploadError = (errorMsg: string) => {
     uploadSessionRef.current = null;
     setUploadPipeline(null);
+    setSidebarMetadataRequest(null);
 
-    
+    const chatId = uploadChatIdRef.current ?? activeId;
+    const msgId = uploadProgressMsgIdRef.current;
+
+    if (chatId && msgId) {
+      updateMessagesForChat(chatId, (prev) =>
+        prev.map((m) =>
+          m.id === msgId
+            ? {
+                ...m,
+                role: "assistant",
+                status: "error",
+                content: errorMsg,
+                progress: undefined,
+                progressLabel: undefined,
+              }
+            : m
+        )
+      );
+    } else if (chatId) {
+      updateMessagesForChat(chatId, (prev) => [
+        ...prev,
+        {
+          id: uuidv4(),
+          role: "system",
+          content: errorMsg,
+          createdAt: Date.now(),
+          status: "done",
+        },
+      ]);
+    }
+
+    uploadChatIdRef.current = null;
+    uploadProgressMsgIdRef.current = null;
+    uploadFileNameRef.current = null;
   };
+
+
+  // New: handle submission of metadata from the metadata form
+const handleExternalMetadataSubmit = async (
+  jobId: string,
+  fields: MetadataRequestField[]
+) => {
+  if (!activeId) return;
+  // guard: ensure this is the current upload session
+  if (!uploadSessionRef.current) return;
+
+  // Build metadata map expected by backend: { key: value, ... }
+  if (!Array.isArray(fields)) {
+  handleSidebarUploadError("Metadata fields missing. Please retry upload.");
+  console.error("[MetadataSubmit] fields is invalid:", fields);
+  return;
+}
+
+const metadata: Record<string, string> = fields.reduce((acc, f) => {
+  acc[f.key] =
+    typeof f.value === "string" ? f.value : String(f.value ?? "");
+  return acc;
+}, {} as Record<string, string>);
+  try {
+    const chatId = uploadChatIdRef.current ?? activeId;
+    const msgId = uploadProgressMsgIdRef.current;
+
+    // update UI
+    setUploadPipeline({ percent: 40, label: "Submitting metadata..." });
+    if (chatId && msgId) {
+      updateMessagesForChat(chatId, (prev) =>
+        prev.map((m) =>
+          m.id === msgId
+            ? {
+                ...m,
+                status: "progress",
+                progress: 40,
+                progressLabel: "Submitting metadata...",
+              }
+            : m
+        )
+      );
+    }
+
+    // Streaming commit: shows chunking / embedding / indexing progress
+    await updateMetadata(
+      { job_id: jobId, metadata, force: true },
+      (evt) => {
+        if (!evt) return;
+        const raw = typeof evt.progress === "number" ? evt.progress : 50;
+        const pct = mapCommitProgress(raw);
+        const lbl = evt.message ?? "Processing document...";
+
+        setUploadPipeline({
+          percent: pct,
+          label: lbl,
+        });
+
+        if (chatId && msgId) {
+          updateMessagesForChat(chatId, (prev) =>
+            prev.map((m) =>
+              m.id === msgId
+                ? {
+                    ...m,
+                    status: "progress",
+                    progress: pct,
+                    progressLabel: lbl,
+                  }
+                : m
+            )
+          );
+        }
+      }
+    );
+
+    // success flow: reuse your finalize helper
+    finalizeUploadSuccess(
+      sidebarMetadataRequest?.filename ?? uploadFileNameRef.current ?? "document.pdf",
+      null
+    );
+
+    // clear UI state
+    setSidebarMetadataRequest(null);
+    uploadSessionRef.current = null;
+    setUploadPipeline(null);
+
+    if (chatId && msgId) {
+      updateMessagesForChat(chatId, (prev) =>
+        prev.map((m) =>
+          m.id === msgId
+            ? {
+                ...m,
+                status: "done",
+                content: "Document indexed and ready. Ask a question about it.",
+                progress: undefined,
+                progressLabel: undefined,
+              }
+            : m
+        )
+      );
+    }
+  } catch (err: any) {
+    // reuse existing error handler
+    setUploadPipeline(null);
+    uploadSessionRef.current = null;
+    handleSidebarUploadError(err?.message || "Failed to submit metadata");
+  }
+};
+
 
 
   /* ================= RENDER ================= */
@@ -259,6 +598,8 @@ export default function Home() {
         chats={chats}
         activeId={activeId}
         sessionId={activeId}
+        user={user}
+        onSignOut={onSignOut}
         onSelect={setActiveId}
         onNew={createNewChat}
         onRename={handleRenameChat}
@@ -285,14 +626,17 @@ export default function Home() {
             onUpdateMessages={updateMessages}
             model={activeChat.model}
             sessionId={activeChat.id}
+            userLabel={user.username}
             uploadPipeline={uploadPipeline} 
             onRenameSession={(t) => handleRenameChat(activeChat.id, t)}
+            onUploadStart={handleSidebarUploadStart}
+            onUploadProgress={handleSidebarUploadProgress}
+            onUploadSuccess={handleSidebarUploadSuccess}
+            onUploadError={handleSidebarUploadError}
             externalMetadataRequest={sidebarMetadataRequest}
             metadataActive={!!sidebarMetadataRequest} 
-            onExternalMetadataSubmit={() => {
-              setSidebarMetadataRequest(null);
-              uploadSessionRef.current = null;
-            }}
+            onExternalMetadataSubmit={handleExternalMetadataSubmit}
+
 
           />
         ) : (

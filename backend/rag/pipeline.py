@@ -61,8 +61,7 @@ def run_pipeline(
     print(f"[PIPELINE] run_pipeline called | mode={mode}")
     print(f"[PIPELINE] pdf_path={pdf_path}")
     print(f"[PIPELINE] job_dir={job_dir}")
-    def emit_progress(value: int, label: str):
-        yield progress_event(value=value, label=label)
+
 
     job_dir = Path(job_dir)
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -97,7 +96,7 @@ def run_pipeline(
 
     if not elements_path.exists():
         print(f"Parsing PDF in Streaming Mode (Mode={mode})...")
-        yield from emit_progress(5, "Reading PDF pages…")
+        yield  progress_event(value=5, label="Reading PDF pages…")
         all_elements = []
         
         # Consume the generator page-by-page
@@ -111,8 +110,8 @@ def run_pipeline(
             # This saves massive time/compute by not OCR-ing the rest of the doc.
             if mode == "metadata":
                 print("[PIPELINE] Metadata mode → stopping after page 1")
-                yield from emit_progress(15, "Metadata extracted (Page 1)")
-                yield from emit_progress(20, "Metadata ready")
+                yield progress_event(value=15, label="Metadata extracted (Page 1)")
+                yield  progress_event(value=20, label="Metadata ready")
                 print("[PIPELINE] Metadata extraction: Stopping OCR after Page 1.")
                 break
 
@@ -175,7 +174,7 @@ def run_pipeline(
     # --------------------------------------------------
 
     chunker = ContextAwareChunker()
-    yield from emit_progress(30, "Chunking document…")
+    yield  progress_event(value=30, label="Chunking document…")
 
     chunker.process(
         input_file=str(elements_path),
@@ -188,7 +187,7 @@ def run_pipeline(
     # --------------------------------------------------
     # 3️⃣ METADATA ENRICHMENT (AUTHORITATIVE)
     # --------------------------------------------------
-    yield from emit_progress(45, "Enriching chunks with metadata…")
+    yield progress_event(value=45, label="Enriching chunks with metadata…")
     enrich_chunks(
         chunks_file=str(chunks_path),
         output_file=str(enriched_path),
@@ -203,7 +202,7 @@ def run_pipeline(
     # --------------------------------------------------
     # 4️⃣ LOAD DOCUMENTS (STRICT)
     # --------------------------------------------------
-    yield from emit_progress(60, "Preparing chunks for indexing…")
+    yield progress_event(value=60, label="Preparing chunks for indexing…")
     documents: List[Document] = load_documents(
         json_path=str(enriched_path)
     )
@@ -215,7 +214,7 @@ def run_pipeline(
     # --------------------------------------------------
     # 5️⃣ INGEST INTO VECTOR DB (REVISION-SAFE)
     # --------------------------------------------------
-    yield from emit_progress(80, "Indexing into vector database…")
+    yield progress_event(value=80, label="Embedding and indexing into vector database...")
     ingest_to_pgvector(
         documents=documents,
         connection_string=db_connection,
@@ -231,12 +230,12 @@ def run_pipeline(
     session_id = extra_metadata.get("session_id")
     if session_id:
         clear_used_chunk_ids(session_id)
-        yield from emit_progress(95, "Finalizing document index…")
+        yield progress_event(value=95, label="Finalizing document index…")
 
     # --------------------------------------------------
     # 7️⃣ RESULT
     # --------------------------------------------------
-    yield from emit_progress(100, "Document ready for querying")
+    yield progress_event(value=100, label="Document ready for querying")
 
     
 

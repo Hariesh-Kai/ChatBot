@@ -36,6 +36,7 @@ export async function verifyNetKey(
       headers: {
         "Content-Type": "application/json",
       },
+      credentials: "include",
       body: JSON.stringify({ api_key: apiKey }),
     });
 
@@ -72,6 +73,7 @@ export async function fetchNetStatus(): Promise<NetStatusResult> {
   try {
     const res = await fetch(`${API_BASE}/net/status`, {
       method: "GET",
+      credentials: "include",
     });
 
     if (!res.ok) {

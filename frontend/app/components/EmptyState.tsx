@@ -10,7 +10,7 @@ interface Props {
   onSend: (text?: string) => void;
   disabled?: boolean;
   sessionId: string | null;
-  onUploadStart?: () => void;
+  onUploadStart?: (file: File) => void;
   onUploadSuccess?: (result: any) => void;
   onUploadError?: (error: string) => void;
   //  NEW: Receive progress callback

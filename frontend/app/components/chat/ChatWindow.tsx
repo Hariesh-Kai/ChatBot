@@ -13,6 +13,7 @@ import Disclaimer from "../ui/Disclaimer"; //  Imported
 import { Message, RagSource } from "@/app/lib/types";
 import { KAVIN_MODELS, KavinModelId } from "@/app/lib/kavin-models";
 import { LLMUIEvent, MetadataRequestField } from "@/app/lib/llm-ui-events";
+import type { UploadStatus } from "@/app/hooks/useSmartUpload";
 import { StreamParser } from "@/app/lib/stream-parser";
 import { streamChat, updateMetadata, generateChatTitle } from "@/app/lib/api";
 
@@ -51,20 +52,29 @@ interface ChatWindowProps {
   onUpdateMessages: (updater: Message[] | ((prev: Message[]) => Message[])) => void;
   model: KavinModelId;
   sessionId: string | null;
+  userLabel?: string;
   title?: string;
   onRenameSession?: (title: string) => void;
   onModelChange?: (model: KavinModelId) => void;
+  metadataActive?: boolean;
   uploadPipeline?: {
     percent: number;
     label: string;
   } | null;
+  onUploadStart?: (file: File) => void;
+  onUploadProgress?: (status: UploadStatus, percent: number, label: string) => void;
+  onUploadSuccess?: (result: any) => void;
+  onUploadError?: (error: string) => void;
 
   externalMetadataRequest?: {
       jobId: string;
       fields: MetadataRequestField[];
       filename: string;
   } | null;
-  onExternalMetadataSubmit?: () => void;
+  onExternalMetadataSubmit?: (
+  jobId: string,
+  fields: MetadataRequestField[]
+) => Promise<void> | void;
 }
 
 export default function ChatWindow({
@@ -72,10 +82,15 @@ export default function ChatWindow({
   onUpdateMessages,
   model,
   sessionId,
+  userLabel,
   uploadPipeline,
   title = "New Chat",
   onRenameSession,
   onModelChange,
+  onUploadStart,
+  onUploadProgress,
+  onUploadSuccess,
+  onUploadError,
   externalMetadataRequest,
   onExternalMetadataSubmit,
 }: ChatWindowProps) {
@@ -113,6 +128,7 @@ export default function ChatWindow({
   const finalizedRef = useRef(false);
   const lastAssistantIdRef = useRef<string | null>(null);
   const jobFinishedRef = useRef(false);
+  const externalMetadataSeenJobIdRef = useRef<string | null>(null);
   const modelLabel = useMemo(() => SAFE_MODELS.find((m) => m.id === model)?.label ?? "KavinBase", [model]);
 
 
@@ -141,11 +157,17 @@ export default function ChatWindow({
 
   // Handle external metadata requests (from Sidebar)
   useEffect(() => {
-    if (externalMetadataRequest && !inlineMetadataFields) {
-        setPendingJobId(externalMetadataRequest.jobId);
-        setInlineMetadataFields(externalMetadataRequest.fields);
-        setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
-    }
+    if (!externalMetadataRequest) return;
+    if (inlineMetadataFields) return;
+
+    // Prevent the form from "popping back open" after we hide it on submit,
+    // while the parent still holds externalMetadataRequest.
+    if (externalMetadataSeenJobIdRef.current === externalMetadataRequest.jobId) return;
+
+    externalMetadataSeenJobIdRef.current = externalMetadataRequest.jobId;
+    setPendingJobId(externalMetadataRequest.jobId);
+    setInlineMetadataFields(externalMetadataRequest.fields);
+    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
   }, [externalMetadataRequest, inlineMetadataFields]);
 
   useEffect(() => {
@@ -161,68 +183,51 @@ export default function ChatWindow({
   // 2. INLINE METADATA SUBMISSION
   // ----------------------------------------------------------------------
 
-  async function handleInlineMetadataSubmit(values: Record<string, string>) {
-    setInlineMetadataFields(null);
-    onExternalMetadataSubmit?.(); 
-
-    
-
-    const progressMsgId = uuidv4();
-    onUpdateMessages((prev) => [
-        ...prev,
-        {
-            id: progressMsgId,
-            role: "assistant",
-            content: "",
-            createdAt: Date.now(),
-            status: "streaming", 
-            progress: 5,
-            progressLabel: "Initializing..."
-        }
-    ]);
-
-    try {
-        if (!pendingJobId) {
-          throw new Error("Missing job id for metadata submission");
-        }
-
-        const targetId = pendingJobId;
-        
-        await updateMetadata(
-          {
-            job_id: targetId,
-            metadata: values,
-          },
-          (event) => {
-             // NO-OP: backend confirmation handled via METADATA_CONFIRMED event
-            if (!event?.message) return;
-
-            onUpdateMessages(prev =>
-              prev.map(m =>
-                m.id === progressMsgId
-                  ? {
-                      ...m,
-                      progress: event.progress ?? m.progress,
-                      progressLabel: event.message,
-                    }
-                  : m
-              )
-            );
-          }
-        );
-
-        
-        setPendingJobId(null);
-        requestAnimationFrame(() => focusInput());
-
-    } catch (err: any) {
-        onUpdateMessages((prev) => prev.map(m => 
-            m.id === progressMsgId 
-            ? { ...m, status: "error", content: ` Process Failed: ${err.message}` } 
-            : m
-        ));
-    }
+async function handleInlineMetadataSubmit(values: Record<string, string>) {
+  if (!pendingJobId || !inlineMetadataFields) {
+    console.error("Missing jobId or metadata fields", {
+      pendingJobId,
+      inlineMetadataFields,
+    });
+    return;
   }
+
+  const jobId = pendingJobId;
+
+  // Build fields with user-entered values
+  const filledFields = inlineMetadataFields.map((f) => ({
+    ...f,
+    value: values[f.key] ?? f.value ?? "",
+  }));
+
+  // Hide the form immediately so the upload progress bubble can show.
+  setInlineMetadataFields(null);
+  setCurrentStage("Submitting metadata...");
+
+  try {
+    await onExternalMetadataSubmit?.(jobId, filledFields);
+    setPendingJobId(null);
+  } catch (err: any) {
+    // If submission fails, restore the form so the user can retry.
+    setPendingJobId(jobId);
+    setInlineMetadataFields(filledFields);
+
+    onUpdateMessages((prev) => [
+      ...prev,
+      {
+        id: uuidv4(),
+        role: "system",
+        content: err?.message || "Metadata submission failed. Please try again.",
+        createdAt: Date.now(),
+        status: "done",
+      },
+    ]);
+  } finally {
+    setCurrentStage(null);
+    ignoreStreamRef.current = false;
+  }
+}
+
 
   // ----------------------------------------------------------------------
   // 3. STANDARD CHAT LOGIC
@@ -391,6 +396,26 @@ export default function ChatWindow({
         ignoreStreamRef.current = true;
         abortJob();
 
+        // Convert the placeholder assistant bubble into a helpful message instead of
+        // showing "No content generated."
+        const cid = assistantIdRef.current;
+        if (cid) {
+          onUpdateMessages((prev) =>
+            prev.map((m) =>
+              m.id === cid
+                ? {
+                    ...m,
+                    status: "done",
+                    content:
+                      m.content?.trim().length > 0
+                        ? m.content
+                        : "Information required. Please fill the details below to continue.",
+                  }
+                : m
+            )
+          );
+        }
+
         const jobId = (event as { jobId?: string }).jobId;
         setPendingJobId(jobId ?? sessionId);
 
@@ -555,17 +580,20 @@ useEffect(() => {
                   disabled={isUIBlocked}
                   onSend={handleSend}
                   sessionId={sessionId}
+                  onUploadStart={onUploadStart}
+                  onUploadProgress={onUploadProgress}
+                  onUploadSuccess={onUploadSuccess}
+                  onUploadError={onUploadError}
                 />
             </div>
 
             <div className={`absolute inset-0 flex flex-col transition-opacity ${hasStarted ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
                 <div className="flex-1 overflow-y-auto px-4 pt-6">
                     <div className="mx-auto max-w-3xl space-y-5">
-                        {!inlineMetadataFields && (uploadPipeline || currentStage) && (
+                        {!inlineMetadataFields && currentStage && (
                           <div className="mb-6 flex justify-start">
                             <ProcessingBubble
-                              stepName={uploadPipeline?.label || currentStage!}
-                              progress={uploadPipeline?.percent}
+                              stepName={currentStage}
                             />
                           </div>
                         )}
@@ -576,6 +604,7 @@ useEffect(() => {
                                   key={m.id}
                                   message={m}
                                   modelLabel={modelLabel}
+                                  userLabel={userLabel}
                                   isLastAssistant={
                                     m.role === "assistant" &&
                                     index === messages.map((x) => x.role).lastIndexOf("assistant")
@@ -614,6 +643,10 @@ useEffect(() => {
                           isGenerating={isTyping}
                           onStop={handleStop}
                           sessionId={sessionId}
+                          onUploadStart={onUploadStart}
+                          onUploadProgress={onUploadProgress}
+                          onUploadSuccess={onUploadSuccess}
+                          onUploadError={onUploadError}
                           netBlockedUntil={netRateLimitedUntil}
                         />
 
@@ -640,6 +673,3 @@ useEffect(() => {
     </>
   );
 }
-
-
-  

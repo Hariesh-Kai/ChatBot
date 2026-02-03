@@ -75,6 +75,8 @@ from backend.state.job_state import (
     clear_job_for_session,
 )
 
+from backend.state.dev_settings import get_dev_settings
+
 # ================================
 # UI EVENTS
 # ================================
@@ -218,6 +220,13 @@ def chat(req: ChatRequest):
     original_question = normalize_text(req.question)
     job_state = get_job_state(session_id)
 
+    settings = get_dev_settings()
+    emit_model_stages = bool(settings.get("emit_model_stage_events", True))
+    emit_sources = bool(settings.get("emit_sources", True))
+    emit_answer_confidence = bool(settings.get("emit_answer_confidence", True))
+    force_detailed_retrieval = bool(settings.get("force_detailed_retrieval", False))
+    disable_retrieval_policy = bool(settings.get("disable_retrieval_policy", False))
+
     # =====================================================
     # 🔥 METADATA GATE (OPTION A)
     # =====================================================
@@ -227,22 +236,26 @@ def chat(req: ChatRequest):
 
         REQUIRED_KEYS = ["document_type", "revision_code"]
 
-        fields = []
-        for key in REQUIRED_KEYS:
-            value = metadata.get(key)
-            if not value:
-                fields.append({
-                    "key": key,
-                    "label": key.replace("_", " ").title(),
-                    "placeholder": f"Enter {key.replace('_', ' ')}",
-                    "reason": "Required to continue",
-                    "value": value,
-                })
+        missing = [
+            key for key in REQUIRED_KEYS
+            if not metadata.get(key)
+        ]
 
-        def metadata_stream():
-            yield emit_event(request_metadata_event(fields))
+        # 🔥 ONLY REQUEST METADATA IF SOMETHING IS ACTUALLY MISSING
+        if missing:
+            fields = [{
+                "key": key,
+                "label": key.replace("_", " ").title(),
+                "placeholder": f"Enter {key.replace('_', ' ')}",
+                "reason": "Required to continue",
+                "value": metadata.get(key),
+            } for key in missing]
 
-        return StreamingResponse(metadata_stream(), media_type="text/plain")
+            def metadata_stream():
+                yield emit_event(request_metadata_event(fields))
+
+            return StreamingResponse(metadata_stream(), media_type="text/plain")
+
 
 
     if job_state and job_state.status == "PROCESSING":
@@ -271,11 +284,12 @@ def chat(req: ChatRequest):
         
         def fast_stream():
             yield emit_event(system_message_event(" Responding…"))
-            yield emit_event(model_stage_event(
-                stage="generation",
-                message="Responding…",
-                model=model_id, 
-            ))
+            if emit_model_stages:
+                yield emit_event(model_stage_event(
+                    stage="generation",
+                    message="Responding…",
+                    model=model_id,
+                ))
 
             yield from safe_stream_response(
                 generate_answer_stream(
@@ -322,11 +336,12 @@ def chat(req: ChatRequest):
             yield emit_event(system_message_event("Thinking…")) 
             model_id = resolve_model_id(req.mode)
 
-            yield emit_event(model_stage_event(
-                stage="generation",
-                message="Generating response…",
-               model=model_id,
-            ))
+            if emit_model_stages:
+                yield emit_event(model_stage_event(
+                    stage="generation",
+                    message="Generating response…",
+                    model=model_id,
+                ))
 
             
             yield from safe_stream_response(
@@ -387,6 +402,7 @@ def chat(req: ChatRequest):
         vector_store=vector_store,
         company_document_id=company_document_id,
         revision_number=str(revision_number),
+        force_detailed=force_detailed_retrieval,
     )
 
 
@@ -398,14 +414,15 @@ def chat(req: ChatRequest):
             unique[c["id"]] = True
             rag_chunks.append(c)
 
-    policy_result = apply_retrieval_policy(
-        question=rewritten,
-        rag_chunks=rag_chunks,
-        company_document_id=company_document_id,
-        revision_number=str(revision_number),
-    )
+    if not disable_retrieval_policy:
+        policy_result = apply_retrieval_policy(
+            question=rewritten,
+            rag_chunks=rag_chunks,
+            company_document_id=company_document_id,
+            revision_number=str(revision_number),
+        )
 
-    rag_chunks = policy_result.chunks
+        rag_chunks = policy_result.chunks
 
     rag_sources = []
     for c in rag_chunks:
@@ -449,32 +466,36 @@ def chat(req: ChatRequest):
 
     def stream():
         model_id = resolve_model_id(req.mode)
-        yield emit_event(model_stage_event(
-            stage="intent",
-            message="Understanding your question…",
-           model=model_id,
-        ))
+        if emit_model_stages:
+            yield emit_event(model_stage_event(
+                stage="intent",
+                message="Understanding your question…",
+                model=model_id,
+            ))
 
         # intent already computed, do NOT re-run
 
-        yield emit_event(model_stage_event(
-            stage="retrieval",
-            message="Searching relevant documents…",
-        ))
+        if emit_model_stages:
+            yield emit_event(model_stage_event(
+                stage="retrieval",
+                message="Searching relevant documents…",
+            ))
 
         # retrieval already happened — OK for now
         # (next step: move retrieval here)
 
-        yield emit_event(model_stage_event(
-            stage="reranking",
-            message="Ranking the best passages…",
-        ))
+        if emit_model_stages:
+            yield emit_event(model_stage_event(
+                stage="reranking",
+                message="Ranking the best passages…",
+            ))
 
-        yield emit_event(model_stage_event(
-            stage="generation",
-            message="Generating answer…",
-           model=model_id,
-        ))
+        if emit_model_stages:
+            yield emit_event(model_stage_event(
+                stage="generation",
+                message="Generating answer…",
+                model=model_id,
+            ))
         
         yield from safe_stream_response(
             generate_answer_stream(
@@ -488,16 +509,18 @@ def chat(req: ChatRequest):
             original_question,
         )
 
-        yield emit_event(answer_confidence_event(
-            confidence=confidence_payload["confidence"],
-            level=confidence_payload["level"],
-        ))
+        if emit_answer_confidence:
+            yield emit_event(answer_confidence_event(
+                confidence=confidence_payload["confidence"],
+                level=confidence_payload["level"],
+            ))
 
         if not is_aborted(session_id):
-            yield emit_event({
-                "type": "SOURCES",
-                "data": rag_sources,
-            })
+            if emit_sources:
+                yield emit_event({
+                    "type": "SOURCES",
+                    "data": rag_sources,
+                })
             clear_job_for_session(session_id)
 
 

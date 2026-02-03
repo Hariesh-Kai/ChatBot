@@ -223,9 +223,12 @@ def upload_pdf(
         },
         missing_fields=missing,
     )
+    # Do NOT mark READY here.
+    # Phase 1 only extracts metadata; Phase 2 (commit) performs chunking/indexing.
+
 
     # If missing is NOT empty, frontend will show the form
-    next_action = "WAIT_FOR_METADATA" if missing else "READY_FOR_PROCESSING"
+    next_action = "WAIT_FOR_METADATA" if missing else "READY_TO_COMMIT"
     print(f"👉 [PHASE 1] Decision: {next_action}")
 
     return UploadResponse(

@@ -63,6 +63,7 @@ export async function fetchRagDebug(
     {
       method: "GET",
       cache: "no-store",
+      credentials: "include",
     }
   );
 

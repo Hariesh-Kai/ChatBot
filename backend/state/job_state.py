@@ -313,7 +313,9 @@ def clear_job_for_session(session_id: str) -> None:
         if job_id:
             _JOB_STORE.pop(job_id, None)
 
-        clear_active_document(session_id)
+        # Keep the active document binding so the user can continue chatting
+        # about the same PDF across multiple turns (ChatGPT-style).
+        # Active doc is cleared only when replaced by a new upload or explicitly cleared.
 
     # 🔥 Abort reset happens ONLY here
     reset_abort_signal(session_id)

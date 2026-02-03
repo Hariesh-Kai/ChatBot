@@ -2,12 +2,16 @@
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { API_BASE } from "@/app/lib/config";
 import { Play, CheckCircle, AlertTriangle, Search, FileText } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { authMe } from "@/app/lib/api";
 
 export default function DashboardPage() {
-  const [activeTab, setActiveTab] = useState<"intent" | "rewrite" | "retrieve" | "health">("retrieve");
+  const router = useRouter();
+
+  const [activeTab, setActiveTab] = useState<"settings" | "intent" | "rewrite" | "retrieve" | "health">("settings");
 
   // --- Intent State ---
   const [intentInput, setIntentInput] = useState("");
@@ -23,11 +27,59 @@ export default function DashboardPage() {
   const [retrievalDocId, setRetrievalDocId] = useState("");
   const [retrievalResult, setRetrievalResult] = useState<any>(null);
 
+  // --- Settings State ---
+  const [settings, setSettings] = useState<any>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+
+  useEffect(() => {
+    authMe().then((u) => {
+      if (!u) router.replace("/signin");
+    });
+  }, [router]);
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
   // --- Handlers ---
+  async function loadSettings() {
+    setSettingsError(null);
+    try {
+      const res = await fetch(`${API_BASE}/devtools/settings`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setSettings(await res.json());
+    } catch (e: any) {
+      setSettingsError(e?.message || "Failed to load settings");
+    }
+  }
+
+  async function patchSettings(patch: Record<string, boolean>) {
+    setSettingsError(null);
+    setSettingsBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/devtools/settings`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setSettings(await res.json());
+    } catch (e: any) {
+      setSettingsError(e?.message || "Failed to update settings");
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
   async function testIntent() {
     const res = await fetch(`${API_BASE}/devtools/intent`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ text: intentInput }),
     });
     setIntentResult(await res.json());
@@ -38,6 +90,7 @@ export default function DashboardPage() {
     const res = await fetch(`${API_BASE}/devtools/rewrite`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ text: rewriteInput, history: historyArr }),
     });
     setRewriteResult(await res.json());
@@ -47,6 +100,7 @@ export default function DashboardPage() {
     const res = await fetch(`${API_BASE}/devtools/retrieve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ 
             question: retrievalQuery,
             company_document_id: retrievalDocId || "Agogo-1ST1", // Default for testing
@@ -61,11 +115,84 @@ export default function DashboardPage() {
       
       {/* TABS */}
       <div className="mb-8 flex gap-4 border-b border-white/10 pb-1">
+        <TabButton active={activeTab === "settings"} onClick={() => setActiveTab("settings")} label="Settings" />
         <TabButton active={activeTab === "retrieve"} onClick={() => setActiveTab("retrieve")} label="RAG Retrieval" />
         <TabButton active={activeTab === "intent"} onClick={() => setActiveTab("intent")} label="Intent Classifier" />
         <TabButton active={activeTab === "rewrite"} onClick={() => setActiveTab("rewrite")} label="Query Rewriter" />
         <TabButton active={activeTab === "health"} onClick={() => setActiveTab("health")} label="System Health" />
       </div>
+
+      {/* === TAB: SETTINGS === */}
+      {activeTab === "settings" && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-1 space-y-6">
+            <Card title="Developer Flags">
+              {settingsError && (
+                <div className="mb-3 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+                  {settingsError}
+                </div>
+              )}
+
+              {!settings ? (
+                <div className="text-gray-500 italic">Loading settings…</div>
+              ) : (
+                <div className="space-y-3">
+                  <Toggle
+                    label="Emit model stage events"
+                    value={!!settings.emit_model_stage_events}
+                    disabled={settingsBusy}
+                    onChange={(v) => patchSettings({ emit_model_stage_events: v })}
+                  />
+                  <Toggle
+                    label="Emit sources"
+                    value={!!settings.emit_sources}
+                    disabled={settingsBusy}
+                    onChange={(v) => patchSettings({ emit_sources: v })}
+                  />
+                  <Toggle
+                    label="Emit answer confidence"
+                    value={!!settings.emit_answer_confidence}
+                    disabled={settingsBusy}
+                    onChange={(v) => patchSettings({ emit_answer_confidence: v })}
+                  />
+                  <Toggle
+                    label="Force detailed retrieval"
+                    value={!!settings.force_detailed_retrieval}
+                    disabled={settingsBusy}
+                    onChange={(v) => patchSettings({ force_detailed_retrieval: v })}
+                  />
+                  <Toggle
+                    label="Disable retrieval policy"
+                    value={!!settings.disable_retrieval_policy}
+                    disabled={settingsBusy}
+                    onChange={(v) => patchSettings({ disable_retrieval_policy: v })}
+                  />
+
+                  <button
+                    onClick={loadSettings}
+                    disabled={settingsBusy}
+                    className="mt-4 w-full bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded disabled:opacity-50"
+                  >
+                    Refresh
+                  </button>
+                </div>
+              )}
+            </Card>
+          </div>
+
+          <div className="lg:col-span-2">
+            <Card title="What These Affect">
+              <div className="text-gray-300 space-y-3 text-sm leading-relaxed">
+                <div><span className="text-white font-medium">Model stage events</span> power the “Thinking / Searching / Generating” live UI.</div>
+                <div><span className="text-white font-medium">Sources</span> controls the citations button and source viewer.</div>
+                <div><span className="text-white font-medium">Answer confidence</span> controls the confidence badge event.</div>
+                <div><span className="text-white font-medium">Force detailed retrieval</span> increases candidate chunks (slower, more recall).</div>
+                <div><span className="text-white font-medium">Disable retrieval policy</span> bypasses the adaptive retrieval filter (debug).</div>
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
 
       {/* === TAB: RETRIEVAL === */}
       {activeTab === "retrieve" && (
@@ -97,7 +224,7 @@ export default function DashboardPage() {
                     {retrievalResult ? (
                         <div className="space-y-4">
                             <div className="text-xs text-gray-500 mb-2">Found {retrievalResult.count} chunks</div>
-                            {retrievalResult.chunks.map((chunk: any, i: number) => (
+                            {(retrievalResult.chunks ?? retrievalResult.preview ?? []).map((chunk: any, i: number) => (
                                 <div key={i} className="bg-[#1a1a1a] border border-white/5 rounded p-3">
                                     <div className="flex justify-between items-start mb-2">
                                         <span className="text-xs font-mono text-blue-400 bg-blue-900/20 px-2 py-0.5 rounded">
@@ -225,11 +352,45 @@ function Card({ title, children }: any) {
   );
 }
 
+function Toggle({
+  label,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onChange(!value)}
+      className="w-full flex items-center justify-between gap-3 rounded border border-white/10 bg-black/30 px-3 py-2 text-left disabled:opacity-50"
+    >
+      <span className="text-sm text-gray-200">{label}</span>
+      <span
+        className={`h-5 w-10 rounded-full border transition-colors ${
+          value ? "bg-green-600/70 border-green-500/40" : "bg-white/10 border-white/20"
+        }`}
+      >
+        <span
+          className={`block h-4 w-4 mt-0.5 rounded-full bg-white transition-transform ${
+            value ? "translate-x-5" : "translate-x-1"
+          }`}
+        />
+      </span>
+    </button>
+  );
+}
+
 function SystemHealthCheck() {
   const [status, setStatus] = useState<any>(null);
   
   const check = async () => {
-    const res = await fetch(`${API_BASE}/health`);
+    const res = await fetch(`${API_BASE}/health`, { credentials: "include" });
     setStatus(await res.json());
   }
 

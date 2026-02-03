@@ -7,11 +7,14 @@ import PdfUploadButton from "@/app/components/upload/PdfUploadButton";
 import { ChatSession } from "@/app/lib/types";
 import { Search, Plus, PanelLeftOpen, PanelLeftClose } from "lucide-react";
 import { UploadStatus } from "@/app/hooks/useSmartUpload";
+import type { AuthUser } from "@/app/lib/api";
 
 interface SidebarProps {
   chats: ChatSession[];
   activeId: string | null;
   sessionId: string | null;
+  user: AuthUser | null;
+  onSignOut: () => void;
   onSelect: (id: string) => void;
   onNew: () => void;
   onRename: (id: string, title: string) => void;
@@ -22,7 +25,7 @@ interface SidebarProps {
   onClose: () => void;
   isTyping: boolean;
   
-  onUploadStart: () => void;
+  onUploadStart: (file: File) => void;
   onUploadSuccess: (result: any) => void;
   onUploadError: (error: string) => void;
   //  NEW
@@ -30,7 +33,7 @@ interface SidebarProps {
 }
 
 export default function Sidebar({
-  chats, activeId, sessionId, onSelect, onNew, onRename, onDelete, onPin,
+  chats, activeId, sessionId, user, onSignOut, onSelect, onNew, onRename, onDelete, onPin,
   isOpen, onOpen, onClose, isTyping,
   onUploadStart, onUploadSuccess, onUploadError, onUploadProgress //  Destructure
 }: SidebarProps) {
@@ -40,6 +43,9 @@ export default function Sidebar({
   !sessionId ||
   isTyping ||
   (typeof window !== "undefined" && (window as any).__KAVIN_UPLOAD_ACTIVE__);
+
+  const userInitial =
+    (user?.username || user?.email || "U").trim().charAt(0).toUpperCase() || "U";
 
 
   const filteredChats = useMemo(() => {
@@ -116,7 +122,40 @@ export default function Sidebar({
               />
 
             </div>
-            <div className="border-t border-white/10 px-4 py-3 text-xs text-gray-500">© KAVIN</div>
+            <div className="border-t border-white/10 px-4 py-3">
+              <div className="flex items-center gap-3">
+                <div className="h-9 w-9 shrink-0 rounded-full bg-white/10 border border-white/10 flex items-center justify-center text-sm font-semibold text-white">
+                  {userInitial}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-gray-200 truncate">
+                    {user?.username ?? "User"}
+                  </div>
+                  <div className="text-[11px] text-gray-500 truncate">
+                    {user?.email ?? ""}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 flex items-center justify-between gap-2">
+                <a
+                  href="/dashboard"
+                  className="text-xs text-gray-400 hover:text-white hover:underline"
+                >
+                  Developer dashboard
+                </a>
+
+                <button
+                  type="button"
+                  onClick={onSignOut}
+                  disabled={isTyping}
+                  className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-gray-200 hover:bg-white/10 disabled:opacity-50"
+                >
+                  Sign out
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </aside>

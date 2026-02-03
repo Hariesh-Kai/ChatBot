@@ -29,6 +29,57 @@ export interface ChatRequest {
 }
 
 /* =========================================================
+   TYPES — AUTH
+========================================================= */
+
+export type AuthUser = {
+  username: string;
+  email: string;
+};
+
+/* =========================================================
+   AUTH
+========================================================= */
+
+export async function authLogin(
+  identifier: string,
+  password: string
+): Promise<AuthUser> {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ identifier, password }),
+  });
+
+  if (!res.ok) throw new Error(await normalizeError(res));
+  return res.json();
+}
+
+export async function authLogout(): Promise<void> {
+  const res = await fetch(`${API_BASE}/auth/logout`, {
+    method: "POST",
+    credentials: "include",
+  });
+
+  if (!res.ok) throw new Error(await normalizeError(res));
+}
+
+export async function authMe(): Promise<AuthUser | null> {
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`, {
+      credentials: "include",
+    });
+
+    if (res.status === 401) return null;
+    if (!res.ok) throw new Error(await normalizeError(res));
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+/* =========================================================
    TYPES — UPLOAD (PHASE 1)
 ========================================================= */
 
@@ -47,7 +98,12 @@ export interface UploadPdfResponse {
     }
   >;
   missing_metadata: string[];
-  next_action: "WAIT_FOR_METADATA" | "READY_FOR_PROCESSING";
+  next_action:
+  | "WAIT_FOR_METADATA"
+  | "READY_FOR_PROCESSING"
+  | "READY_TO_COMMIT"
+  | "READY_FOR_COMMIT"
+  | string; // fallback — servers sometimes differ
 }
 
 
@@ -173,6 +229,7 @@ export async function streamChat(
     const res = await fetch(`${API_BASE}/chat/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify(payload),
       signal,
     });
@@ -209,6 +266,7 @@ export async function uploadPdf(
 
   const res = await fetch(`${API_BASE}/upload/`, {
     method: "POST",
+    credentials: "include",
     body: form,
   });
 
@@ -227,6 +285,7 @@ export async function commitUpload(
   const res = await fetch(`${API_BASE}/upload/commit`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify(payload),
   });
 
@@ -243,12 +302,50 @@ export async function updateMetadata(
   payload: MetadataUpdateRequest,
   onProgress?: (event: { message?: string; progress?: number }) => void
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/metadata`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  // Try canonical endpoints in order to avoid client/server mismatch
+// Try canonical endpoints in order to avoid client/server mismatch
+let res: Response | null = null;
+const attempts = [
+  // Prefer the streaming commit endpoint so the frontend can show chunking/embedding/indexing progress.
+  `${API_BASE}/metadata/update`,
+  `${API_BASE}/metadata/`,
+  `${API_BASE}/metadata/confirm`,
+];
 
+let lastError: Error | null = null;
+
+for (const url of attempts) {
+  try {
+    const attemptRes = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(payload),
+    });
+
+    // if endpoint explicitly not found / not allowed, try the next option
+    if (attemptRes.status === 404 || attemptRes.status === 405) {
+      continue;
+    }
+
+    // If we got any other response, accept it (even if non-OK — we'll surface error)
+    res = attemptRes;
+    break;
+  } catch (err: any) {
+    lastError = err;
+    continue; // try next URL
+  }
+}
+
+if (!res) {
+  throw lastError ?? new Error("Failed to reach metadata endpoint");
+}
+
+if (!res.ok) {
+  const errText = await normalizeError(res);
+  console.error("[updateMetadata] metadata endpoint error:", res.status, errText);
+  throw new Error(errText);
+}
   if (!res.ok) throw new Error(await normalizeError(res));
 
   const reader = res.body?.getReader();
@@ -322,6 +419,7 @@ export async function verifyNetKey(
   const res = await fetch(`${API_BASE}/net-key/verify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ api_key: apiKey }),
   });
 
@@ -330,7 +428,7 @@ export async function verifyNetKey(
 }
 
 export async function fetchNetStatus(): Promise<NetStatusResponse> {
-  const res = await fetch(`${API_BASE}/net/status`);
+  const res = await fetch(`${API_BASE}/net/status`, { credentials: "include" });
   if (!res.ok) throw new Error(await normalizeError(res));
   return res.json();
 }
@@ -344,6 +442,7 @@ export async function generateChatTitle(question: string): Promise<string> {
     const res = await fetch(`${API_BASE}/chat/title`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ question }),
     });
 

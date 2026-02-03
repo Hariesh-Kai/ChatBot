@@ -8,7 +8,7 @@ import { useSmartUpload, UploadStatus } from "@/app/hooks/useSmartUpload";
 
 type Props = {
   sessionId: string | null;
-  onUploadStart?: () => void;
+  onUploadStart?: (file: File) => void;
   //  NEW: Receive progress callback from parent
   onUploadProgress?: (status: UploadStatus, percent: number, label: string) => void;
   onUploadSuccess?: (result: any) => void;
@@ -46,8 +46,8 @@ export default function PdfUploadButton({
       return;
     }
 
-    // 1. Notify Parent (Creates the bubble)
-    onUploadStart?.();
+    // 1. Notify Parent (creates the chat bubbles + loader)
+    onUploadStart?.(file);
 
     // 2. Start Logic
     await startUpload(

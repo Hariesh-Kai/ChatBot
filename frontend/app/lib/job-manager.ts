@@ -39,6 +39,7 @@ async function sendAbort(sessionId: string) {
     await fetch(`${API_BASE}/abort`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ session_id: sessionId }),
     });
   } catch {

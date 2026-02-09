@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import HTTPException, Request
 
 from backend.auth.tokens import verify_token
-from backend.auth.user_store import User, get_configured_user
+from backend.auth.user_store import User, get_user_for_token, is_admin
 
 AUTH_COOKIE_NAME = "kavin_auth"
 
@@ -32,13 +32,12 @@ def get_current_user(request: Request) -> Optional[User]:
     if not payload:
         return None
 
-    configured = get_configured_user()
     sub = payload.get("sub")
     email = payload.get("email")
-    if sub != configured.username or email != configured.email:
+    user = get_user_for_token(sub, email)
+    if not user:
         return None
-
-    return configured
+    return user
 
 
 def require_user(request: Request) -> User:
@@ -47,3 +46,9 @@ def require_user(request: Request) -> User:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return user
 
+
+def require_admin(request: Request) -> User:
+    user = require_user(request)
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user

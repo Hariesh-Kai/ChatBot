@@ -3,6 +3,8 @@
 
 import { Message, RagSource } from "@/app/lib/types";
 import Avatar from "../ui/Avatar";
+import { getModelAvatar } from "@/app/lib/model-avatars";
+import type { KavinModelId } from "@/app/lib/kavin-models";
 import ReactMarkdown from "react-markdown";
 import CodeBlock from "./CodeBlock";
 import ThinkingDisclosure from "./ThinkingDisclosure";
@@ -22,6 +24,8 @@ interface Props {
   onDelete?: () => void;
   onViewSources?: (sources: RagSource[]) => void;
   userLabel?: string;
+  assistantModel?: KavinModelId;
+  showConfidence?: boolean;
 
   // 🔥 ADD THESE
   sessionId?: string | null;
@@ -53,17 +57,22 @@ export default function MessageBubble({
   companyDocumentId,
   revisionNumber,
   userLabel,
+  assistantModel,
+  showConfidence = true,
 }: Props) {
   const isAssistant = message.role === "assistant";
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
+  const assistantAvatar = getModelAvatar(assistantModel);
 
   // --- DERIVED STATES ---
   const isProgress = message.status === "progress";
   const isTyping = message.status === "typing";
+  const isStreaming = message.status === "streaming";
   const isError = message.status === "error";
   const isEdited = Boolean(message.edited);
   const isRegenerated = Boolean(message.regenerated);
+  const bubbleWidthClass = isUser ? "max-w-[70%]" : "max-w-[85%]";
 
   const hasContent =
     typeof message.content === "string" &&
@@ -123,25 +132,17 @@ export default function MessageBubble({
     }
   }
 
+  const showTypingPlaceholder =
+    isAssistant && (isTyping || isStreaming) && !hasContent && !thoughtContent;
+  const showStreamingIndicator = isAssistant && (isTyping || isStreaming);
+
   /* ================= GET STATUS LABEL ================= */
   const getStatusLabel = () => {
+      if (showTypingPlaceholder) return null;
       if (thoughtContent && !finalDisplayContent) return "Thinking...";
-      if (isTyping) return "Generating response...";
+      if (isTyping) return "Writing your answer...";
       return null;
   };
-
-  /* ================= 3. TYPING INDICATOR (SEARCHING) ================= */
-  if (isAssistant && isTyping && !hasContent && !thoughtContent) {
-      return (
-        <div className="w-full py-2">
-            <TypingIndicator 
-                modelLabel={modelLabel} 
-                type="searching"
-                label="Analyzing documents..." 
-            />
-        </div>
-      );
-  }
 
   /* ================= 4. NORMAL MESSAGE BUBBLE ================= */
 
@@ -155,13 +156,19 @@ export default function MessageBubble({
         `}
       >
         {/* Assistant avatar */}
-        {isAssistant && <Avatar role="assistant" />}
+        {isAssistant && (
+          <Avatar
+            role="assistant"
+            assistantLabel={assistantAvatar.label}
+            assistantClassName={assistantAvatar.className}
+          />
+        )}
 
         {/* Bubble Container */}
-        <div className="max-w-[85%] min-w-[300px]"> 
+        <div className={`${bubbleWidthClass} min-w-[140px]`}> 
           
           {/* HEADER: Show Model & Status Label */}
-          {isAssistant && (isTyping || (thoughtContent && !finalDisplayContent)) && (
+          {isAssistant && (isTyping || (thoughtContent && !finalDisplayContent)) && !showTypingPlaceholder && (
              <div className="mb-1 flex items-center gap-2 text-xs text-gray-400 select-none">
                 <span className="font-semibold text-blue-400">{modelLabel}</span>
                 <span>•</span>
@@ -206,49 +213,96 @@ export default function MessageBubble({
           >
             {/* ================= CONTENT RENDER ================= */}
             {hasContent ? (
-              <div className="space-y-2">
-                <ReactMarkdown
-                  skipHtml
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    table: ({ node, ...props }) => (
-                      <div className="my-4 w-full overflow-x-auto rounded border border-white/10">
-                        <table className="min-w-full divide-y divide-white/10 text-left text-sm" {...props} />
-                      </div>
-                    ),
-                    thead: ({ node, ...props }) => <thead className="bg-white/5 text-gray-200" {...props} />,
-                    tbody: ({ node, ...props }) => <tbody className="divide-y divide-white/10 bg-transparent" {...props} />,
-                    tr: ({ node, ...props }) => <tr className="hover:bg-white/5 transition-colors" {...props} />,
-                    th: ({ node, ...props }) => <th className="px-4 py-2 font-semibold text-gray-300 text-left" {...props} />,
-                    td: ({ node, ...props }) => <td className="px-4 py-2 text-gray-300 align-top whitespace-pre-wrap" {...props} />,
-                    
-                    code({ className, children, ...props }) {
-                      const match = /language-(\w+)/.exec(className || "");
-                      const isInline = !match && !String(children).includes("\n");
+              showStreamingIndicator ? (
+                <span className="inline-flex flex-wrap items-baseline gap-1">
+                  <span className="inline">
+                    <ReactMarkdown
+                      skipHtml
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        p: (props) => <span className="whitespace-pre-wrap" {...props} />,
+                      code({ className, children, ...props }) {
+                        const match = /language-(\w+)/.exec(className || "");
+                        const isInline = !match && !String(children).includes("\n");
 
-                      if (isInline) {
+                        if (isInline) {
+                          return (
+                            <code className="rounded bg-black/30 px-1 py-0.5 text-xs text-blue-200 font-mono" {...props}>
+                              {children}
+                            </code>
+                          );
+                        }
+
                         return (
-                          <code className="rounded bg-black/30 px-1 py-0.5 text-xs text-blue-200 font-mono" {...props}>
-                            {children}
-                          </code>
+                          <CodeBlock
+                            code={String(children).replace(/\n$/, "")}
+                            language={match ? match[1] : "text"}
+                          />
                         );
-                      }
+                      },
+                      a: (props) => <a className="text-blue-400 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
+                    }}
+                    >
+                      {finalDisplayContent}
+                    </ReactMarkdown>
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-gray-400" aria-hidden="true">
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:0ms]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:150ms]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:300ms]" />
+                  </span>
+                </span>
+              ) : (
+                <div className="space-y-2">
+                  <ReactMarkdown
+                    skipHtml
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      table: (props) => (
+                        <div className="my-4 w-full overflow-x-auto rounded border border-white/10">
+                          <table className="min-w-full divide-y divide-white/10 text-left text-sm" {...props} />
+                        </div>
+                      ),
+                      thead: (props) => <thead className="bg-white/5 text-gray-200" {...props} />,
+                      tbody: (props) => <tbody className="divide-y divide-white/10 bg-transparent" {...props} />,
+                      tr: (props) => <tr className="hover:bg-white/5 transition-colors" {...props} />,
+                      th: (props) => <th className="px-4 py-2 font-semibold text-gray-300 text-left" {...props} />,
+                      td: (props) => <td className="px-4 py-2 text-gray-300 align-top whitespace-pre-wrap" {...props} />,
+                      
+                      code({ className, children, ...props }) {
+                        const match = /language-(\w+)/.exec(className || "");
+                        const isInline = !match && !String(children).includes("\n");
 
-                      return (
-                        <CodeBlock
-                          code={String(children).replace(/\n$/, "")}
-                          language={match ? match[1] : "text"}
-                        />
-                      );
-                    },
-                    ul: ({ node, ...props }) => <ul className="list-disc pl-5 space-y-1 my-2" {...props} />,
-                    ol: ({ node, ...props }) => <ol className="list-decimal pl-5 space-y-1 my-2" {...props} />,
-                    li: ({ node, ...props }) => <li className="pl-1" {...props} />,
-                    a: ({ node, ...props }) => <a className="text-blue-400 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
-                  }}
-                >
-                  {finalDisplayContent}
-                </ReactMarkdown>
+                        if (isInline) {
+                          return (
+                            <code className="rounded bg-black/30 px-1 py-0.5 text-xs text-blue-200 font-mono" {...props}>
+                              {children}
+                            </code>
+                          );
+                        }
+
+                        return (
+                          <CodeBlock
+                            code={String(children).replace(/\n$/, "")}
+                            language={match ? match[1] : "text"}
+                          />
+                        );
+                      },
+                      ul: (props) => <ul className="list-disc pl-5 space-y-1 my-2" {...props} />,
+                      ol: (props) => <ol className="list-decimal pl-5 space-y-1 my-2" {...props} />,
+                      li: (props) => <li className="pl-1" {...props} />,
+                      a: (props) => <a className="text-blue-400 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
+                    }}
+                  >
+                    {finalDisplayContent}
+                  </ReactMarkdown>
+                </div>
+              )
+            ) : showTypingPlaceholder ? (
+              <div className="flex items-center gap-1" aria-hidden="true">
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:0ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:150ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:300ms]" />
               </div>
             ) : (
                <span className="italic text-gray-500">No content generated.</span>
@@ -266,6 +320,16 @@ export default function MessageBubble({
                         <span>View {message.sources.length} Source{message.sources.length > 1 ? "s" : ""}</span>
                     </button>
                 </div>
+            )}
+
+            {/* ================= CONFIDENCE BADGE ================= */}
+            {isAssistant && showConfidence && message.confidence && (
+              <div className="mt-3 text-xs text-gray-400">
+                Confidence:{" "}
+                <span className="text-gray-200">
+                  {Math.round(message.confidence.confidence * 100)}% ({message.confidence.level})
+                </span>
+              </div>
             )}
 
             {/* ================= ACTION BAR ================= */}

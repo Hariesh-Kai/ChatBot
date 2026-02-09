@@ -248,7 +248,7 @@ def _xai_stream(
 def generate_net_answer_stream(
     prompt: str,
     provider: Optional[str] = None,
-    variant: str = "default",
+    variant: str = "rank_1",
     max_tokens: int = NET_MAX_TOKENS,
 ) -> Generator[str, None, None]:
 

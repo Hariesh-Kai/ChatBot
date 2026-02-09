@@ -55,7 +55,7 @@ export async function verifyNetKey(
       provider: data.provider,
       model: data.model,
     };
-  } catch (err) {
+  } catch {
     return {
       ok: false,
       error: "Unable to reach Net verification service",

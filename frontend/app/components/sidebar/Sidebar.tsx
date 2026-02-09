@@ -46,6 +46,7 @@ export default function Sidebar({
 
   const userInitial =
     (user?.username || user?.email || "U").trim().charAt(0).toUpperCase() || "U";
+  const canAccessDevtools = user?.role === "admin" || user?.role === "developer";
 
 
   const filteredChats = useMemo(() => {
@@ -77,6 +78,7 @@ export default function Sidebar({
               
               <PdfUploadButton 
                 sessionId={sessionId} iconOnly disabled={uploadDisabled || !sessionId}
+                dataId="sidebar"
                 onUploadStart={onUploadStart}
                 onUploadSuccess={onUploadSuccess}
                 onUploadError={onUploadError}
@@ -96,6 +98,7 @@ export default function Sidebar({
               
               <PdfUploadButton 
                 sessionId={sessionId} disabled={uploadDisabled || !sessionId}
+                dataId="sidebar"
                 onUploadStart={onUploadStart}
                 onUploadSuccess={onUploadSuccess}
                 onUploadError={onUploadError}
@@ -139,12 +142,14 @@ export default function Sidebar({
               </div>
 
               <div className="mt-3 flex items-center justify-between gap-2">
-                <a
-                  href="/dashboard"
-                  className="text-xs text-gray-400 hover:text-white hover:underline"
-                >
-                  Developer dashboard
-                </a>
+                {canAccessDevtools && (
+                  <a
+                    href="/dashboard"
+                    className="text-xs text-gray-400 hover:text-white hover:underline"
+                  >
+                    Developer dashboard
+                  </a>
+                )}
 
                 <button
                   type="button"

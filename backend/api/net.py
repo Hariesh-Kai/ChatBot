@@ -120,13 +120,18 @@ def net_status():
         model = resolve_active_net_model()
     except Exception:
         return {
+            "ok": False,
             "available": False,
+            "enabled": False,
             "provider": None,
             "model": None,
         }
 
+    enabled = has_net_api_key(provider)
     return {
-        "available": has_net_api_key(provider),
+        "ok": True,
+        "available": enabled,
+        "enabled": enabled,
         "provider": provider,
         "model": model,
         "max_requests_per_min": NET_MAX_REQUESTS_PER_MIN,

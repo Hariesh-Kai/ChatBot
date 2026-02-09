@@ -198,7 +198,11 @@ def enrich_chunks(
                     
                     #  CRITICAL: Pass Page & BBox to DB for Frontend Highlighting
                     "page_number": base_meta.get("page_number", 1),
-                    "bbox": base_meta.get("bbox", "") 
+                    "bbox": base_meta.get("bbox", ""),
+
+                    #  Table linkage (required for parent resolution)
+                    "parent_id": base_meta.get("parent_id"),
+                    "doc_id": base_meta.get("doc_id"),
                 },
 
                 # -----------------------------

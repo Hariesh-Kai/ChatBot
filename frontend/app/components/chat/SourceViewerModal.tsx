@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import Image from "next/image";
 import { X, ZoomIn, ZoomOut, FileText, Loader2, AlertCircle } from "lucide-react";
 import { API_BASE } from "@/app/lib/config";
 import { RagSource } from "@/app/lib/types";
@@ -12,14 +13,18 @@ interface Props {
 }
 
 export default function SourceViewerModal({ open, sources, onClose }: Props) {
-  const [zoom, setZoom] = useState(1);
-
-  // Reset zoom on open
-  useEffect(() => {
-    if (open) setZoom(1);
-  }, [open]);
-
   if (!open || sources.length === 0) return null;
+
+  return (
+    <SourceViewerContent sources={sources} onClose={onClose} />
+  );
+}
+
+function SourceViewerContent({
+  sources,
+  onClose,
+}: Omit<Props, "open">) {
+  const [zoom, setZoom] = useState(1);
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in">
@@ -91,6 +96,15 @@ function SourcePage({ source, zoom }: { source: RagSource, zoom: number }) {
     // Handle legacy data ("page_number") vs new data ("page")
     // It prioritizes 'page' (new backend), falls back to 'page_number' (old backend), or defaults to 1.
     const safePage = source.page ?? (source as any).page_number ?? 1;
+    const sectionLabel = (source.section || "").trim();
+    const chunkLabel =
+        source.chunk_type === "parent"
+            ? "Table"
+            : source.chunk_type === "child"
+                ? "Table Row"
+                : source.chunk_type === "text"
+                    ? "Text"
+                    : "";
 
     //  CRITICAL FIX: Safe Stringify for BBOX
     // If bbox is an array (from DB), stringify it so backend receives valid JSON
@@ -108,9 +122,21 @@ function SourcePage({ source, zoom }: { source: RagSource, zoom: number }) {
     return (
         <div className="relative group flex flex-col items-center">
             {/* Label */}
-            <div className="mb-2 w-full max-w-[800px] flex justify-between text-xs text-gray-400 px-1">
+            <div className="mb-2 w-full max-w-[800px] flex items-center justify-between text-xs text-gray-400 px-1">
                 <span className="truncate max-w-[70%]">{source.fileName}</span>
-                <span className="font-mono text-blue-300">Page {safePage}</span>
+                <div className="flex items-center gap-2">
+                    {sectionLabel && (
+                        <span className="max-w-[220px] truncate rounded bg-white/10 px-2 py-0.5 text-[10px] text-gray-300">
+                            {sectionLabel}
+                        </span>
+                    )}
+                    {chunkLabel && (
+                        <span className="rounded bg-blue-500/10 px-2 py-0.5 text-[10px] text-blue-300">
+                            {chunkLabel}
+                        </span>
+                    )}
+                    <span className="font-mono text-blue-300">Page {safePage}</span>
+                </div>
             </div>
 
             {/* Image Container */}
@@ -140,10 +166,15 @@ function SourcePage({ source, zoom }: { source: RagSource, zoom: number }) {
                 )}
 
                 {/* The Actual Image */}
-                <img
+                <Image
                     src={imageUrl}
                     alt={`Page ${safePage} of ${source.fileName}`}
+                    width={800}
+                    height={1100}
+                    sizes="100vw"
+                    unoptimized
                     className={`w-full h-auto object-contain ${loading ? 'opacity-0' : 'opacity-100'}`}
+                    style={{ width: "100%", height: "auto" }}
                     onLoad={() => setLoading(false)}
                     onError={() => {
                         setLoading(false);

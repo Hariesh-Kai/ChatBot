@@ -48,6 +48,7 @@ def _ensure_secret_dir():
 # ============================================================
 
 _NET_KEYS: Dict[NetProvider, str] = {}
+_ACTIVE_PROVIDER: NetProvider | None = None
 _LOCK = Lock()
 
 # ============================================================
@@ -63,9 +64,22 @@ def _load_from_disk():
         if not isinstance(data, dict):
             raise ValueError("Key file is not a dict")
 
+        global _ACTIVE_PROVIDER
+
+        active = data.get("active_provider") or data.get("_active_provider")
+        if active in ("groq", "xai"):
+            _ACTIVE_PROVIDER = active  # type: ignore
+
         for k, v in data.items():
             if k in ("groq", "xai") and isinstance(v, str):
                 _NET_KEYS[k] = v
+
+        # Auto-select provider if only one key exists and none was set
+        if _ACTIVE_PROVIDER is None and len(_NET_KEYS) == 1:
+            _ACTIVE_PROVIDER = next(iter(_NET_KEYS.keys()))
+
+        if not os.getenv(NET_PROVIDER_ENV) and _ACTIVE_PROVIDER in _NET_KEYS:
+            os.environ[NET_PROVIDER_ENV] = _ACTIVE_PROVIDER  # type: ignore
 
     except Exception as e:
         print(f"Corrupted net_keys.json ignored: {e}")
@@ -78,7 +92,10 @@ def _save_to_disk():
     _ensure_secret_dir()
 
     tmp_file = SECRET_FILE.with_suffix(".tmp")
-    tmp_file.write_text(json.dumps(_NET_KEYS, indent=2))
+    payload = dict(_NET_KEYS)
+    if _ACTIVE_PROVIDER in ("groq", "xai"):
+        payload["active_provider"] = _ACTIVE_PROVIDER
+    tmp_file.write_text(json.dumps(payload, indent=2))
 
     tmp_file.replace(SECRET_FILE)
 
@@ -101,6 +118,8 @@ def set_net_api_key(provider: NetProvider, api_key: str) -> None:
 
     with _LOCK:
         _NET_KEYS[provider] = api_key.strip()
+        global _ACTIVE_PROVIDER
+        _ACTIVE_PROVIDER = provider
         _save_to_disk()
 
         # Provider selection is explicit
@@ -122,6 +141,8 @@ def get_net_api_key(provider: NetProvider) -> str:
 def clear_net_api_keys() -> None:
     with _LOCK:
         _NET_KEYS.clear()
+        global _ACTIVE_PROVIDER
+        _ACTIVE_PROVIDER = None
 
         if SECRET_FILE.exists():
             try:
@@ -136,5 +157,11 @@ def get_active_net_provider() -> NetProvider:
 
     if provider in ("groq", "xai"):
         return provider  # type: ignore
+
+    with _LOCK:
+        if _ACTIVE_PROVIDER in ("groq", "xai") and _ACTIVE_PROVIDER in _NET_KEYS:
+            return _ACTIVE_PROVIDER
+        if len(_NET_KEYS) == 1:
+            return next(iter(_NET_KEYS.keys()))
 
     raise RuntimeError("Net provider not configured")

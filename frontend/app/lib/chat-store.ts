@@ -14,9 +14,16 @@ function normalizeMessage(raw: any): Message {
     safeStatus = "done"; // Force unlock UI
   }
 
+  const rawModel = raw?.model;
+  const model =
+    rawModel === "lite" || rawModel === "base" || rawModel === "net"
+      ? rawModel
+      : undefined;
+
   return {
     id: raw?.id ?? crypto.randomUUID(),
     role: raw?.role ?? "assistant",
+    model,
     content: typeof raw?.content === "string" ? raw.content : "",
     createdAt: typeof raw?.createdAt === "number" ? raw.createdAt : Date.now(),
     status: safeStatus,

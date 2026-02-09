@@ -1,0 +1,27 @@
+{
+  "users": [
+    {
+      "username": "vievk",
+      "email": "vicek@kavin.com",
+      "role": "user",
+      "disabled": false,
+      "password_hash": "58ecb6d0c029f3d7f041f67ae30fa86f3aef689bdb333afdc95c9e7a6ca0d1cb",
+      "salt": "660894ae829e47bb2ba6ef7e0f6a2fdc",
+      "created_at": 1770282840,
+      "updated_at": 1770282841,
+      "resources": {
+        "postgres": {
+          "database": "kavin_vievk",
+          "created": true
+        },
+        "minio": {
+          "bucket": "kavin-vievk",
+          "created": true
+        },
+        "redis": {
+          "namespace": "user:vievk:"
+        }
+      }
+    }
+  ]
+}

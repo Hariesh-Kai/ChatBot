@@ -18,13 +18,12 @@ interface Props {
   onUploadError?: (error: string) => void;
   //  NEW: Progress Prop
   onUploadProgress?: (status: UploadStatus, percent: number, label: string) => void;
+  netBlocked?: boolean;
 
   /* Hidden power features */
   onArrowUp?: () => void;   
-  onEscape?: () => void;    
 
   disabled?: boolean;
-  isEditing?: boolean;
   isGenerating?: boolean;
   onStop?: () => void;
 }
@@ -40,24 +39,29 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
       onUploadSuccess,
       onUploadError,
       onUploadProgress, //  Destructure
+      netBlocked,
       onArrowUp,
-      onEscape,
       disabled = false,
-      isEditing = false,
       isGenerating = false,
       onStop,
     },
     ref
   ) => {
     const text = typeof value === "string" ? value : "";
-    const canSend = !disabled && text.trim().length > 0;
+    const effectiveDisabled = disabled || Boolean(netBlocked);
+    const canSend = !effectiveDisabled && text.trim().length > 0;
+    const placeholder = netBlocked
+      ? "Net model rate-limited. Try again soon."
+      : effectiveDisabled
+        ? "AI is responding..."
+        : "Message KAVIN...";
 
     return (
       <div
-        aria-disabled={disabled}
+        aria-disabled={effectiveDisabled}
         className={`
           flex items-end gap-3 rounded-xl px-3 py-3 border border-white/10 bg-[#1a1a1a] shadow-md transition
-          ${disabled ? "opacity-60" : ""} focus-within:ring-1 focus-within:ring-white/20
+          ${effectiveDisabled ? "opacity-60" : ""} focus-within:ring-1 focus-within:ring-white/20
         `}
       >
         {/* ================= UPLOAD BUTTON ================= */}
@@ -65,7 +69,8 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
             <PdfUploadButton 
                 sessionId={sessionId}
                 iconOnly={true}
-                disabled={disabled || isGenerating}
+                dataId="chat"
+                disabled={effectiveDisabled || isGenerating}
                 onUploadStart={onUploadStart}
                 onUploadSuccess={onUploadSuccess}
                 onUploadError={onUploadError}
@@ -78,13 +83,13 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
           <TextareaAutosize
             ref={ref}
             value={text}
-            disabled={disabled}
+            disabled={effectiveDisabled}
             minRows={1}
             maxRows={6}
-            placeholder={disabled ? "AI is responding..." : "Message KAVIN..."}
-            onChange={(e) => !disabled && onChange(e.target.value)}
+            placeholder={placeholder}
+            onChange={(e) => !effectiveDisabled && onChange(e.target.value)}
             onKeyDown={(e) => {
-              if (disabled) { e.preventDefault(); return; }
+              if (effectiveDisabled) { e.preventDefault(); return; }
               if (isGenerating && e.key === "Enter" && onStop) { e.preventDefault(); onStop(); return; }
               if (e.key === "ArrowUp" && text.trim() === "" && onArrowUp) { e.preventDefault(); onArrowUp(); return; }
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (canSend) onSend(text); }

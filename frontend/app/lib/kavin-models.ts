@@ -30,20 +30,20 @@ export interface KavinModel {
 const _KAVIN_MODELS: Record<KavinModelId, KavinModel> = {
   lite: {
     id: "lite",
-    label: "KavinBase Lite",
+    label: "KavinBase Lite v1.0",
     description: "Fast local model (CPU / GGUF)",
   },
 
   base: {
     id: "base",
-    label: "KavinBase",
+    label: "KavinBase v1.0",
     description: "Higher-quality local model (GPU preferred)",
     requiresGpu: true,
   },
 
   net: {
     id: "net",
-    label: "KavinBase Net",
+    label: "KavinBase Net v1.0",
     description: "External LLM (Groq / xAI)",
     requiresNet: true,
   },
@@ -93,6 +93,13 @@ export function applyNetStatus(status?: {
  */
 export function getNetState(): NetRuntimeState {
   return { ..._netState };
+}
+
+/**
+ * Convenience: whether Net is enabled at runtime.
+ */
+export function isNetEnabled(): boolean {
+  return Boolean(_netState.enabled);
 }
 
 /* =========================================================

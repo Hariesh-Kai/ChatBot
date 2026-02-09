@@ -34,7 +34,7 @@ export function uploadPdfWithProgress({
         try {
           const json = JSON.parse(xhr.responseText);
           resolve(json);
-        } catch (e) {
+        } catch {
           reject(new Error("Invalid server response"));
         }
       } else {

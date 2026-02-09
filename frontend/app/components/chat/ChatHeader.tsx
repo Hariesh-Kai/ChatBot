@@ -14,6 +14,8 @@ import {
 import { KAVIN_MODELS, KavinModelId } from "@/app/lib/kavin-models";
 import NetKeyModal from "@/app/components/net/NetKeyModal";
 import { hasNetApiKey } from "@/app/lib/net-key-store";
+import Avatar from "../ui/Avatar";
+import { getModelAvatar } from "@/app/lib/model-avatars";
 
 interface Props {
   title: string;
@@ -62,15 +64,6 @@ export default function ChatHeader({
   const modelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  /* -------------------------------------------------
-     Reset local UI state when chat changes
-   -------------------------------------------------- */
-  useEffect(() => {
-    setEditing(false);
-    setModelOpen(false);
-    setValue(title);
-  }, [title]);
-
   /* ---------------- Focus title input ---------------- */
   useEffect(() => {
     if (editing) inputRef.current?.focus();
@@ -98,7 +91,10 @@ export default function ChatHeader({
 
   /* ---------------- Editing helpers ---------------- */
   function startEdit() {
-    if (!isTyping) setEditing(true);
+    if (!isTyping) {
+      setValue(title);
+      setEditing(true);
+    }
   }
 
   function cancelEdit() {
@@ -127,6 +123,8 @@ export default function ChatHeader({
     );
   }, [activeModel]);
 
+  const avatar = useMemo(() => getModelAvatar(activeModel), [activeModel]);
+
   return (
     <>
       <header
@@ -140,7 +138,14 @@ export default function ChatHeader({
         <div className="flex h-full items-center justify-between px-4">
 
           {/* ================= LEFT — MODEL DROPDOWN ================= */}
-          <div ref={modelRef} className="relative">
+          <div className="flex items-center gap-2">
+            <Avatar
+              role="assistant"
+              assistantLabel={avatar.label}
+              assistantClassName={avatar.className}
+              size="sm"
+            />
+            <div ref={modelRef} className="relative">
             <button
               onClick={() => !isTyping && setModelOpen((v) => !v)}
               disabled={isTyping}
@@ -204,6 +209,7 @@ export default function ChatHeader({
                 ))}
               </div>
             )}
+            </div>
           </div>
 
           {/* ================= CENTER — CHAT TITLE ================= */}
@@ -240,7 +246,7 @@ export default function ChatHeader({
               <button
                 onClick={() => setNetModalOpen(true)}
                 disabled={isTyping}
-                title="Configure KavinBase Net"
+                title="Configure KavinBase Net v1.0"
                 className="
                   rounded-md p-2 text-sky-400
                   hover:bg-white/10 hover:text-sky-300

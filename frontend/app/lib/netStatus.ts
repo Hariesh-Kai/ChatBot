@@ -75,9 +75,12 @@ export async function getNetStatus(force = false): Promise<NetStatus> {
     // Net available
     // -----------------------------
     const data = await res.json();
+    const available = Boolean(
+      data?.available ?? data?.enabled ?? data?.ok ?? false
+    );
 
     _cache = {
-      available: true,
+      available,
       provider: data.provider,
       rateLimited: false,
       remainingRequests: data.remaining_requests,

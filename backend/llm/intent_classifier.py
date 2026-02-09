@@ -123,23 +123,38 @@ def classify_intent(question: str) -> Intent:
     # --------------------------------------------------------
     # 2️⃣ ZERO-SHOT CLASSIFICATION
     # --------------------------------------------------------
-    classifier = load_intent_classifier()
-
-    result = classifier(
-        sequences=question,
-        candidate_labels=CANDIDATE_LABELS,
-        multi_label=False,
-    )
-
-    labels = result.get("labels", [])
-    scores = result.get("scores", [])
-
-    if not labels or not scores:
+    # Intent detection must NEVER crash the request. If the classifier
+    # model isn't available (common with local_files_only=True), fall
+    # back to fact_lookup so RAG remains enabled.
+    try:
+        classifier = load_intent_classifier()
+    except Exception as e:
+        print(f"[intent] classifier unavailable -> fallback to fact_lookup: {e}")
         return "fact_lookup"
 
-    top_label = labels[0].lower()
-    top_score = float(scores[0])
-    second_score = float(scores[1]) if len(scores) > 1 else 0.0
+    try:
+        result = classifier(
+            sequences=question,
+            candidate_labels=CANDIDATE_LABELS,
+            multi_label=False,
+        )
+    except Exception as e:
+        print(f"[intent] classifier call failed -> fallback to fact_lookup: {e}")
+        return "fact_lookup"
+
+    try:
+        labels = result.get("labels", []) if isinstance(result, dict) else []
+        scores = result.get("scores", []) if isinstance(result, dict) else []
+
+        if not labels or not scores:
+            return "fact_lookup"
+
+        top_label = str(labels[0]).lower()
+        top_score = float(scores[0]) if len(scores) > 0 else 0.0
+        second_score = float(scores[1]) if len(scores) > 1 else 0.0
+    except Exception as e:
+        print(f"[intent] parse error -> fallback to fact_lookup: {e}")
+        return "fact_lookup"
 
     # --------------------------------------------------------
     # 3️⃣ FOLLOW-UP (HIGHEST PRIORITY)

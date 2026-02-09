@@ -19,7 +19,7 @@ from backend.state.abort_signals import is_aborted
 from backend.llm.loader import get_llm, hf_stream_generate
 from backend.llm.net_loader import generate_net_answer_stream, NetRateLimitError
 from backend.llm.net_models import get_active_net_provider, NET_MAX_TOKENS
-from backend.contracts.ui_events import net_rate_limited_event
+from backend.contracts.ui_events import net_rate_limited_event, error_event
 
 
 from backend.llm.prompts import (
@@ -82,6 +82,41 @@ def _is_bad_answer(text: str) -> bool:
             "no information available",
         )
     )
+
+
+def _friendly_model_error(err: Exception) -> str:
+    msg = str(err) if err else "Model unavailable."
+    lower = msg.lower()
+
+    if "unknown hf model_id" in lower or "unknown model_id" in lower:
+        return "Model not registered. Add or switch the Base model in the Developer Dashboard."
+    if "gguf model not found" in lower or "no such file" in lower:
+        return "GGUF model file missing. Re-download or register the Lite model."
+    if "transformers not installed" in lower:
+        return "Transformers not installed on the server (Base model cannot load)."
+    if "local_files_only" in lower or "offline mode" in lower:
+        return "Model files not found locally. Download the Base model in the Developer Dashboard."
+    if "llama_cpp" in lower:
+        return "GGUF runtime not installed (llama_cpp missing)."
+
+    # fallback: keep message short
+    return msg[:200]
+
+
+def _friendly_net_error(err: Exception) -> str:
+    msg = str(err) if err else "Net model unavailable."
+    lower = msg.lower()
+
+    if "not configured" in lower or "no api key" in lower or "api key missing" in lower:
+        return "KavinBase Net is not configured. Add and verify your API key."
+    if "invalid" in lower and "key" in lower:
+        return "Net API key is invalid. Please re-verify it."
+    if "unsupported net provider" in lower or "invalid net provider" in lower:
+        return "Net provider is invalid. Choose Groq or xAI in Net settings."
+    if "rate limit" in lower:
+        return "Net is rate limited. Please try again shortly."
+
+    return msg[:200]
 
 
 def _context_to_text(chunks: Optional[List[Dict[str, str]]]) -> str:
@@ -162,7 +197,7 @@ def generate_answer_stream(
                 if model == "net":
                     if not session_id:
                         yield UI_EVENT_PREFIX + json.dumps(
-                           text_event("Session required for Net mode.")
+                           error_event("Session required for Net mode.")
                           ) + "\n"
                         return
                     try:
@@ -171,12 +206,14 @@ def generate_answer_stream(
                         for token in generate_net_answer_stream(
                             prompt=prompt,
                             provider=provider,
-                            variant="default",
+                            variant="rank_1",
                             max_tokens=min(max_tokens, NET_MAX_TOKENS),
                         ):
                             if is_aborted(session_id):
                                 break
                             if token:
+                                yielded_anything = True
+                                collected.append(token)
                                 yield token
                     except NetRateLimitError as e:
                         msg = str(e)
@@ -211,9 +248,13 @@ def generate_answer_stream(
 
 
 
-            except Exception:
+            except Exception as e:
+                if model == "net":
+                    msg = _friendly_net_error(e)
+                else:
+                    msg = _friendly_model_error(e)
                 yield UI_EVENT_PREFIX + json.dumps(
-                    text_event("Error while processing documents.")
+                    error_event(msg or "Error while processing documents.")
                 ) + "\n"
                 return
 
@@ -270,9 +311,9 @@ def generate_answer_stream(
     
     try:
         llm = get_llm(model_id)
-    except Exception:
+    except Exception as e:
         yield UI_EVENT_PREFIX + json.dumps(
-            text_event("Model unavailable.")
+            text_event(_friendly_model_error(e))
         ) + "\n"
         return
 

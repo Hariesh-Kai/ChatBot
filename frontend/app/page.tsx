@@ -1,10 +1,13 @@
 // frontend/app/page.tsx
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Sidebar from "@/app/components/sidebar/Sidebar";
 import ChatWindow from "@/app/components/chat/ChatWindow";
+import StartupSplash from "@/app/components/StartupSplash";
+import GettingStartedModal from "@/app/components/onboarding/GettingStartedModal";
+import ShortcutsModal from "@/app/components/onboarding/ShortcutsModal";
 import { ChatSession, Message } from "@/app/lib/types";
 import { KavinModelId } from "@/app/lib/kavin-models";
 import { loadChats, saveChats } from "@/app/lib/chat-store";
@@ -12,6 +15,7 @@ import { authLogout, authMe, updateMetadata } from "@/app/lib/api";
 import type { AuthUser } from "@/app/lib/api";
 import { MetadataRequestField } from "@/app/lib/llm-ui-events";
 import { UploadStatus } from "@/app/hooks/useSmartUpload";
+import { API_BASE } from "@/app/lib/config";
 
 /* =========================================================
    HELPER: UUID
@@ -95,12 +99,19 @@ function AuthedHome({
   const [chats, setChats] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [devSettings, setDevSettings] = useState<any>(null);
 
   const [sidebarMetadataRequest, setSidebarMetadataRequest] = useState<{
     jobId: string;
     fields: MetadataRequestField[];
     filename: string;
   } | null>(null);
+
+  const [showStartup, setShowStartup] = useState(true);
+  const [showGettingStarted, setShowGettingStarted] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
 
 
   // 🔥 FIX: track upload lifecycle to avoid race
@@ -110,6 +121,45 @@ function AuthedHome({
   const uploadFileNameRef = useRef<string | null>(null);
   
   
+  const createNewChat = useCallback(() => {
+    const newChat: ChatSession = {
+      id: uuidv4(),
+      title: "New Chat",
+      messages: [],
+      model: "lite",
+      pinned: false,
+    };
+    setChats((prev) => [newChat, ...prev]);
+    setActiveId(newChat.id);
+    if (window.innerWidth < 768) setSidebarOpen(false);
+  }, []);
+
+  const closeGettingStarted = useCallback(() => {
+    setShowGettingStarted(false);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("kavin_onboarding_seen", "1");
+    }
+  }, []);
+
+  const triggerUpload = useCallback(() => {
+    const chatInput = document.querySelector(
+      'input[type="file"][data-upload-id="chat"]'
+    ) as HTMLInputElement | null;
+
+    if (chatInput && !chatInput.disabled) {
+      chatInput.click();
+      return;
+    }
+
+    const sidebarInput = document.querySelector(
+      'input[type="file"][data-upload-id="sidebar"]'
+    ) as HTMLInputElement | null;
+
+    if (sidebarInput && !sidebarInput.disabled) {
+      sidebarInput.click();
+    }
+  }, []);
+
   /* ================= LOAD / SAVE ================= */
 
   useEffect(() => {
@@ -120,11 +170,43 @@ function AuthedHome({
     } else {
       createNewChat();
     }
-  }, []);
+  }, [createNewChat]);
 
   useEffect(() => {
     if (chats.length > 0) saveChats(chats);
   }, [chats]);
+
+  /* ================= DEV SETTINGS (ON-DEMAND) ================= */
+  const loadDevSettings = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/devtools/settings`, { credentials: "include" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setDevSettings(data);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    loadDevSettings();
+  }, [loadDevSettings]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const seen = window.localStorage.getItem("kavin_onboarding_seen");
+    if (!seen) setShowGettingStarted(true);
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: StorageEvent) => {
+      if (e.key === "devtools_settings_updated") {
+        loadDevSettings();
+      }
+    };
+    window.addEventListener("storage", handler);
+    return () => window.removeEventListener("storage", handler);
+  }, [loadDevSettings]);
 
   /* ================= DERIVED ================= */
 
@@ -145,23 +227,76 @@ function AuthedHome({
   }
 }, [activeChat, sidebarMetadataRequest]);
 
+  useEffect(() => {
+    function isEditableTarget(target: EventTarget | null) {
+      if (!target || !(target as HTMLElement).tagName) return false;
+      const el = target as HTMLElement;
+      const tag = el.tagName.toLowerCase();
+      return tag === "input" || tag === "textarea" || el.isContentEditable;
+    }
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented) return;
+      const key = e.key.toLowerCase();
+      const meta = e.ctrlKey || e.metaKey;
+      const isEditable = isEditableTarget(e.target);
+
+      if (key === "escape") {
+        if (showShortcuts) setShowShortcuts(false);
+        if (showGettingStarted) closeGettingStarted();
+        return;
+      }
+
+      if (meta && key === "k") {
+        e.preventDefault();
+        chatInputRef.current?.focus();
+        return;
+      }
+
+      if (meta && e.shiftKey && key === "n") {
+        e.preventDefault();
+        createNewChat();
+        return;
+      }
+
+      if (meta && key === "b") {
+        e.preventDefault();
+        setSidebarOpen((v) => !v);
+        return;
+      }
+
+      if (meta && e.shiftKey && key === "u") {
+        e.preventDefault();
+        triggerUpload();
+        return;
+      }
+
+      if (!isEditable && key === "?") {
+        e.preventDefault();
+        setShowShortcuts(true);
+        return;
+      }
+
+      if (meta && e.shiftKey && key === "h") {
+        e.preventDefault();
+        setShowGettingStarted(true);
+        return;
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    createNewChat,
+    triggerUpload,
+    showShortcuts,
+    showGettingStarted,
+    closeGettingStarted,
+  ]);
+
 
 
   /* ================= ACTIONS ================= */
-
-  const createNewChat = useCallback(() => {
-    const newChat: ChatSession = {
-      id: uuidv4(),
-      title: "New Chat",
-      messages: [],
-      model: "lite",
-      pinned: false,
-    };
-    setChats((prev) => [newChat, ...prev]);
-    setActiveId(newChat.id);
-    if (window.innerWidth < 768) setSidebarOpen(false);
-  }, []);
-
   const handleDeleteChat = useCallback(
     (id: string) => {
       setChats((prev) => prev.filter((c) => c.id !== id));
@@ -219,6 +354,19 @@ function AuthedHome({
       updateMessagesForChat(activeId, updater);
     },
     [activeId, updateMessagesForChat]
+  );
+
+  const shortcuts = useMemo(
+    () => [
+      { keys: "Ctrl/Cmd + K", label: "Focus message box" },
+      { keys: "Ctrl/Cmd + Shift + N", label: "New chat" },
+      { keys: "Ctrl/Cmd + B", label: "Toggle sidebar" },
+      { keys: "Ctrl/Cmd + Shift + U", label: "Upload PDF" },
+      { keys: "Shift + /", label: "Show shortcuts" },
+      { keys: "Ctrl/Cmd + Shift + H", label: "Getting started" },
+      { keys: "Esc", label: "Close dialogs" },
+    ],
+    []
   );
 
 
@@ -426,7 +574,7 @@ function AuthedHome({
 
   };
 
-  const finalizeUploadSuccess = (_filename: string, _revision: any) => {
+  const finalizeUploadSuccess = () => {
     uploadSessionRef.current = null;
     uploadChatIdRef.current = null;
     uploadProgressMsgIdRef.current = null;
@@ -594,6 +742,17 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
 
   return (
     <div className="flex h-full w-full bg-black text-white">
+      <StartupSplash open={showStartup} onDone={() => setShowStartup(false)} />
+      <GettingStartedModal
+        open={showGettingStarted}
+        onClose={closeGettingStarted}
+        onOpenShortcuts={() => setShowShortcuts(true)}
+      />
+      <ShortcutsModal
+        open={showShortcuts}
+        onClose={() => setShowShortcuts(false)}
+        shortcuts={shortcuts}
+      />
       <Sidebar
         chats={chats}
         activeId={activeId}
@@ -627,6 +786,8 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
             model={activeChat.model}
             sessionId={activeChat.id}
             userLabel={user.username}
+            devSettings={devSettings}
+            onModelChange={(m) => handleModelChange(activeChat.id, m)}
             uploadPipeline={uploadPipeline} 
             onRenameSession={(t) => handleRenameChat(activeChat.id, t)}
             onUploadStart={handleSidebarUploadStart}
@@ -636,6 +797,7 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
             externalMetadataRequest={sidebarMetadataRequest}
             metadataActive={!!sidebarMetadataRequest} 
             onExternalMetadataSubmit={handleExternalMetadataSubmit}
+            inputRefExternal={chatInputRef}
 
 
           />

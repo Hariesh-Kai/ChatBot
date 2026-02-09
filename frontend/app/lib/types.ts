@@ -33,6 +33,8 @@ export interface RagSource {
   page: number;
 
   bbox?: any;
+  chunk_type?: "text" | "parent" | "child";
+  section?: string;
 
   company_document_id?: string;
   revision_number?: number;
@@ -52,6 +54,7 @@ export interface RagSource {
 export interface Message {
   id: string;
   role: Role;
+  model?: KavinModelId;
 
   /**
    * Message text.
@@ -94,6 +97,14 @@ export interface Message {
    * Used for the "Source Viewer" modal.
    */
   sources?: RagSource[];
+
+  /**
+   * Confidence payload (if emitted by backend).
+   */
+  confidence?: {
+    confidence: number;
+    level: "high" | "medium" | "low";
+  };
 }
 
 /* ================= CHAT SESSION ================= */

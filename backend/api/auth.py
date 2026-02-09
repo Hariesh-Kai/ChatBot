@@ -22,6 +22,7 @@ class LoginRequest(BaseModel):
 class UserResponse(BaseModel):
     username: str
     email: str
+    role: str | None = None
 
 
 def _get_cookie_options() -> dict:
@@ -65,7 +66,7 @@ def login(payload: LoginRequest, response: Response):
         **_get_cookie_options(),
     )
 
-    return {"username": user.username, "email": user.email}
+    return {"username": user.username, "email": user.email, "role": user.role}
 
 
 @router.post("/logout")
@@ -76,4 +77,4 @@ def logout(response: Response):
 
 @router.get("/me", response_model=UserResponse)
 def me(user: User = Depends(require_user)):
-    return {"username": user.username, "email": user.email}
+    return {"username": user.username, "email": user.email, "role": user.role}

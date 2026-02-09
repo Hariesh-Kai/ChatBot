@@ -15,6 +15,7 @@ type Props = {
   onUploadError?: (error: string) => void;
   iconOnly?: boolean;
   disabled?: boolean;
+  dataId?: string;
 };
 
 export default function PdfUploadButton({
@@ -25,6 +26,7 @@ export default function PdfUploadButton({
   onUploadError,
   iconOnly = false,
   disabled = false,
+  dataId,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   
@@ -67,6 +69,7 @@ export default function PdfUploadButton({
         disabled={disabled}
         onClick={() => inputRef.current?.click()}
         title={sessionId ? "Upload PDF" : "Start chat to upload"}
+        data-upload-id={dataId}
         className={`
           relative flex items-center justify-center gap-2 rounded-md border border-white/10
           ${iconOnly ? "p-2" : "w-full px-3 py-2 text-sm"}
@@ -75,7 +78,15 @@ export default function PdfUploadButton({
       >
         {iconOnly ? <Upload size={18} /> : "Upload PDF"}
       </button>
-      <input ref={inputRef} type="file" accept="application/pdf" hidden onChange={handleFileChange} />
+      <input
+        ref={inputRef}
+        type="file"
+        accept="application/pdf"
+        hidden
+        disabled={disabled || !sessionId}
+        data-upload-id={dataId}
+        onChange={handleFileChange}
+      />
     </>
   );
 }

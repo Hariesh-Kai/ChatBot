@@ -24,7 +24,10 @@ Notes:
 _LOCK = Lock()
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MODEL_CONFIG_PATH = _PROJECT_ROOT / "models" / "model_config.json"
+_MODELS_DIR = _PROJECT_ROOT / "models"
+HF_CACHE_DIR = _MODELS_DIR / "hf_cache"
+GGUF_DIR = _MODELS_DIR / "gguf"
+MODEL_CONFIG_PATH = _MODELS_DIR / "model_config.json"
 
 
 def _default_config() -> Dict[str, Any]:
@@ -35,8 +38,23 @@ def _default_config() -> Dict[str, Any]:
     }
 
 
+def ensure_model_paths() -> None:
+    """
+    Ensure model directories and config file exist.
+    """
+    _MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    HF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    GGUF_DIR.mkdir(parents=True, exist_ok=True)
+    if not MODEL_CONFIG_PATH.exists():
+        MODEL_CONFIG_PATH.write_text(
+            json.dumps(_default_config(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+
 def load_model_config() -> Dict[str, Any]:
     with _LOCK:
+        ensure_model_paths()
         if not MODEL_CONFIG_PATH.exists():
             return _default_config()
 
@@ -58,7 +76,7 @@ def load_model_config() -> Dict[str, Any]:
 
 def save_model_config(cfg: Dict[str, Any]) -> None:
     with _LOCK:
-        MODEL_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ensure_model_paths()
         MODEL_CONFIG_PATH.write_text(
             json.dumps(cfg, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -132,3 +150,46 @@ def patch_model_registry_overrides(patch: Dict[str, Any]) -> Dict[str, Any]:
     save_model_config(cfg)
     return cfg
 
+
+def delete_model(model_id: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Remove a model_id from HF/GGUF registries and any registry overrides.
+
+    Returns:
+      (updated_config, info)
+    """
+    model_id = (model_id or "").strip()
+    if not model_id:
+        raise ValueError("model_id is required")
+
+    cfg = load_model_config()
+    info = {
+        "removed_hf": False,
+        "removed_gguf": False,
+        "removed_overrides": [],
+    }
+
+    if model_id in cfg.get("hf_models", {}):
+        cfg["hf_models"].pop(model_id, None)
+        info["removed_hf"] = True
+
+    if model_id in cfg.get("gguf_models", {}):
+        cfg["gguf_models"].pop(model_id, None)
+        info["removed_gguf"] = True
+
+    overrides = cfg.get("model_registry_overrides", {})
+    if isinstance(overrides, dict):
+        for mode, patch in list(overrides.items()):
+            if not isinstance(patch, dict):
+                continue
+            removed_keys = [k for k, v in patch.items() if v == model_id]
+            if removed_keys:
+                for k in removed_keys:
+                    patch.pop(k, None)
+                info["removed_overrides"].append({"mode": mode, "keys": removed_keys})
+            if not patch:
+                overrides.pop(mode, None)
+
+    cfg["model_registry_overrides"] = overrides
+    save_model_config(cfg)
+    return cfg, info

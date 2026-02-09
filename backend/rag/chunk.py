@@ -115,7 +115,9 @@ class ContextAwareChunker:
 
         for element in elements:
             category = element.category
-            text = normalize_numbers(element.text or "")
+            raw_text = element.text or ""
+            # Avoid OCR normalization on tables to preserve IDs / codes
+            text = raw_text if category == "Table" else normalize_numbers(raw_text)
             
             #  Safely Extract Metadata (Page + Coordinates)
             meta = getattr(element, "metadata", None)
@@ -150,7 +152,9 @@ class ContextAwareChunker:
                 self._flush_text_buffer(final_documents)
 
                 html = getattr(element.metadata, "text_as_html", "")
-                markdown = self.html_to_markdown(html) if html else text
+                markdown = self.html_to_markdown(html) if html else ""
+                if not (markdown or "").strip():
+                    markdown = text
                 
                 # --- A. CREATE PARENT CHUNK (The Whole Table) ---
                 parent_id = str(uuid.uuid4())

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 export type MetadataField = {
   key: string;
@@ -24,20 +24,36 @@ export default function MetadataEditorModal({
   onCancel,
   onSubmit,
 }: MetadataEditorModalProps) {
-  const [values, setValues] = useState<Record<string, string>>({});
+  if (!open) return null;
 
-  /* ---------------- Initialize form values ---------------- */
-  useEffect(() => {
-    if (!open) return;
+  const fieldsKey = fields
+    .map((f) => `${f.key}:${f.value ?? ""}`)
+    .join("|");
 
+  return (
+    <MetadataEditorModalContent
+      key={fieldsKey}
+      title={title}
+      fields={fields}
+      onCancel={onCancel}
+      onSubmit={onSubmit}
+    />
+  );
+}
+
+function MetadataEditorModalContent({
+  title,
+  fields,
+  onCancel,
+  onSubmit,
+}: Omit<MetadataEditorModalProps, "open">) {
+  const [values, setValues] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
     fields.forEach((f) => {
       initial[f.key] = f.value ?? "";
     });
-    setValues(initial);
-  }, [open, fields]);
-
-  if (!open) return null;
+    return initial;
+  });
 
   function handleChange(key: string, value: string) {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -49,15 +65,12 @@ export default function MetadataEditorModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* BACKDROP */}
       <div
         className="absolute inset-0 bg-black/70 backdrop-blur-sm"
         onClick={onCancel}
       />
 
-      {/* MODAL */}
       <div className="relative z-10 w-full max-w-md rounded-xl border border-white/10 bg-black p-6 shadow-xl">
-        {/* HEADER */}
         <div className="mb-4">
           <h2 className="text-lg font-semibold text-white">
             {title}
@@ -67,7 +80,6 @@ export default function MetadataEditorModal({
           </p>
         </div>
 
-        {/* FORM */}
         <div className="space-y-4">
           {fields.map((field) => (
             <div key={field.key}>
@@ -95,7 +107,6 @@ export default function MetadataEditorModal({
           ))}
         </div>
 
-        {/* ACTIONS */}
         <div className="mt-6 flex justify-end gap-3">
           <button
             onClick={onCancel}

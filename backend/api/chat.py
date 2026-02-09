@@ -4,9 +4,9 @@ import os
 import json
 import uuid
 import time
-from typing import List, Literal, Generator, Dict
+from typing import List, Literal, Generator, Dict, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -76,6 +76,9 @@ from backend.state.job_state import (
 )
 
 from backend.state.dev_settings import get_dev_settings
+from backend.state.rag_overrides import is_rag_disabled
+from backend.auth.deps import require_user
+from backend.auth.user_store import User
 
 # ================================
 # UI EVENTS
@@ -144,6 +147,42 @@ vector_store = PGVector.from_existing_index(
 def emit_event(event: dict) -> str:
     return UI_EVENT_PREFIX + json.dumps(event) + "\n"
 
+_SMALLTALK_MAP = {
+    "who are you": "I'm KavinBase, your AI document assistant.",
+    "what are you": "I'm KavinBase, your AI document assistant.",
+    "what do you do": "I help answer questions about your documents.",
+    "what can you do": "I can answer questions about your documents and help summarize them.",
+    "how are you": "I'm doing well. How can I help?",
+    "how are you?": "I'm doing well. How can I help?",
+    "how's it going": "All good here. How can I help?",
+}
+
+
+def _static_smalltalk_reply(text: str, intent: Optional[str] = None) -> Optional[str]:
+    q = (text or "").strip().lower()
+    if not q:
+        return None
+
+    if q in _SMALLTALK_MAP:
+        return _SMALLTALK_MAP[q]
+
+    if q.startswith("who are you"):
+        return _SMALLTALK_MAP["who are you"]
+    if q.startswith("what are you"):
+        return _SMALLTALK_MAP["what are you"]
+    if q.startswith("how are you"):
+        return _SMALLTALK_MAP["how are you"]
+
+    if intent == "confirmation":
+        if q in {"thanks", "thank you", "thx"}:
+            return "You're welcome."
+        return "Got it."
+
+    if intent in ("greeting", "conversation"):
+        return "Hi! How can I help?"
+
+    return None
+
 
 def safe_stream_response(
     token_stream: Generator[str, None, None],
@@ -152,6 +191,7 @@ def safe_stream_response(
 ) -> Generator[str, None, None]:
 
     collected: List[str] = []
+    saw_error_event = False
 
     try:
         for chunk in token_stream:
@@ -172,6 +212,8 @@ def safe_stream_response(
                         collected.append(content)
                         continue
                     else:
+                        if event.get("type") == "ERROR":
+                            saw_error_event = True
                         # ✅ VALID UI EVENT → forward as-is
                         yield chunk
                         continue
@@ -191,6 +233,8 @@ def safe_stream_response(
     final_answer = "".join(collected).strip()
 
     if not final_answer:
+        if saw_error_event:
+            return
         yield emit_event(system_message_event("Model produced no output"))
         return
 
@@ -208,7 +252,7 @@ def safe_stream_response(
 # ================================
 
 @router.post("/")
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, user: User = Depends(require_user)):
 
     if not req.session_id or not req.question:
         raise HTTPException(400, "session_id and question required")
@@ -226,6 +270,7 @@ def chat(req: ChatRequest):
     emit_answer_confidence = bool(settings.get("emit_answer_confidence", True))
     force_detailed_retrieval = bool(settings.get("force_detailed_retrieval", False))
     disable_retrieval_policy = bool(settings.get("disable_retrieval_policy", False))
+    disable_rag_globally = bool(settings.get("disable_rag_globally", False))
 
     # =====================================================
     # 🔥 METADATA GATE (OPTION A)
@@ -252,7 +297,7 @@ def chat(req: ChatRequest):
             } for key in missing]
 
             def metadata_stream():
-                yield emit_event(request_metadata_event(fields))
+                yield emit_event(request_metadata_event(fields, job_state.job_id))
 
             return StreamingResponse(metadata_stream(), media_type="text/plain")
 
@@ -274,7 +319,20 @@ def chat(req: ChatRequest):
         f"text='{original_question}' -> intent='{rule_intent}'"
     )
 
-    if rule_intent in ("greeting", "confirmation", "conversation") and not job_state:
+    static_reply = _static_smalltalk_reply(original_question, rule_intent)
+    if static_reply:
+        def static_stream():
+            yield static_reply
+
+        try:
+            append_chat_message(session_id, "user", original_question)
+            append_chat_message(session_id, "assistant", static_reply)
+        except Exception:
+            pass
+
+        return StreamingResponse(static_stream(), media_type="text/plain")
+
+    if False and rule_intent in ("greeting", "confirmation", "conversation") and not job_state:
         model_id = resolve_model_id(req.mode)
         try:
             _ = get_llm(model_id)
@@ -339,6 +397,13 @@ def chat(req: ChatRequest):
             if emit_model_stages:
                 yield emit_event(model_stage_event(
                     stage="generation",
+                    message="Generation (No RAG)",
+                    model=model_id,
+                ))
+
+            if emit_model_stages:
+                yield emit_event(model_stage_event(
+                    stage="generation",
                     message="Generating response…",
                     model=model_id,
                 ))
@@ -382,8 +447,23 @@ def chat(req: ChatRequest):
         f"rewritten='{rewritten}' "
         f"intent='{intent}'"
 )
+    if intent == "greeting":
+        static_reply = _static_smalltalk_reply(original_question, "greeting")
+        if static_reply:
+            def static_stream():
+                yield static_reply
+
+            try:
+                append_chat_message(session_id, "user", original_question)
+                append_chat_message(session_id, "assistant", static_reply)
+            except Exception:
+                pass
+
+            return StreamingResponse(static_stream(), media_type="text/plain")
+    rag_disabled = disable_rag_globally or is_rag_disabled(session_id, user.username)
+
     previous_context_chunks = []
-    if intent == "follow_up":
+    if not rag_disabled and intent == "follow_up":
         prev_ids = get_used_chunk_ids(session_id)
         if prev_ids:
             restored = get_chunks_by_ids(list(prev_ids))
@@ -397,13 +477,15 @@ def chat(req: ChatRequest):
                     "metadata": rc["metadata"],
                 })
 
-    new_rag_chunks = retrieve_rag_context(
-        question=rewritten,
-        vector_store=vector_store,
-        company_document_id=company_document_id,
-        revision_number=str(revision_number),
-        force_detailed=force_detailed_retrieval,
-    )
+    new_rag_chunks = []
+    if not rag_disabled:
+        new_rag_chunks = retrieve_rag_context(
+            question=rewritten,
+            vector_store=vector_store,
+            company_document_id=company_document_id,
+            revision_number=str(revision_number),
+            force_detailed=force_detailed_retrieval,
+        )
 
 
 
@@ -414,7 +496,7 @@ def chat(req: ChatRequest):
             unique[c["id"]] = True
             rag_chunks.append(c)
 
-    if not disable_retrieval_policy:
+    if not disable_retrieval_policy and not rag_disabled:
         policy_result = apply_retrieval_policy(
             question=rewritten,
             rag_chunks=rag_chunks,
@@ -424,6 +506,8 @@ def chat(req: ChatRequest):
 
         rag_chunks = policy_result.chunks
 
+    did_retrieve = bool(rag_chunks) and not rag_disabled
+
     rag_sources = []
     for c in rag_chunks:
         meta = c.get("metadata", {})
@@ -431,6 +515,9 @@ def chat(req: ChatRequest):
             "id": c["id"],
             "fileName": meta.get("source_file", "Unknown"),
             "page": meta.get("page_number", 1),
+            "bbox": meta.get("bbox", ""),
+            "chunk_type": c.get("chunk_type"),
+            "section": c.get("section"),
             "company_document_id": company_document_id,
             "revision_number": int(revision_number),
         })
@@ -466,7 +553,13 @@ def chat(req: ChatRequest):
 
     def stream():
         model_id = resolve_model_id(req.mode)
-        if emit_model_stages:
+        if emit_model_stages and not did_retrieve:
+            yield emit_event(model_stage_event(
+                stage="generation",
+                message="Generation (No RAG)",
+                model=model_id,
+            ))
+        if emit_model_stages and did_retrieve:
             yield emit_event(model_stage_event(
                 stage="intent",
                 message="Understanding your question…",
@@ -475,22 +568,32 @@ def chat(req: ChatRequest):
 
         # intent already computed, do NOT re-run
 
-        if emit_model_stages:
-            yield emit_event(model_stage_event(
-                stage="retrieval",
-                message="Searching relevant documents…",
-            ))
+        if emit_model_stages and did_retrieve:
+            if rag_disabled:
+                yield emit_event(model_stage_event(
+                    stage="retrieval",
+                    message="Retrieval disabled for this session",
+                ))
+            else:
+                yield emit_event(model_stage_event(
+                    stage="retrieval",
+                    message="Searching relevant documents…",
+                ))
 
         # retrieval already happened — OK for now
         # (next step: move retrieval here)
 
-        if emit_model_stages:
+        if emit_model_stages and did_retrieve:
             yield emit_event(model_stage_event(
                 stage="reranking",
                 message="Ranking the best passages…",
             ))
+            yield emit_event(model_stage_event(
+                stage="chunks",
+                message="Selected top chunks",
+            ))
 
-        if emit_model_stages:
+        if emit_model_stages and did_retrieve:
             yield emit_event(model_stage_event(
                 stage="generation",
                 message="Generating answer…",

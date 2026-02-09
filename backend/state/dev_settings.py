@@ -26,6 +26,7 @@ _SETTINGS: Dict[str, Any] = {
     # Retrieval behavior
     "force_detailed_retrieval": False,
     "disable_retrieval_policy": False,
+    "disable_rag_globally": False,
 }
 
 
@@ -51,4 +52,3 @@ def update_dev_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
                 _SETTINGS[key] = value
 
         return dict(_SETTINGS)
-

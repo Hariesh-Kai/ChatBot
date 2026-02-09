@@ -2,7 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { authLogin, authMe } from "@/app/lib/api";
+import Link from "next/link";
+import Image from "next/image";
+import { authLogin, authMe, waitForBackendReady } from "@/app/lib/api";
+import FullScreenLoader from "@/app/components/ui/FullScreenLoader";
 
 export default function SignInPage() {
   const router = useRouter();
@@ -10,11 +13,29 @@ export default function SignInPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [warming, setWarming] = useState(true);
+  const [warmupError, setWarmupError] = useState<string | null>(null);
 
   useEffect(() => {
-    authMe().then((u) => {
-      if (u) router.replace("/");
-    });
+    let cancelled = false;
+    const runWarmup = async () => {
+      setWarming(true);
+      setWarmupError(null);
+      const ok = await waitForBackendReady({ timeoutMs: 20000 });
+      if (cancelled) return;
+      if (!ok) {
+        setWarmupError("Services are still starting. Please try again.");
+        setWarming(false);
+        return;
+      }
+      const u = await authMe();
+      if (!cancelled && u) router.replace("/");
+      if (!cancelled) setWarming(false);
+    };
+    runWarmup();
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   async function onSubmit(e: React.FormEvent) {
@@ -31,11 +52,50 @@ export default function SignInPage() {
     }
   }
 
+  if (warming) {
+    return (
+      <FullScreenLoader
+        title="Preparing sign in"
+        subtitle="Starting services. This usually takes a few seconds."
+      />
+    );
+  }
+
+  if (warmupError) {
+    return (
+      <FullScreenLoader
+        title="Service startup in progress"
+        subtitle={warmupError}
+        actionLabel="Retry"
+        onAction={() => {
+          setWarmupError(null);
+          setWarming(true);
+          waitForBackendReady({ timeoutMs: 20000 }).then((ok) => {
+            if (!ok) {
+              setWarmupError("Services are still starting. Please try again.");
+              setWarming(false);
+              return;
+            }
+            authMe().then((u) => {
+              if (u) router.replace("/");
+              setWarming(false);
+            });
+          });
+        }}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-black text-white flex items-center justify-center p-6">
       <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0b0b0b] p-6 shadow-xl">
         <div className="mb-6">
-          <div className="text-xs text-gray-500 uppercase tracking-wider">KAVIN</div>
+          <div className="flex items-center gap-3">
+            <Image src="/kavin-logo.svg" alt="Kavin Engineering" width={32} height={32} />
+            <div>
+              <div className="text-xs text-gray-500 uppercase tracking-wider">Kavin Engineering</div>
+            </div>
+          </div>
           <h1 className="text-2xl font-semibold">Sign in</h1>
           <div className="mt-1 text-sm text-gray-400">
             Use your admin username/email and password configured on the backend.
@@ -83,12 +143,10 @@ export default function SignInPage() {
           </button>
         </form>
 
-        <div className="mt-6 flex items-center justify-between text-xs text-gray-500">
-          <div>© KAVIN</div>
-          <a href="/" className="hover:text-gray-300">Back</a>
+        <div className="mt-6 flex items-center justify-end text-xs text-gray-500">
+          <Link href="/" className="hover:text-gray-300">Back</Link>
         </div>
       </div>
     </div>
   );
 }
-

@@ -36,7 +36,7 @@ let currentChatJob: JobHandle | null = null;
 
 async function sendAbort(sessionId: string) {
   try {
-    await fetch(`${API_BASE}/abort`, {
+    await fetch(`${API_BASE}/abort/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",

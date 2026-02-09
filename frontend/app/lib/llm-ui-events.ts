@@ -44,6 +44,7 @@ export type MetadataRequestField = {
 export type RequestMetadataEvent = {
   type: "REQUEST_METADATA";
   fields: MetadataRequestField[];
+  jobId?: string;
 };
 
 export type MetadataConfirmedEvent = {

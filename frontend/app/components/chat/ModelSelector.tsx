@@ -1,12 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  KAVIN_MODELS,
-  KavinModelId,
-  getVisibleModels,
-  isNetEnabled,
-} from "@/app/lib/kavin-models";
+import { KavinModelId, getVisibleModels, isNetEnabled } from "@/app/lib/kavin-models";
 import { getNetStatus } from "@/app/lib/netStatus";
 
 interface Props {

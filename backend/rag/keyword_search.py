@@ -30,6 +30,8 @@ from langchain_postgres import PGVector
 
 DEFAULT_LIMIT = 8
 MIN_TOKEN_LENGTH = 3
+# Allow a couple of short numeric tokens to improve table lookups (e.g., "5", "10")
+MAX_SHORT_NUMERIC_TOKENS = 2
 
 STOP_TOKENS = {
     "the", "what", "which", "when", "where",
@@ -48,10 +50,24 @@ def extract_keywords(question: str) -> List[str]:
 
     tokens = re.findall(r"[a-zA-Z0-9\-\.]+", question.lower())
 
-    keywords = [
-        t for t in tokens
-        if len(t) >= MIN_TOKEN_LENGTH and t not in STOP_TOKENS
-    ]
+    def _has_digit(t: str) -> bool:
+        return any(ch.isdigit() for ch in t)
+
+    short_numeric_used = 0
+    keywords: List[str] = []
+    for t in tokens:
+        if t in STOP_TOKENS:
+            continue
+
+        if _has_digit(t) and len(t) < MIN_TOKEN_LENGTH:
+            if short_numeric_used >= MAX_SHORT_NUMERIC_TOKENS:
+                continue
+            short_numeric_used += 1
+            keywords.append(t)
+            continue
+
+        if len(t) >= MIN_TOKEN_LENGTH:
+            keywords.append(t)
 
     seen = set()
     out: List[str] = []
@@ -144,8 +160,7 @@ def keyword_search(
             documents.append(
                 Document(
                     page_content=text_content,
-                    metadata={},        # non-identity
-                    cmetadata=cmetadata # 🔒 authoritative
+                    metadata=cmetadata,  # includes chunk_id, chunk_type, etc.
                 )
             )
         except Exception:

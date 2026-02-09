@@ -35,6 +35,7 @@ export interface ChatRequest {
 export type AuthUser = {
   username: string;
   email: string;
+  role?: string;
 };
 
 /* =========================================================
@@ -194,6 +195,26 @@ function sleep(ms: number, signal?: AbortSignal) {
   });
 }
 
+export async function waitForBackendReady({
+  timeoutMs = 15000,
+  intervalMs = 600,
+}: {
+  timeoutMs?: number;
+  intervalMs?: number;
+} = {}): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(`${API_BASE}/health`, { cache: "no-store" });
+      if (res.ok) return true;
+    } catch {
+      // ignore and retry
+    }
+    await sleep(intervalMs);
+  }
+  return false;
+}
+
 async function withRetry<T>(
   fn: () => Promise<T>,
   { retries = DEFAULT_RETRIES, signal }: { retries?: number; signal?: AbortSignal } = {}
@@ -303,13 +324,11 @@ export async function updateMetadata(
   onProgress?: (event: { message?: string; progress?: number }) => void
 ): Promise<void> {
   // Try canonical endpoints in order to avoid client/server mismatch
-// Try canonical endpoints in order to avoid client/server mismatch
 let res: Response | null = null;
 const attempts = [
   // Prefer the streaming commit endpoint so the frontend can show chunking/embedding/indexing progress.
   `${API_BASE}/metadata/update`,
   `${API_BASE}/metadata/`,
-  `${API_BASE}/metadata/confirm`,
 ];
 
 let lastError: Error | null = null;
@@ -341,12 +360,7 @@ if (!res) {
   throw lastError ?? new Error("Failed to reach metadata endpoint");
 }
 
-if (!res.ok) {
-  const errText = await normalizeError(res);
-  console.error("[updateMetadata] metadata endpoint error:", res.status, errText);
-  throw new Error(errText);
-}
-  if (!res.ok) throw new Error(await normalizeError(res));
+if (!res.ok) throw new Error(await normalizeError(res));
 
   const reader = res.body?.getReader();
   if (!reader) return;
@@ -367,7 +381,7 @@ if (!res.ok) {
         const trimmed = line.trim();
         if (!trimmed) continue;
 
-        // 🔥 HANDLE UI EVENTS FIRST
+        // HANDLE UI EVENTS FIRST
         if (trimmed.startsWith(UI_EVENT_PREFIX)) {
           const evt = parseLLMUIEvent(trimmed);
           if (!evt) continue;
@@ -387,7 +401,7 @@ if (!res.ok) {
         }
 
 
-        const data = JSON.parse(trimmed);
+        const data = safeJsonParse<any>(trimmed);
         if (!data) continue;
 
         if (data.stage === "error") {

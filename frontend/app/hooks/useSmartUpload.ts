@@ -3,20 +3,6 @@
 import { useRef, useCallback } from "react";
 import { uploadPdfWithProgress } from "@/app/lib/upload-client";
 
-// Estimate: 1MB takes ~2 seconds to process
-const PROCESSING_SPEED_SEC_PER_MB = 2.0;
-const MIN_PROCESSING_TIME_MS = 2000;
-
-// Status labels
-const PROCESSING_LABELS = [
-  "Extracting text...",
-  "Analyzing structure...",
-  "Chunking content...",
-  "Generating embeddings...",
-  "Indexing vectors...",
-  "Finalizing...",
-];
-
 export type UploadStatus =
   | "idle"
   | "uploading"

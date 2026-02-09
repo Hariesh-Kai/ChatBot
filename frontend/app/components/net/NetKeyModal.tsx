@@ -101,7 +101,7 @@ export default function NetKeyModal({
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
           <div className="flex items-center gap-2 text-sm font-medium text-white">
             <Key size={16} />
-            KavinBase Net — API Key
+            KavinBase Net v1.0 — API Key
           </div>
 
           <button

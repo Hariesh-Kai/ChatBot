@@ -93,6 +93,8 @@ def get_net_model(
     provider: NetProvider,
     rank: Literal["rank_1", "rank_2"] = "rank_1",
 ) -> str:
+    if rank == "default":
+        rank = "rank_1"
     if provider not in NET_MODELS:
         raise ValueError(f"Unknown Net provider '{provider}'")
 

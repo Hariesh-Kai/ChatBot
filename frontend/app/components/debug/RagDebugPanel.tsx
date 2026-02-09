@@ -32,21 +32,14 @@ export default function RagDebugPanel({
   const [data, setData] = useState<RagDebugSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-
-  // ----------------------------------------------------------
-  // DEV-ONLY GUARD (IMPORTANT)
-  // ----------------------------------------------------------
-
-  if (process.env.NODE_ENV !== "development") {
-    return null;
-  }
+  const isDev = process.env.NODE_ENV === "development";
 
   // ----------------------------------------------------------
   // FETCH DEBUG SNAPSHOT
   // ----------------------------------------------------------
 
   useEffect(() => {
-    if (!open || !sessionId) return;
+    if (!isDev || !open || !sessionId) return;
 
     setLoading(true);
     setError(null);
@@ -62,7 +55,9 @@ export default function RagDebugPanel({
       .finally(() => {
         setLoading(false);
       });
-  }, [open, sessionId]);
+  }, [open, sessionId, isDev]);
+
+  if (!isDev) return null;
 
   if (!open) return null;
 

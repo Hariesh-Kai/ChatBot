@@ -33,11 +33,13 @@ def resolve_parent_chunks(
     final_docs_map = {} 
 
     for doc in child_docs:
+        meta = doc.metadata or {}
+        chunk_type = meta.get("chunk_type") or meta.get("type")
         # Is this a child?
-        if doc.metadata.get("type") == "child" and doc.metadata.get("parent_id"):
-            parent_ids_to_fetch.add(doc.metadata["parent_id"])
+        if chunk_type == "child" and meta.get("parent_id"):
+            parent_ids_to_fetch.add(meta["parent_id"])
         else:
-            cid = doc.metadata.get("chunk_id")
+            cid = meta.get("chunk_id")
             if not cid:
                 # 🔥 HARD SKIP — identity must exist
                 continue
@@ -55,7 +57,7 @@ def resolve_parent_chunks(
             results = vector_store.similarity_search(
                 "ignored", # query ignored with exact filter usually
                 k=1,
-                filter={"doc_id": pid, "type": "parent"} 
+                filter={"doc_id": pid, "chunk_type": "parent"} 
             )
             if results:
                 parent = results[0]
@@ -165,7 +167,7 @@ def retrieve_rag_context(
             "id": cid,
             "content": d.page_content,
             "section": d.metadata.get("section"),
-            "chunk_type": d.metadata.get("type"),
+            "chunk_type": d.metadata.get("chunk_type") or d.metadata.get("type"),
             "score": d.metadata.get("rerank_score", 0.0),
             
             #  Enhanced Metadata for Frontend "View Source"

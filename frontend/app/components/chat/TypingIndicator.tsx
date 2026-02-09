@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, HardDrive, Search, Cpu, AlertCircle } from "lucide-react";
+import { HardDrive, Search, Cpu, AlertCircle } from "lucide-react";
 import Avatar from "../ui/Avatar";
 
 /* ================= PROPS ================= */

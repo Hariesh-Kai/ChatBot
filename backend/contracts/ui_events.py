@@ -52,7 +52,7 @@ def system_message_event(text: str) -> Dict[str, Any]:
 # METADATA REQUEST
 # ==========================================================
 
-def request_metadata_event(fields) -> Dict[str, Any]:
+def request_metadata_event(fields, job_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Accepts:
     - List[str]
@@ -61,32 +61,34 @@ def request_metadata_event(fields) -> Dict[str, Any]:
 
     safe_fields = fields or []
 
-    return _base_event(
-        "REQUEST_METADATA",
-        {
-            "fields": [
-                {
-                    "key": field["key"] if isinstance(field, dict) else field,
-                    "label": (
-                                field.get("label")
-                                if isinstance(field, dict) and field.get("label")
-                                else _humanize(field)
-                            ),
-                    "placeholder": (
-                        field.get("placeholder")
-                        if isinstance(field, dict)
-                        else f"Enter {_humanize(field)}"
-                    ),
-                    "reason": (
-                        field.get("reason")
-                        if isinstance(field, dict)
-                        else "Missing or low confidence"
-                    ),
-                }
-                for field in safe_fields
-            ],
-        },
-    )
+    payload = {
+        "fields": [
+            {
+                "key": field["key"] if isinstance(field, dict) else field,
+                "label": (
+                            field.get("label")
+                            if isinstance(field, dict) and field.get("label")
+                            else _humanize(field)
+                        ),
+                "placeholder": (
+                    field.get("placeholder")
+                    if isinstance(field, dict)
+                    else f"Enter {_humanize(field)}"
+                ),
+                "reason": (
+                    field.get("reason")
+                    if isinstance(field, dict)
+                    else "Missing or low confidence"
+                ),
+            }
+            for field in safe_fields
+        ],
+    }
+
+    if job_id:
+        payload["jobId"] = job_id
+
+    return _base_event("REQUEST_METADATA", payload)
 
 
 # ==========================================================

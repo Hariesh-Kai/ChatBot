@@ -24,8 +24,20 @@ export default function ProcessingBubble({
   if (lower.includes("upload")) return <Server size={18} className="text-blue-400" />;
   if (lower.includes("chunk") || lower.includes("analyz")) return <FileText size={18} className="text-purple-400" />;
   if (lower.includes("embed") || lower.includes("index")) return <Database size={18} className="text-orange-400" />;
-  if (lower.includes("search") || lower.includes("retrieve")) return <Database size={18} className="text-cyan-400" />;
-  if (lower.includes("generate") || lower.includes("reason")) return <BrainCircuit size={18} className="text-gray-300" />;
+  if (lower.includes("search") || lower.includes("retrieve") || lower.includes("document")) return <Database size={18} className="text-cyan-400" />;
+  if (
+    lower.includes("choose") ||
+    lower.includes("select") ||
+    lower.includes("section") ||
+    lower.includes("passage") ||
+    lower.includes("pick")
+  ) {
+    return <FileText size={18} className="text-purple-400" />;
+  }
+  if (lower.includes("question") || lower.includes("understand")) return <BrainCircuit size={18} className="text-gray-300" />;
+  if (lower.includes("write") || lower.includes("answer") || lower.includes("generate") || lower.includes("reason")) {
+    return <BrainCircuit size={18} className="text-gray-300" />;
+  }
 
   return <Loader2 size={18} className="animate-spin text-gray-400" />;
 };

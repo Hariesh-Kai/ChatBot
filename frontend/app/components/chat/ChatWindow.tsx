@@ -118,6 +118,8 @@ interface ChatWindowProps {
   userLabel?: string;
   devSettings?: any;
   title?: string;
+  ingestionPollingActive?: boolean;
+  ingestionPollingCount?: number;
   onRenameSession?: (title: string) => void;
   onModelChange?: (model: KavinModelId) => void;
   metadataActive?: boolean;
@@ -129,7 +131,7 @@ interface ChatWindowProps {
   onUploadProgress?: (status: UploadStatus, percent: number, label: string) => void;
   onUploadSuccess?: (result: any) => void;
   onUploadError?: (error: string) => void;
-  inputRefExternal?: RefObject<HTMLTextAreaElement>;
+  inputRefExternal?: RefObject<HTMLTextAreaElement | null>;
 
   externalMetadataRequest?: {
       jobId: string;
@@ -156,6 +158,8 @@ export default function ChatWindow({
   devSettings,
   uploadPipeline,
   title = "New Chat",
+  ingestionPollingActive = false,
+  ingestionPollingCount = 0,
   onRenameSession,
   onModelChange,
   onUploadStart,
@@ -190,7 +194,7 @@ export default function ChatWindow({
   const [pendingJobId, setPendingJobId] = useState<string | null>(null);
 
   // --- Live Model Stage ---
-  const [currentStage, setCurrentStage] = useState<string | null>(null);
+  const [currentStage, setCurrentStage] = useState<string>("");
 
   // --- Refs ---
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -325,7 +329,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
       },
     ]);
   } finally {
-    setCurrentStage(null);
+    setCurrentStage("");
     ignoreStreamRef.current = false;
   }
 }
@@ -393,7 +397,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
 
     //  THEN unlock UI
     assistantIdRef.current = null;
-    setCurrentStage(null);
+    setCurrentStage("");
     if (!jobFinishedRef.current) {
       jobFinishedRef.current = true;
       finishJob();
@@ -438,7 +442,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
       setInlineMetadataFields(event.fields);
 
       assistantIdRef.current = null;
-      setCurrentStage(null);
+      setCurrentStage("");
 
       setTimeout(() => {
         bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -470,7 +474,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
       // Backend confirmed metadata saved
       setInlineMetadataFields(null);
       setPendingJobId(null);
-      setCurrentStage(null);
+      setCurrentStage("");
       return;
     }
 
@@ -545,7 +549,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
       if (assistantIdRef.current) {
         finalizeAssistant({ status: "error", content: msg });
       } else {
-        setCurrentStage(null);
+        setCurrentStage("");
         onUpdateMessages((prev) => [
           ...prev,
           {
@@ -784,7 +788,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
       jobFinishedRef.current = true;
       finishJob();
     }
-    setCurrentStage(null);
+    setCurrentStage("");
     
     if (rafRef.current) { 
         cancelAnimationFrame(rafRef.current); 
@@ -834,6 +838,8 @@ useEffect(() => {
           key={sessionId ?? "new"}
           title={title}
           isTyping={isTyping}
+          ingestionPollingActive={ingestionPollingActive}
+          ingestionPollingCount={ingestionPollingCount}
           activeModel={model}
           onModelChange={(nextModel) => {
             if (nextModel === "net" && netRateLimitedUntil) {

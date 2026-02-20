@@ -30,6 +30,11 @@ from backend.memory.pg_memory import (
     get_active_document as db_get_active_doc,
     clear_active_document as db_clear_active_doc,
 )
+from backend.state.job_persistence import (
+    upsert_job_run,
+    delete_job_run,
+    get_job_run,
+)
 
 # ==========================================================
 # STATUS CONSTANTS
@@ -56,6 +61,8 @@ class JobState:
     missing_fields: List[str] = field(default_factory=list)
 
     error: Optional[str] = None
+    progress: int = 0
+    progress_label: Optional[str] = None
 
 
 # ==========================================================
@@ -66,6 +73,23 @@ _JOB_STORE: Dict[str, JobState] = {}
 _SESSION_JOB_MAP: Dict[str, str] = {}
 
 _LOCK = Lock()
+
+
+def _persist_job_snapshot(job: JobState, *, replace_error: bool = True) -> None:
+    try:
+        upsert_job_run(
+            job_id=job.job_id,
+            session_id=job.session_id,
+            status=job.status,
+            progress=job.progress,
+            progress_label=job.progress_label,
+            error=job.error,
+            replace_error=replace_error,
+            metadata=dict(job.metadata or {}),
+            missing_fields=list(job.missing_fields or []),
+        )
+    except Exception as e:
+        print(f"[JOB-STATE] Persist snapshot failed job_id={job.job_id}: {e}")
 
 
 # ==========================================================
@@ -147,6 +171,8 @@ def create_job(
                 signal_abort(old_job.session_id)
                 old_job.status = STATUS_ERROR
                 old_job.error = "Replaced by new job"
+                old_job.progress_label = "Replaced by new job."
+                _persist_job_snapshot(old_job, replace_error=True)
                 if old_job.session_id:
                     clear_active_document(old_job.session_id)
 
@@ -165,12 +191,20 @@ def create_job(
             session_id=session_id,
             metadata=metadata,
             missing_fields=missing_fields,
+            progress=35 if status == STATUS_WAIT_FOR_METADATA else 40,
+            progress_label=(
+                "Waiting for metadata."
+                if status == STATUS_WAIT_FOR_METADATA
+                else "Queued for processing."
+            ),
         )
 
         _JOB_STORE[job_id] = job
 
         if session_id:
             _SESSION_JOB_MAP[session_id] = job_id
+
+        _persist_job_snapshot(job, replace_error=True)
 
         return job
 
@@ -253,7 +287,10 @@ def update_job_metadata(
 
         if not job.missing_fields:
             job.status = STATUS_PROCESSING
+            job.progress = max(job.progress, 40)
+            job.progress_label = "Metadata confirmed. Queued for processing."
 
+        _persist_job_snapshot(job, replace_error=False)
         return job
 
 
@@ -267,16 +304,30 @@ def mark_job_ready(job_id: str) -> None:
     """
     with _LOCK:
         job = _JOB_STORE.get(job_id)
-        if not job:
-            raise KeyError("Job not found")
-        
-        if job.status != STATUS_PROCESSING:
-            raise RuntimeError(
-                f"Cannot mark job READY from state '{job.status}'"
-            )
+        if job:
+            if job.status != STATUS_PROCESSING:
+                raise RuntimeError(
+                    f"Cannot mark job READY from state '{job.status}'"
+                )
+            job.status = STATUS_READY
+            job.error = None
+            job.progress = 100
+            job.progress_label = "Document ready."
+            _persist_job_snapshot(job, replace_error=True)
+            return
 
-        job.status = STATUS_READY
-        job.error = None
+    # Cross-process worker path: job may not exist in this process memory.
+    try:
+        upsert_job_run(
+            job_id=job_id,
+            status=STATUS_READY,
+            progress=100,
+            progress_label="Document ready.",
+            error=None,
+            replace_error=True,
+        )
+    except Exception as e:
+        print(f"[JOB-STATE] Persist READY failed job_id={job_id}: {e}")
 
 
 def mark_job_error(job_id: str, error: str) -> None:
@@ -285,15 +336,35 @@ def mark_job_error(job_id: str, error: str) -> None:
     """
     with _LOCK:
         job = _JOB_STORE.get(job_id)
-        if not job:
+        if job:
+            job.status = STATUS_ERROR
+            job.error = str(error)
+            job.progress_label = "Processing failed."
+            _persist_job_snapshot(job, replace_error=True)
+
+            if job.session_id:
+                _SESSION_JOB_MAP.pop(job.session_id, None)
+                clear_active_document(job.session_id)
             return
 
-        job.status = STATUS_ERROR
-        job.error = str(error)
-
-        if job.session_id:
-            _SESSION_JOB_MAP.pop(job.session_id, None)
-            clear_active_document(job.session_id)
+    try:
+        persisted = get_job_run(job_id)
+        upsert_job_run(
+            job_id=job_id,
+            session_id=(
+                str(persisted.get("session_id"))
+                if isinstance(persisted, dict) and persisted.get("session_id") is not None
+                else None
+            ),
+            status=STATUS_ERROR,
+            progress_label="Processing failed.",
+            error=str(error),
+            replace_error=True,
+        )
+        if isinstance(persisted, dict) and persisted.get("session_id"):
+            clear_active_document(str(persisted.get("session_id")))
+    except Exception as e:
+        print(f"[JOB-STATE] Persist ERROR failed job_id={job_id}: {e}")
 
 
 # ==========================================================
@@ -321,6 +392,45 @@ def clear_job_for_session(session_id: str) -> None:
     reset_abort_signal(session_id)
 
 
+def set_job_progress(
+    job_id: str,
+    *,
+    value: Optional[int] = None,
+    label: Optional[str] = None,
+) -> None:
+    """
+    Update progress fields for a job.
+    Safe no-op if job does not exist.
+    """
+    with _LOCK:
+        job = _JOB_STORE.get(job_id)
+        safe_value: Optional[int] = None
+        if value is not None:
+            try:
+                parsed = int(value)
+            except Exception:
+                parsed = 0
+            safe_value = max(0, min(100, parsed))
+
+        if job:
+            if safe_value is not None:
+                job.progress = safe_value
+            if label is not None:
+                job.progress_label = str(label)
+            _persist_job_snapshot(job, replace_error=False)
+            return
+
+    try:
+        upsert_job_run(
+            job_id=job_id,
+            progress=safe_value,
+            progress_label=str(label) if label is not None else None,
+            replace_error=False,
+        )
+    except Exception as e:
+        print(f"[JOB-STATE] Persist progress failed job_id={job_id}: {e}")
+
+
 def delete_job(job_id: str) -> None:
     """
     Delete a job explicitly by job_id.
@@ -331,3 +441,7 @@ def delete_job(job_id: str) -> None:
             clear_active_document(job.session_id)
 
         _remove_job(job_id)
+    try:
+        delete_job_run(job_id)
+    except Exception as e:
+        print(f"[JOB-STATE] Delete persisted job failed job_id={job_id}: {e}")

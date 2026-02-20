@@ -61,6 +61,7 @@ from backend.llm.loader import (
     reload_model_config,
 )
 from backend.llm.model_registry import MODEL_REGISTRY, reload_model_registry
+from backend.llm.hf_cache_utils import resolve_local_snapshot
 from backend.llm.model_config_store import (
     load_model_config,
     upsert_hf_model,
@@ -73,6 +74,7 @@ from backend.llm.net_models import get_active_net_provider, resolve_active_net_m
 from backend.secrets.net_keys import has_net_api_key
 from backend.storage.minio_client import get_minio_client
 from backend.memory.redis_memory import r as redis_client
+from backend.runtime_status import get_runtime_status
 
 router = APIRouter(prefix="/devtools", tags=["Developer Tools"])
 
@@ -212,8 +214,8 @@ CHAT_DB_URL = os.getenv(
 COLLECTION_NAME = "rag_documents"
 
 _embedding_model = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-m3",
-    model_kwargs={"device": "cpu"},
+    model_name=resolve_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3") or "BAAI/bge-m3",
+    model_kwargs={"device": "cpu", "local_files_only": True},
     encode_kwargs={"normalize_embeddings": True},
 )
 
@@ -794,7 +796,20 @@ def active_models(_admin: User = Depends(require_admin)):
         "error": net_error,
     })
 
-    return {"modes": modes}
+    runtime = get_runtime_status()
+    return {
+        "modes": modes,
+        "system": runtime.get("gpu", {}),
+        "rabbitmq": runtime.get("rabbitmq", {}),
+        "workers": runtime.get("workers", {}),
+        "software": runtime.get("software", {}),
+    }
+
+
+@router.get("/runtime")
+def runtime_status(_admin: User = Depends(require_admin)):
+    """Runtime visibility for GPU, RabbitMQ broker and worker queues."""
+    return get_runtime_status()
 
 
 @router.post("/models/hf/install")

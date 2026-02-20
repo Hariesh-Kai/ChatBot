@@ -126,6 +126,22 @@ export interface CommitUploadResponse {
   status: string;
 }
 
+export interface UploadIngestionStatusResponse {
+  job_id?: string | null;
+  session_id?: string | null;
+  status: string;
+  ready: boolean;
+  message: string;
+  error?: string | null;
+  progress?: number | null;
+  progress_label?: string | null;
+  active_document?: {
+    company_document_id?: string;
+    revision_number?: string;
+    filename?: string;
+  } | null;
+}
+
 /* =========================================================
    TYPES — METADATA UPDATE
 ========================================================= */
@@ -312,6 +328,27 @@ export async function commitUpload(
 
   if (!res.ok) throw new Error(await normalizeError(res));
   logEvent("job_success", { key: "commit", sessionId: payload.job_id });
+  return res.json();
+}
+
+export async function fetchUploadIngestionStatus(params: {
+  jobId?: string | null;
+  sessionId?: string | null;
+}): Promise<UploadIngestionStatusResponse> {
+  const query = new URLSearchParams();
+  if (params.jobId) query.set("job_id", params.jobId);
+  if (params.sessionId) query.set("session_id", params.sessionId);
+
+  if (!query.toString()) {
+    throw new Error("jobId or sessionId is required");
+  }
+
+  const res = await fetch(`${API_BASE}/upload/status?${query.toString()}`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+
+  if (!res.ok) throw new Error(await normalizeError(res));
   return res.json();
 }
 

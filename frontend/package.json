@@ -5,8 +5,13 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:tauri-web": "node scripts/build-tauri-web.mjs",
+    "build:backend-sidecar": "node scripts/run-backend-sidecar-build.mjs",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "tauri:dev": "node scripts/run-tauri.mjs dev",
+    "tauri:build": "node scripts/run-tauri.mjs build --features custom-protocol",
+    "tauri:icon": "node scripts/run-tauri.mjs icon public/tauri-icon.png"
   },
   "dependencies": {
     "clsx": "^2.1.1",

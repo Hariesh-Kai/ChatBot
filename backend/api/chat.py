@@ -34,6 +34,7 @@ from backend.llm.text_normalizer import normalize_text
 from backend.llm.query_rewriter import rewrite_question
 from backend.llm.prompts import build_title_prompt
 from backend.llm.loader import get_llm
+from backend.llm.hf_cache_utils import resolve_local_snapshot
 # ================================
 # RAG
 # ================================
@@ -101,6 +102,8 @@ DB_CONNECTION = os.getenv(
     "DB_CONNECTION",
     "postgresql+psycopg2://postgres:1@localhost:5432/rag_db",
 )
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
 COLLECTION_NAME = "rag_documents"
 SQL_BASE_SCORE = 0.35
@@ -128,8 +131,8 @@ class TitleRequest(BaseModel):
 # ================================
 
 embedding_model = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-m3",
-    model_kwargs={"device": "cpu"},
+    model_name=resolve_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3") or "BAAI/bge-m3",
+    model_kwargs={"device": "cpu", "local_files_only": True},
     encode_kwargs={"normalize_embeddings": True},
 )
 
@@ -300,13 +303,11 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                 yield emit_event(request_metadata_event(fields, job_state.job_id))
 
             return StreamingResponse(metadata_stream(), media_type="text/plain")
-
-
-
+    processing_in_background = False
     if job_state and job_state.status == "PROCESSING":
-        def processing_stream():
-            yield emit_event(system_message_event("Document is being processed…"))
-        return StreamingResponse(processing_stream(), media_type="text/plain")
+        # Keep chat responsive while ingestion is still running.
+        processing_in_background = True
+        job_state = None
 
 
     # =====================================================
@@ -391,7 +392,15 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     # =====================================================
     if not job_state:
         def normal_stream():
-            yield emit_event(system_message_event("Thinking…")) 
+            if processing_in_background:
+                yield emit_event(
+                    system_message_event(
+                        "Document indexing is running in background. "
+                        "Answering without document context for now."
+                    )
+                )
+            else:
+                yield emit_event(system_message_event("Thinking..."))
             model_id = resolve_model_id(req.mode)
 
             if emit_model_stages:

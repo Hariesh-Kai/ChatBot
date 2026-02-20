@@ -161,6 +161,14 @@ def _ensure_llama_available():
         raise RuntimeError("llama_cpp not installed; GGUF unavailable")
 
 
+def _is_known_incompatible_gguf(model_path: str) -> bool:
+    """
+    Prevent loading GGUF quantizations that are known to fail with
+    current llama_cpp runtime builds.
+    """
+    return "q4_0_4_8" in os.path.basename(model_path or "").lower()
+
+
 def _load_gguf(model_id: str) -> Any:
     if model_id in _llama_cache:
         return _llama_cache[model_id]
@@ -168,6 +176,11 @@ def _load_gguf(model_id: str) -> Any:
     model_path = GGUF_MODELS.get(model_id)
     if not model_path or not os.path.exists(model_path):
         raise FileNotFoundError(f"GGUF model not found for '{model_id}': {model_path}")
+    if _is_known_incompatible_gguf(model_path):
+        raise RuntimeError(
+            "Incompatible GGUF quantization detected (Q4_0_4_8). "
+            "Use a Q4_K_M/Q4_0 model for current llama_cpp runtime."
+        )
 
     with _lock:
         if model_id in _llama_cache:

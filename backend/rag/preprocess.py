@@ -44,7 +44,7 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
     file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
     strategy, cores, batch_size = get_optimal_strategy(file_size_mb)
     
-    print(f"🚀 [PREPROCESS] Strategy: {strategy} | Cores: {cores} | Processing {file_size_mb:.2f} MB")
+    print(f"[PREPROCESS] Strategy: {strategy} | Cores: {cores} | Processing {file_size_mb:.2f} MB")
     
     # 3. Pin CPU Cores (Prevents Windows Freeze)
     limit_cpu_usage(cores)
@@ -52,21 +52,22 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
     # 4. Check Hardware Acceleration
     if torch.cuda.is_available():
         model_name = "yolox"
-        print(f"🚀 GPU Detected! Using high-accuracy model: '{model_name}'")
+        print(f"[PREPROCESS] GPU detected. Using model: '{model_name}'")
     else:
         model_name = "yolox_quantized"
-        print(f"💻 No GPU found. Using CPU-optimized model: '{model_name}'")
+        print(f"[PREPROCESS] No GPU found. Using model: '{model_name}'")
 
     # 5. Open PDF Stream
     try:
         reader = PdfReader(str(pdf_path))
         total_pages = len(reader.pages)
-        print(f"📄 Document has {total_pages} pages. Starting stream...")
+        print(f"[PREPROCESS] Document has {total_pages} pages. Starting stream...")
     except Exception as e:
-        print(f" Failed to read PDF: {e}")
-        return
+        raise RuntimeError(f"Failed to read PDF: {e}") from e
 
     elements_buffer = []
+    extracted_pages = 0
+    failed_pages = 0
 
     # 6. Page-by-Page Processing Loop
     for i in range(total_pages):
@@ -113,6 +114,7 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
             # Yielding every page ensures the frontend sees progress fast.
             yield elements_buffer
             elements_buffer = [] 
+            extracted_pages += 1
             
             # E. Force RAM Cleanup
             gc.collect()
@@ -120,6 +122,7 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
         except Exception as e:
             print(f"Error processing page {i+1}: {e}")
             # Don't crash the whole job for one bad page
+            failed_pages += 1
             continue
             
         finally:
@@ -132,6 +135,8 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
         
     # 7. Final Cleanup
 
-    
-    print("Streaming preprocessing complete.")
+    print(
+        "[PREPROCESS] Streaming complete | "
+        f"processed_pages={extracted_pages} failed_pages={failed_pages}"
+    )
     gc.collect()

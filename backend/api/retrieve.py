@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from langchain_postgres import PGVector
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
+from backend.llm.hf_cache_utils import resolve_local_snapshot
 
 import psycopg2
 import os
@@ -22,6 +23,8 @@ DEFAULT_DB = os.getenv(
 )
 
 COLLECTION_NAME = "rag_documents"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
 HF_MODEL = "BAAI/bge-m3"
 
@@ -57,7 +60,11 @@ def _normalize_conn(conn: str) -> str:
 
 
 def _get_vector_store(conn: str) -> PGVector:
-    embeddings = HuggingFaceEmbeddings(model_name=HF_MODEL)
+    embeddings = HuggingFaceEmbeddings(
+        model_name=resolve_local_snapshot(HF_CACHE_DIR, HF_MODEL) or HF_MODEL,
+        model_kwargs={"device": "cpu", "local_files_only": True},
+        encode_kwargs={"normalize_embeddings": True},
+    )
 
     return PGVector.from_existing_index(
         embedding=embeddings,

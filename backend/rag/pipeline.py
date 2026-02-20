@@ -105,15 +105,22 @@ def run_pipeline(
             print(f"[PIPELINE] Preprocess batch received | elements={len(batch)}")
             all_elements.extend(batch)
             
-            # 🔥 CRITICAL OPTIMIZATION: 
-            # If we only need metadata, we STOP after the first batch (Page 1).
-            # This saves massive time/compute by not OCR-ing the rest of the doc.
+            # Metadata mode: stop as soon as we have at least one parsed element.
+            # This preserves the fast path but avoids empty page-1 edge cases.
             if mode == "metadata":
-                print("[PIPELINE] Metadata mode → stopping after page 1")
-                yield progress_event(value=15, label="Metadata extracted (Page 1)")
-                yield  progress_event(value=20, label="Metadata ready")
-                print("[PIPELINE] Metadata extraction: Stopping OCR after Page 1.")
-                break
+                if all_elements:
+                    print("[PIPELINE] Metadata mode -> parsed preview ready")
+                    yield progress_event(value=15, label="Metadata extracted (preview)")
+                    yield  progress_event(value=20, label="Metadata ready")
+                    print("[PIPELINE] Metadata extraction: Stopping after preview parse.")
+                    break
+                print("[PIPELINE] Metadata mode -> empty batch, checking next page")
+
+        if not all_elements:
+            raise RuntimeError(
+                "Preprocess returned no parsable elements. "
+                "Check PDF quality or unstructured dependencies."
+            )
 
         # Save the JSON (Partial or Full)
         with open(elements_path, "w", encoding="utf-8") as f:
@@ -137,6 +144,15 @@ def run_pipeline(
             extra_metadata=extra_metadata,
         )
 
+        doc_type = (
+            metadata.get("document_type", {}).get("value")
+            or metadata.get("document_title", {}).get("value")
+        )
+        doc_type_confidence = (
+            metadata.get("document_type", {}).get("confidence")
+            or metadata.get("document_title", {}).get("confidence")
+        )
+
         # 🔥 CRITICAL: Emit metadata to caller (upload.py)
         yield {
             "type": "REQUEST_METADATA",
@@ -145,8 +161,8 @@ def run_pipeline(
                     "key": "document_type",
                     "label": "Document Type",
                     "placeholder": "e.g. Specification, Report",
-                    "value": metadata.get("document_type", {}).get("value"),
-                    "confidence": metadata.get("document_type", {}).get("confidence"),
+                    "value": doc_type,
+                    "confidence": doc_type_confidence,
                 },
                 {
                     "key": "revision_code",

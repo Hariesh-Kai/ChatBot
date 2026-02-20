@@ -9,6 +9,7 @@ import psycopg2
 from langchain_postgres import PGVector
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
+from backend.llm.hf_cache_utils import resolve_local_snapshot
 
 # ============================================================
 # GLOBAL CONFIG
@@ -32,14 +33,14 @@ def _normalize_conn(conn: str) -> str:
     return conn.replace("postgresql+psycopg2://", "postgresql://")
 
 def _get_embeddings() -> HuggingFaceEmbeddings:
-    # 🔥 CRITICAL FIX: Matches backend/api/chat.py
-    # Using BGE-M3 allows the system to read massive tables without truncation.
+    # Matches backend/api/chat.py and forces local cache usage.
     return HuggingFaceEmbeddings(
-        model_name="BAAI/bge-m3",
+        model_name=resolve_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3") or "BAAI/bge-m3",
         cache_folder=HF_CACHE_DIR,
-        model_kwargs={"device": "cpu"}, # Set to "cuda" if you have a GPU
-        encode_kwargs={"normalize_embeddings": True}
+        model_kwargs={"device": "cpu", "local_files_only": True},
+        encode_kwargs={"normalize_embeddings": True},
     )
+
 
 def _get_vector_store(connection_string: str) -> PGVector:
     return PGVector.from_existing_index(

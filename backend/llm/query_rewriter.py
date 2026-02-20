@@ -5,6 +5,7 @@ from typing import List, Optional
 
 #  NEW: Import Lite LLM loader to perform the correction
 from backend.llm.loader import get_llm
+from backend.llm.model_selector import resolve_model_id
 
 # ============================================================
 # QUERY REWRITER (NOW WITH SPELL CHECK)
@@ -34,8 +35,8 @@ def _clean_with_llm(text: str) -> str:
     Example: "whta is the presure" -> "What is the pressure?"
     """
     try:
-        # Load the fast model (Llama-3-8B or Qwen)
-        llm_info = get_llm("lite_llama_8b")
+        # Load the configured Lite model (with selector fallback safeguards).
+        llm_info = get_llm(resolve_model_id("lite"))
         
         prompt = f"""<|start_header_id|>system<|end_header_id|>
 

@@ -107,11 +107,11 @@ class ContextAwareChunker:
     # --------------------------------------------------------
 
     def process(self, input_file: str, output_file: str):
-        print(f"📂 Loading filtered elements from: {input_file}")
+        print(f"[CHUNK] Loading filtered elements from: {input_file}")
         elements = elements_from_json(filename=input_file)
 
         final_documents = []
-        print("⚙️ Processing elements with Parent-Child chunking...")
+        print("[CHUNK] Processing elements with parent-child chunking...")
 
         for element in elements:
             category = element.category
@@ -232,7 +232,7 @@ class ContextAwareChunker:
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
 
-        print(f"💾 Saved chunks to: {output_file}")
+        print(f"[CHUNK] Saved chunks to: {output_file}")
 
 
 # ============================================================

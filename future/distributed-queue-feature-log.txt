@@ -1,0 +1,81 @@
+Date: 2026-02-16
+Status: Implemented (Phase 1)
+
+Feature: Robust multi-instance/high-scale background processing
+
+Goal:
+- Replace in-process background threads with a dedicated worker queue.
+- Keep chat responsive while RAG indexing and MinIO sync run asynchronously.
+- Support multiple worker processes/nodes safely.
+
+Suggested architecture:
+- FastAPI API nodes (current backend)
+- Celery workers + scheduler
+- Redis OSS/Valkey as broker and result backend (open source)
+- Existing Postgres MinIO outbox retained for durable retry tracking
+
+Core tasks to queue:
+- Document commit pipeline (chunking, embedding, indexing)
+- MinIO outbox upload retry processing
+
+Operational notes:
+- Use shared storage for uploaded PDFs across instances.
+- Keep idempotency on jobs (safe re-run).
+- Add worker health and queue depth to Developer Dashboard.
+
+Implemented:
+- Celery task `kavin.rag.commit` executes full commit pipeline end-to-end.
+- Celery beat task `kavin.minio.outbox.tick` processes MinIO outbox retries.
+- API now enqueues commit jobs to RabbitMQ when `CELERY_ENABLED=1`.
+- Job progress/status is persisted in DB (`rag_job_runs`) so frontend polling works across processes.
+- Developer dashboard/runtime now shows GPU status, RabbitMQ status, and worker mode/status.
+
+Remaining Optional Enhancements:
+- Full queue-depth + retry-history visualization cards in dashboard.
+- Separate task queues/priorities for commit vs outbox.
+- Horizontal worker autoscaling policies and worker heartbeats.
+
+---
+
+Update Date: 2026-02-16
+Decision: Deferred for now (resume later)
+
+Reason for deferral:
+- Celery + RabbitMQ integration is implemented, but local Windows runtime setup is unstable.
+- Work is paused as requested; keep this as a pending operations log.
+
+Observed Issues During Setup:
+- RabbitMQ service control without admin rights failed (`net start RabbitMQ` -> access denied).
+- Commands failed when using placeholder/wildcard paths in CMD (for example `<version>` and `*` in `cd` path).
+- `ERLANG_HOME` not set in new terminals caused:
+  - `ERLANG_HOME not set correctly` in `rabbitmqctl.bat` and `rabbitmq-plugins.bat`.
+- Service-mode cookie mismatch caused CLI auth failure:
+  - Erlang distribution failed / cookie mismatch between service account and user CLI.
+- RabbitMQ user-mode startup worked, management plugin enabled, and status command succeeded.
+- Celery worker on Windows crashed repeatedly with `billiard` pool errors:
+  - `PermissionError: [WinError 5] Access is denied`
+  - repeated `SpawnPoolWorker-* exited with exitcode 1`
+- Intermittent broker connectivity warning also observed after worker churn:
+  - `Cannot connect to amqp://guest:**@127.0.0.1:5672//: timed out`
+
+Current Mitigation Applied In Code:
+- Windows-safe Celery defaults configured:
+  - worker pool -> `solo`
+  - concurrency -> `1`
+- Startup script updated to launch worker with:
+  - `--pool=solo --concurrency=1`
+
+Resume Checklist (Later):
+1. Start RabbitMQ in one stable mode (user mode or service mode; do not mix).
+2. Ensure `ERLANG_HOME` and `PATH` are set in every terminal used for RabbitMQ CLI.
+3. Set backend env:
+   - `CELERY_ENABLED=1`
+   - `CELERY_BROKER_URL=amqp://guest:guest@127.0.0.1:5672//`
+4. Start Celery worker with Windows-safe args:
+   - `celery -A backend.queue.celery_app:celery_app worker -l info -Q kavin.default --pool=solo --concurrency=1`
+5. Start beat:
+   - `celery -A backend.queue.celery_app:celery_app beat -l info`
+6. Verify:
+   - backend `/health`
+   - `/devtools/runtime`
+   - successful end-to-end commit job execution.

@@ -5,21 +5,22 @@ import uuid
 from pathlib import Path
 from typing import Optional, Dict, List
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
 from pydantic import BaseModel
 
 from backend.rag.pipeline import run_pipeline
 from backend.state.job_state import (
     create_job,
     get_job_state,
-    mark_job_ready,
+    get_active_document,
+    set_job_progress,
 )
-
-#  Import MinIO Upload Function
-from backend.storage.minio_client import upload_pdf as minio_upload_pdf
-
-#  Import active document persistence
-from backend.state.job_state import save_active_document
+from backend.state.job_persistence import (
+    get_job_run,
+    get_latest_job_run_for_session,
+)
+from backend.rag.commit_worker import start_commit_job
+from backend.storage.minio_outbox import enqueue_minio_upload
 
 #  Import duplicate checker
 from backend.rag.ingest import metadata_exists
@@ -99,6 +100,18 @@ class CommitResponse(BaseModel):
     status: str
 
 
+class UploadStatusResponse(BaseModel):
+    job_id: Optional[str] = None
+    session_id: Optional[str] = None
+    status: str
+    ready: bool
+    message: str
+    error: Optional[str] = None
+    progress: Optional[int] = None
+    progress_label: Optional[str] = None
+    active_document: Optional[Dict[str, str]] = None
+
+
 CONFIDENCE_THRESHOLD = 0.6
 
 
@@ -115,7 +128,7 @@ def upload_pdf(
 ):
     # --- LOG START ---
     print(f"\n------------------------------------------------")
-    print(f"📥 [PHASE 1] Receiving Upload: {file.filename}")
+    print(f"[PHASE 1] Receiving upload: {file.filename}")
     print(f"------------------------------------------------")
 
     if not session_id or not session_id.strip():
@@ -144,7 +157,7 @@ def upload_pdf(
     try:
         with pdf_path.open("wb") as f:
             shutil.copyfileobj(file.file, f)
-        print(f"💾 [PHASE 1] File saved locally: {pdf_path}")
+        print(f"[PHASE 1] File saved locally: {pdf_path}")
     except Exception as e:
         print(f" [PHASE 1] Save Failed: {e}")
         raise HTTPException(500, f"Failed to save PDF: {e}")
@@ -188,7 +201,7 @@ def upload_pdf(
 
     except Exception as e:
         print(f"[PHASE 1] Metadata extraction failed: {e}")
-        raise HTTPException(500, "Metadata extraction failed")
+        raise HTTPException(500, f"Metadata extraction failed: {e}")
 
 
     # --------------------------------------------------------
@@ -229,7 +242,7 @@ def upload_pdf(
 
     # If missing is NOT empty, frontend will show the form
     next_action = "WAIT_FOR_METADATA" if missing else "READY_TO_COMMIT"
-    print(f"👉 [PHASE 1] Decision: {next_action}")
+    print(f"[PHASE 1] Decision: {next_action}")
 
     return UploadResponse(
         job_id=job_id,
@@ -250,11 +263,25 @@ def upload_pdf(
 @router.post("/commit", response_model=CommitResponse)
 def commit_upload(payload: CommitRequest):
     # --- LOG START ---
-    print(f"\n------------------------------------------------")
-    print(f"🚀 [PHASE 2] Committing Job: {payload.job_id}")
-    print(f"------------------------------------------------")
+    print("\n------------------------------------------------")
+    print(f"[PHASE 2] Committing Job: {payload.job_id}")
+    print("------------------------------------------------")
 
     job = get_job_state(payload.job_id)
+    if not job:
+        persisted = get_job_run(payload.job_id)
+        if persisted:
+            job = type(
+                "PersistedJob",
+                (),
+                {
+                    "job_id": str(persisted.get("job_id") or payload.job_id),
+                    "session_id": persisted.get("session_id"),
+                    "status": str(persisted.get("status") or "PROCESSING"),
+                    "metadata": dict(persisted.get("metadata") or {}),
+                    "missing_fields": list(persisted.get("missing_fields") or []),
+                },
+            )()
     if not job:
         raise HTTPException(404, "Invalid job_id")
 
@@ -264,14 +291,10 @@ def commit_upload(payload: CommitRequest):
             f"Job not ready for commit (state={job.status})"
         )
 
-
-    # Only block if NOT forced
+    # Only block if NOT forced.
     if job.missing_fields and not payload.force:
-        # Check if user actually provided the missing fields in payload
-        # If they filled everything, we can proceed
         filled_keys = set(payload.metadata.keys())
         still_missing = [f for f in job.missing_fields if f not in filled_keys]
-        
         if still_missing:
             raise HTTPException(
                 400,
@@ -285,8 +308,6 @@ def commit_upload(payload: CommitRequest):
             "company_document_id and revision_number cannot be overridden",
         )
 
-
-
     job.metadata.update(payload.metadata)
     job.missing_fields = []
 
@@ -294,63 +315,200 @@ def commit_upload(payload: CommitRequest):
         **job.metadata,
         **payload.metadata,
     }
-    
+    required_keys = [
+        "pdf_path",
+        "company_document_id",
+        "revision_number",
+        "source_file",
+        "db_connection",
+    ]
+    missing_required = [k for k in required_keys if not final_metadata.get(k)]
+    if missing_required:
+        raise HTTPException(500, f"Missing required metadata fields: {missing_required}")
 
-    # --------------------------------------------------------
-    # 1. UPLOAD TO MINIO
-    # --------------------------------------------------------
-    try:
-        print(f"☁️  [MINIO] Uploading: {final_metadata['source_file']} ...")
-        
-        rev_val = final_metadata["revision_number"]
-        rev_int = int(rev_val) if str(rev_val).isdigit() else 1
-
-        minio_path = minio_upload_pdf(
-            local_path=final_metadata["pdf_path"],
-            document_id=final_metadata["company_document_id"],
-            revision=rev_int,
-            filename=final_metadata["source_file"],
-            overwrite=True
-        )
-        print(f"[MINIO] Upload Success! Path: {minio_path}")
-    except Exception as e:
-        print(f"[MINIO] Upload Failed: {e}")
-        raise HTTPException(500, f"MinIO Backup Failed: {e}")
-
-    # --------------------------------------------------------
-    # 2. RUN PIPELINE (CHUNKING & DB)
-    # --------------------------------------------------------
-    try:
-        print(f"⚙️  [RAG] Starting Chunking & Embedding...")
-        for _ in run_pipeline(
-            pdf_path=final_metadata["pdf_path"],
-            job_dir=str(TMP_DIR / payload.job_id),
-            company_document_id=final_metadata["company_document_id"],
-            db_connection=final_metadata["db_connection"],
-            extra_metadata=final_metadata,
-            mode="commit",
-        ):
-            pass
-        print(f" [RAG] Pipeline Complete. Chunks saved to DB.")
-    except Exception as e:
-        print(f" [RAG] Pipeline Failed: {e}")
-        raise HTTPException(500, f"Commit failed: {e}")
-
-    #  MARK JOB READY
-    mark_job_ready(payload.job_id)
-
-    #  SAVE ACTIVE DOC
-    save_active_document(
+    outbox_id = enqueue_minio_upload(
+        job_id=job.job_id,
         session_id=job.session_id,
-        company_document_id=final_metadata["company_document_id"],
+        company_document_id=str(final_metadata["company_document_id"]),
         revision_number=str(final_metadata["revision_number"]),
-        filename=final_metadata.get("source_file"),
+        source_file=str(final_metadata["source_file"]),
+        local_path=str(final_metadata["pdf_path"]),
     )
-
+    started = start_commit_job(
+        job.job_id,
+        session_id=job.session_id,
+        metadata=final_metadata,
+    )
+    set_job_progress(
+        job.job_id,
+        value=40,
+        label="Queued for background processing.",
+    )
+    print(
+        f"[PHASE 2] Background commit queued | outbox_id={outbox_id} "
+        f"| worker_started={started}"
+    )
 
     return CommitResponse(
         job_id=payload.job_id,
         company_document_id=final_metadata["company_document_id"],
         revision_number=str(final_metadata["revision_number"]),
-        status="committed",
+        status="processing",
+    )
+
+
+@router.get("/status", response_model=UploadStatusResponse)
+def get_upload_status(
+    *,
+    job_id: Optional[str] = Query(
+        default=None,
+        description="Optional upload/ingestion job id.",
+    ),
+    session_id: Optional[str] = Query(
+        default=None,
+        description="Optional chat session id.",
+    ),
+):
+    """
+    Poll upload/ingestion state for UI auto-refresh.
+    Resolves by job_id first, then by session_id.
+    Falls back to persisted active document for READY state.
+    """
+    clean_job_id = (job_id or "").strip() or None
+    clean_session_id = (session_id or "").strip() or None
+
+    if not clean_job_id and not clean_session_id:
+        raise HTTPException(400, "job_id or session_id is required")
+
+    persisted = None
+    if clean_job_id:
+        try:
+            persisted = get_job_run(clean_job_id)
+        except Exception:
+            persisted = None
+
+    if not persisted and clean_session_id:
+        try:
+            persisted = get_latest_job_run_for_session(clean_session_id)
+        except Exception:
+            persisted = None
+
+    # If this job id is gone but session has a different active job, report replacement.
+    latest_for_session = None
+    if clean_job_id and clean_session_id:
+        try:
+            current = get_job_run(clean_job_id)
+        except Exception:
+            current = None
+        try:
+            latest_for_session = get_latest_job_run_for_session(clean_session_id)
+        except Exception:
+            latest_for_session = None
+
+    if clean_job_id and clean_session_id and not current:
+        if latest_for_session and latest_for_session.get("job_id") != clean_job_id:
+            return UploadStatusResponse(
+                job_id=clean_job_id,
+                session_id=clean_session_id,
+                status="ERROR",
+                ready=False,
+                message="This ingestion job was replaced by a newer upload.",
+                error="Replaced by new job",
+                progress=0,
+                progress_label="Replaced by new job.",
+            )
+
+    if persisted:
+        status = str(persisted.get("status") or "").upper()
+        status_message = {
+            "WAIT_FOR_METADATA": "Waiting for metadata.",
+            "PROCESSING": "Document processing is running in background.",
+            "READY": "Document is ready.",
+            "ERROR": "Document processing failed.",
+        }.get(status, f"Job is in state: {status}")
+
+        response_job_id = str(persisted.get("job_id") or clean_job_id or "")
+        response_session_id = (
+            str(persisted.get("session_id"))
+            if persisted.get("session_id") is not None
+            else clean_session_id
+        )
+        error_text = (
+            str(persisted.get("error")).strip()
+            if persisted.get("error") is not None
+            else None
+        )
+        if not error_text:
+            error_text = None
+
+        return UploadStatusResponse(
+            job_id=response_job_id or None,
+            session_id=response_session_id,
+            status=status,
+            ready=status == "READY",
+            message=status_message,
+            error=error_text if status == "ERROR" else None,
+            progress=int(persisted.get("progress") or 0),
+            progress_label=(
+                str(persisted.get("progress_label"))
+                if persisted.get("progress_label") is not None
+                else None
+            ),
+        )
+
+    # Fallback to in-process memory for very early lifecycle edge cases.
+    job = None
+    if clean_job_id:
+        job = get_job_state(clean_job_id)
+    elif clean_session_id:
+        job = get_job_state(clean_session_id)
+
+    if job:
+        status = str(job.status or "").upper()
+        status_message = {
+            "WAIT_FOR_METADATA": "Waiting for metadata.",
+            "PROCESSING": "Document processing is running in background.",
+            "READY": "Document is ready.",
+            "ERROR": "Document processing failed.",
+        }.get(status, f"Job is in state: {status}")
+
+        return UploadStatusResponse(
+            job_id=job.job_id,
+            session_id=job.session_id,
+            status=status,
+            ready=status == "READY",
+            message=status_message,
+            error=job.error if status == "ERROR" else None,
+            progress=int(getattr(job, "progress", 0) or 0),
+            progress_label=getattr(job, "progress_label", None),
+        )
+
+    if clean_session_id:
+        active_doc = get_active_document(clean_session_id)
+        if active_doc:
+            normalized_doc = {
+                "company_document_id": str(
+                    active_doc.get("company_document_id") or ""
+                ),
+                "revision_number": str(active_doc.get("revision_number") or ""),
+                "filename": str(active_doc.get("filename") or ""),
+            }
+            return UploadStatusResponse(
+                job_id=clean_job_id,
+                session_id=clean_session_id,
+                status="READY",
+                ready=True,
+                message="Document is ready.",
+                progress=100,
+                progress_label="Document ready.",
+                active_document=normalized_doc,
+            )
+
+    return UploadStatusResponse(
+        job_id=clean_job_id,
+        session_id=clean_session_id,
+        status="NOT_FOUND",
+        ready=False,
+        message="No active ingestion job found.",
+        progress=0,
     )

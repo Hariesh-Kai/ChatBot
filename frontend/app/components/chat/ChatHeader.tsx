@@ -9,6 +9,7 @@ import {
   X,
   Cloud,
   Key,
+  LoaderCircle,
 } from "lucide-react";
 
 import { KAVIN_MODELS, KavinModelId } from "@/app/lib/kavin-models";
@@ -20,6 +21,8 @@ import { getModelAvatar } from "@/app/lib/model-avatars";
 interface Props {
   title: string;
   isTyping: boolean;
+  ingestionPollingActive?: boolean;
+  ingestionPollingCount?: number;
 
   activeModel: KavinModelId;
   onModelChange: (model: KavinModelId) => void;
@@ -51,6 +54,8 @@ const ALL_MODELS: ModelItem[] = Object.values(KAVIN_MODELS)
 export default function ChatHeader({
   title,
   isTyping,
+  ingestionPollingActive = false,
+  ingestionPollingCount = 0,
   activeModel,
   onModelChange,
   onRename,
@@ -240,6 +245,21 @@ export default function ChatHeader({
 
           {/* ================= RIGHT — ACTIONS ================= */}
           <div className="flex items-center gap-1">
+            {ingestionPollingActive && (
+              <div
+                title="Document processing is running in background"
+                className="
+                  mr-1 inline-flex items-center gap-1
+                  rounded-full border border-emerald-500/30
+                  bg-emerald-500/10 px-2 py-1
+                "
+              >
+                <LoaderCircle size={12} className="animate-spin text-emerald-400" />
+                <span className="hidden sm:inline text-[11px] font-medium text-emerald-300">
+                  Processing{ingestionPollingCount > 1 ? ` (${ingestionPollingCount})` : ""}
+                </span>
+              </div>
+            )}
 
             {/* Always show key button if Net is active OR if we want to config it */}
             {activeModel === "net" && (

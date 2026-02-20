@@ -55,6 +55,13 @@ from backend.api.feedback import router as feedback_router
 from backend.memory.pg_memory import get_connection
 from backend.memory.redis_memory import r as redis_client
 from backend.storage.minio_client import get_minio_client
+from backend.storage.minio_outbox import (
+    get_outbox_summary,
+    start_outbox_worker,
+    stop_outbox_worker,
+)
+from backend.queue.celery_app import is_celery_enabled, use_celery_for_outbox
+from backend.runtime_status import get_rabbitmq_status
 
 
 # ============================================================
@@ -96,6 +103,27 @@ async def startup_event():
         print("[STARTUP] Lite model warmed")
     except Exception as e:
         print(f"[STARTUP] Model warmup skipped: {e}")
+
+    # Start local MinIO outbox worker only when outbox is not handled by Celery beat.
+    if use_celery_for_outbox():
+        print("[STARTUP] MinIO outbox retries delegated to Celery beat.")
+    else:
+        try:
+            start_outbox_worker()
+        except Exception as e:
+            print(f"[STARTUP] MinIO outbox worker failed to start: {e}")
+
+    if is_celery_enabled():
+        print("[STARTUP] Celery mode enabled. Commit jobs will run on RabbitMQ workers.")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if not use_celery_for_outbox():
+        try:
+            stop_outbox_worker()
+        except Exception as e:
+            print(f"[SHUTDOWN] MinIO outbox worker stop failed: {e}")
 
 
 
@@ -184,7 +212,9 @@ def health_check():
         "services": {
             "postgres": "unknown",
             "redis": "unknown",
-            "minio": "unknown"
+            "minio": "unknown",
+            "minio_outbox": "unknown",
+            "rabbitmq": "unknown",
         }
     }
 
@@ -215,9 +245,39 @@ def health_check():
         if client:
             client.list_buckets()
             status["services"]["minio"] = "ok"
+        else:
+            status["services"]["minio"] = "disabled/unavailable"
     except Exception as e:
         status["services"]["minio"] = f"error: {e}"
-        all_ok = False
+
+    # MinIO outbox
+    try:
+        summary = get_outbox_summary()
+        counts = summary.get("counts", {}) if isinstance(summary, dict) else {}
+        pending = int(counts.get("pending", 0))
+        failed = int(counts.get("failed", 0))
+        uploading = int(counts.get("uploading", 0))
+        status["services"]["minio_outbox"] = (
+            f"pending={pending}, uploading={uploading}, failed={failed}"
+        )
+    except Exception as e:
+        status["services"]["minio_outbox"] = f"error: {e}"
+
+    # RabbitMQ (optional)
+    try:
+        rabbit = get_rabbitmq_status()
+        rabbit_status = str(rabbit.get("status") or "unknown")
+        if rabbit_status == "ok":
+            status["services"]["rabbitmq"] = "ok"
+        elif rabbit_status == "disabled":
+            status["services"]["rabbitmq"] = "disabled/unconfigured"
+        elif rabbit_status == "not_rabbitmq":
+            status["services"]["rabbitmq"] = "configured/non-rabbitmq-broker"
+        else:
+            detail = rabbit.get("error") or "unreachable"
+            status["services"]["rabbitmq"] = f"error: {detail}"
+    except Exception as e:
+        status["services"]["rabbitmq"] = f"error: {e}"
 
     if not all_ok:
         status["status"] = "degraded"

@@ -16,7 +16,7 @@ from typing import List, Dict, Optional, Literal, Generator
 import torch
 import json
 from backend.state.abort_signals import is_aborted
-from backend.llm.loader import get_llm, hf_stream_generate
+from backend.llm.loader import get_llm, hf_stream_generate, GGUF_MODELS, HF_MODELS
 from backend.llm.net_loader import generate_net_answer_stream, NetRateLimitError
 from backend.llm.net_models import get_active_net_provider, NET_MAX_TOKENS
 from backend.contracts.ui_events import net_rate_limited_event, error_event
@@ -92,6 +92,11 @@ def _friendly_model_error(err: Exception) -> str:
         return "Model not registered. Add or switch the Base model in the Developer Dashboard."
     if "gguf model not found" in lower or "no such file" in lower:
         return "GGUF model file missing. Re-download or register the Lite model."
+    if "type_q4_0_4_8 removed" in lower or "q4_0_4_8" in lower:
+        return (
+            "This GGUF quantization is incompatible with the current llama_cpp runtime. "
+            "Use a Q4_K_M/Q4_0 model or re-convert the file."
+        )
     if "transformers not installed" in lower:
         return "Transformers not installed on the server (Base model cannot load)."
     if "local_files_only" in lower or "offline mode" in lower:
@@ -125,10 +130,47 @@ def _context_to_text(chunks: Optional[List[Dict[str, str]]]) -> str:
     return "\n\n".join(c["content"] for c in chunks if c.get("content"))
 
 
+def _resolve_model_family(model_id: str) -> str:
+    """
+    Resolve runtime family from registered model IDs.
+    This avoids prefix assumptions for custom model IDs.
+    """
+    mid = (model_id or "").strip()
+    if not mid:
+        return "net"
+
+    if mid in GGUF_MODELS:
+        return "lite"
+    if mid in HF_MODELS:
+        return "base"
+
+    # Backward-compatible fallback for legacy IDs.
+    if mid.startswith("lite"):
+        return "lite"
+    if mid.startswith("base"):
+        return "base"
+    return "net"
+
+
 def _build_prompt(question, model, context_chunks, chat_history):
     if model == "lite":
         return build_prompt_gguf(question, context_chunks)
     return build_prompt_hf(question, context_chunks, chat_history)
+
+
+def _lite_fallback_model_id(current_model_id: str) -> Optional[str]:
+    try:
+        from backend.llm.model_registry import MODEL_REGISTRY
+    except Exception:
+        return None
+
+    entry = MODEL_REGISTRY.get("lite", {})
+    fallback_id = str(entry.get("fallback") or "").strip()
+    if not fallback_id or fallback_id == current_model_id:
+        return None
+    if fallback_id not in GGUF_MODELS:
+        return None
+    return fallback_id
 
 
 # ============================================================
@@ -147,17 +189,12 @@ def generate_answer_stream(
 ) -> Generator[str, None, None]:
      
     
-    # Resolve chat mode from model_id
-    if model_id.startswith("lite"):
-        model = "lite"
-    elif model_id.startswith("base"):
-        model = "base"
-    else:
-        model = "net"
+    # Resolve mode from registered model family.
+    model = _resolve_model_family(model_id)
 
     # --- DEBUG: VERIFY CHUNKS ---
     chunk_count = len(context_chunks) if context_chunks else 0
-    print(f"🧩 [GENERATE DEBUG] Context chunks = {chunk_count}")
+    print(f"[GENERATE DEBUG] Context chunks = {chunk_count}")
     if chunk_count > 0:
         print(f"   - First Chunk Sample: {str(context_chunks[0])[:50]}...")
     # ----------------------------
@@ -189,7 +226,12 @@ def generate_answer_stream(
     if model in ("base", "net"):
         if not context_chunks and _is_conversational(intent):
             model = "lite"
-            model_id = "lite_llama_8b"
+            try:
+                from backend.llm.model_selector import resolve_model_id
+                model_id = resolve_model_id("lite")
+            except Exception:
+                # Last-resort fallback when registry is unavailable.
+                model_id = "lite_llama_8b"
         else:
             prompt = build_prompt_cot(question, context_chunks, chat_history)
 
@@ -309,13 +351,31 @@ def generate_answer_stream(
     if not prompt:
         prompt = f"User: {question}\nAssistant:"
     
+    llm = None
     try:
         llm = get_llm(model_id)
     except Exception as e:
-        yield UI_EVENT_PREFIX + json.dumps(
-            text_event(_friendly_model_error(e))
-        ) + "\n"
-        return
+        # Automatic Lite fallback when the configured GGUF is broken/missing.
+        if model == "lite":
+            fallback_id = _lite_fallback_model_id(model_id)
+            if fallback_id:
+                try:
+                    print(
+                        f"[LLM] Lite load failed for '{model_id}'. "
+                        f"Trying fallback '{fallback_id}'."
+                    )
+                    llm = get_llm(fallback_id)
+                    model_id = fallback_id
+                except Exception as fallback_error:
+                    e = fallback_error
+            else:
+                pass
+
+        if llm is None:
+            yield UI_EVENT_PREFIX + json.dumps(
+                text_event(_friendly_model_error(e))
+            ) + "\n"
+            return
 
    
 

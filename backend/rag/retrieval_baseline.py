@@ -11,6 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 from langchain_postgres import PGVector
 from langchain_huggingface import HuggingFaceEmbeddings
 from backend.rag.retrieve import retrieve_rag_context
+from backend.llm.hf_cache_utils import resolve_local_snapshot
 
 # ============================================================
 # CONFIG
@@ -23,20 +24,22 @@ DB_CONNECTION = os.getenv(
 ).replace("postgresql+psycopg2://", "postgresql://")
 
 COLLECTION_NAME = "rag_documents"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
 # ============================================================
 # SETUP
 # ============================================================
 
 def setup_store():
-    print("🔌 Connecting to Vector DB...")
+    print("Connecting to Vector DB...")
     # Matches the embedding model used in ingest.py and chat.py
     embedding_model = HuggingFaceEmbeddings(
-        model_name="BAAI/bge-m3",
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True}
+        model_name=resolve_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3") or "BAAI/bge-m3",
+        model_kwargs={"device": "cpu", "local_files_only": True},
+        encode_kwargs={"normalize_embeddings": True},
     )
-    
+
     return PGVector.from_existing_index(
         embedding=embedding_model,
         collection_name=COLLECTION_NAME,

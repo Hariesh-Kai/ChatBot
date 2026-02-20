@@ -15,7 +15,16 @@
 
 # next.js
 /.next/
+/.next-app/
+/.next-tauri/
+/.tauri-web-stage*/
 /out/
+/src-tauri/target/
+/src-tauri/target*/
+/src-tauri/.sidecar-build/
+/src-tauri/binaries/
+/src-tauri/gen/
+/.cargo-target/
 
 # production
 /build

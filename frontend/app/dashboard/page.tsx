@@ -10,6 +10,7 @@ import Link from "next/link";
 import { authMe } from "@/app/lib/api";
 import DeleteConfirmModal from "@/app/components/ui/DeleteConfirmModal";
 import StartupLoader from "@/app/components/ui/StartupLoader";
+import RuntimeOverview from "@/app/components/debug/RuntimeOverview";
 
 type DevtoolsHealthStatus = "ok" | "fail" | "skipped";
 
@@ -27,7 +28,7 @@ export default function DashboardPage() {
   const router = useRouter();
 
   const [activeTab, setActiveTab] = useState<
-    "settings" | "models" | "users" | "databases" | "danger" | "intent" | "rewrite" | "retrieve" | "health"
+    "settings" | "models" | "runtime" | "users" | "databases" | "danger" | "intent" | "rewrite" | "retrieve" | "health"
   >("settings");
 
   const [backendReady, setBackendReady] = useState(false);
@@ -42,6 +43,7 @@ export default function DashboardPage() {
     { label: "Postgres", status: "pending" },
     { label: "Redis", status: "pending" },
     { label: "MinIO", status: "pending" },
+    { label: "RabbitMQ", status: "pending" },
   ]);
 
   // --- Intent State ---
@@ -68,6 +70,9 @@ export default function DashboardPage() {
   const [activeModels, setActiveModels] = useState<any>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [modelsBusy, setModelsBusy] = useState(false);
+  const [runtimeData, setRuntimeData] = useState<any>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [runtimeBusy, setRuntimeBusy] = useState(false);
 
   // Auto-download from Hugging Face (detect GGUF vs HF)
   const [hfAutoRepoId, setHfAutoRepoId] = useState("");
@@ -172,6 +177,7 @@ export default function DashboardPage() {
       { label: "Postgres", status: "pending" },
       { label: "Redis", status: "pending" },
       { label: "MinIO", status: "pending" },
+      { label: "RabbitMQ", status: "pending" },
     ]);
 
     const mapStatus = (value?: string) => {
@@ -196,6 +202,7 @@ export default function DashboardPage() {
           { label: "Postgres", status: mapStatus(services.postgres) },
           { label: "Redis", status: mapStatus(services.redis) },
           { label: "MinIO", status: mapStatus(services.minio) },
+          { label: "RabbitMQ", status: mapStatus(services.rabbitmq) },
         ]);
         return true;
       } catch {
@@ -274,6 +281,13 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!backendReady) return;
+    if (activeTab === "runtime") {
+      loadRuntime();
+    }
+  }, [activeTab, backendReady]);
+
+  useEffect(() => {
+    if (!backendReady) return;
     if (activeTab === "users") {
       loadUsers();
     }
@@ -343,6 +357,22 @@ export default function DashboardPage() {
       }
     } catch (e: any) {
       setModelsError(e?.message || "Failed to load models");
+    }
+  }
+
+  async function loadRuntime() {
+    setRuntimeBusy(true);
+    setRuntimeError(null);
+    try {
+      const res = await fetch(`${API_BASE}/devtools/runtime`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setRuntimeData(await res.json());
+    } catch (e: any) {
+      setRuntimeError(e?.message || "Failed to load runtime status");
+    } finally {
+      setRuntimeBusy(false);
     }
   }
 
@@ -1004,9 +1034,10 @@ export default function DashboardPage() {
       </div>
 
       {/* TABS */}
-      <div className="mb-8 flex gap-4 border-b border-white/10 pb-1">
+      <div className="mb-8 flex gap-4 border-b border-white/10 pb-1 overflow-x-auto">
         <TabButton active={activeTab === "settings"} onClick={() => setActiveTab("settings")} label="Settings" />
         <TabButton active={activeTab === "models"} onClick={() => setActiveTab("models")} label="Models" />
+        <TabButton active={activeTab === "runtime"} onClick={() => setActiveTab("runtime")} label="Runtime" />
         <TabButton active={activeTab === "users"} onClick={() => setActiveTab("users")} label="Users" />
         <TabButton active={activeTab === "databases"} onClick={() => setActiveTab("databases")} label="Databases" />
         <TabButton active={activeTab === "danger"} onClick={() => setActiveTab("danger")} label="Danger Zone" />
@@ -1641,6 +1672,15 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
+      {/* === TAB: RUNTIME === */}
+      {activeTab === "runtime" && (
+        <RuntimeOverview
+          runtimeData={runtimeData}
+          runtimeBusy={runtimeBusy}
+          runtimeError={runtimeError}
+          onRefresh={loadRuntime}
+        />
+      )}
       {activeTab === "users" && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-1 space-y-6">
@@ -2256,7 +2296,7 @@ function TabButton({ active, onClick, label }: any) {
   return (
     <button 
       onClick={onClick}
-      className={`px-4 py-2 text-sm font-medium transition-colors ${
+      className={`px-4 py-2 text-sm font-medium transition-colors whitespace-nowrap ${
         active ? "text-white border-b-2 border-blue-500" : "text-gray-400 hover:text-white"
       }`}
     >
@@ -2327,10 +2367,11 @@ function SystemHealthCheck() {
     <Card title="Backend Status">
         <button onClick={check} className="mb-4 bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm text-white">Refresh Status</button>
         {status ? (
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <StatusItem label="PostgreSQL" status={status.services?.postgres} />
                 <StatusItem label="Redis" status={status.services?.redis} />
                 <StatusItem label="MinIO" status={status.services?.minio} />
+                <StatusItem label="RabbitMQ" status={status.services?.rabbitmq} />
             </div>
         ) : (
             <div className="text-gray-500">Click refresh to check connections.</div>

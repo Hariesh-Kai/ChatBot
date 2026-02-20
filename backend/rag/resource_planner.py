@@ -16,7 +16,7 @@ def get_optimal_strategy(file_size_mb: float):
     available_ram_gb = mem.available / (1024 ** 3)
     total_cores = psutil.cpu_count(logical=False) or 2
     
-    print(f"🩺 [SYSTEM] RAM Available: {available_ram_gb:.2f}GB | CPU Usage: {cpu_usage}%")
+    print(f"[SYSTEM] RAM Available: {available_ram_gb:.2f}GB | CPU Usage: {cpu_usage}%")
 
     # 2. Critical Safety Valve (If system is dying, go slow)
     if mem.percent > 85 or cpu_usage > 90:
@@ -54,6 +54,6 @@ def limit_cpu_usage(cores=1):
     
     try:
         p.cpu_affinity(selected_cores)
-        print(f"🔧 [SYSTEM] Pinned process to Cores: {selected_cores}")
+        print(f"[SYSTEM] Pinned process to Cores: {selected_cores}")
     except Exception as e:
         print(f"[SYSTEM] Could not pin CPU affinity: {e}")

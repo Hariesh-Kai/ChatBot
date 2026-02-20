@@ -12,9 +12,13 @@ import { ChatSession, Message } from "@/app/lib/types";
 import { KavinModelId } from "@/app/lib/kavin-models";
 import { loadChats, saveChats } from "@/app/lib/chat-store";
 import { authLogout, authMe, updateMetadata } from "@/app/lib/api";
-import type { AuthUser } from "@/app/lib/api";
+import type { AuthUser, UploadIngestionStatusResponse } from "@/app/lib/api";
 import { MetadataRequestField } from "@/app/lib/llm-ui-events";
 import { UploadStatus } from "@/app/hooks/useSmartUpload";
+import {
+  useIngestionStatusPoller,
+  type PendingIngestionPollItem,
+} from "@/app/hooks/useIngestionStatusPoller";
 import { API_BASE } from "@/app/lib/config";
 
 /* =========================================================
@@ -30,6 +34,12 @@ function uuidv4() {
     return v.toString(16);
   });
 }
+
+const DOC_PROCESSING_BACKGROUND_TEXT =
+  "Document is processing in background. You can keep chatting now; document answers will activate when indexing finishes.";
+const DOC_READY_TEXT =
+  "Document is ready. Answers now include this document automatically.";
+const DOC_ERROR_TEXT_PREFIX = "Document processing failed in background";
 
 
 
@@ -106,6 +116,9 @@ function AuthedHome({
     fields: MetadataRequestField[];
     filename: string;
   } | null>(null);
+  const [pendingIngestion, setPendingIngestion] = useState<
+    PendingIngestionPollItem[]
+  >([]);
 
   const [showStartup, setShowStartup] = useState(true);
   const [showGettingStarted, setShowGettingStarted] = useState(false);
@@ -176,6 +189,14 @@ function AuthedHome({
     if (chats.length > 0) saveChats(chats);
   }, [chats]);
 
+  useEffect(() => {
+    const chatIds = new Set(chats.map((c) => c.id));
+    setPendingIngestion((prev) => {
+      const next = prev.filter((entry) => chatIds.has(entry.chatId));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [chats]);
+
   /* ================= DEV SETTINGS (ON-DEMAND) ================= */
   const loadDevSettings = useCallback(async () => {
     try {
@@ -211,6 +232,13 @@ function AuthedHome({
   /* ================= DERIVED ================= */
 
   const activeChat = chats.find((c) => c.id === activeId);
+  const activeChatPendingIngestionCount = useMemo(() => {
+    if (!activeId) return 0;
+    return pendingIngestion.reduce(
+      (count, item) => count + (item.chatId === activeId ? 1 : 0),
+      0
+    );
+  }, [activeId, pendingIngestion]);
 
   const isTyping = Boolean(
     activeChat &&
@@ -355,6 +383,150 @@ function AuthedHome({
     },
     [activeId, updateMessagesForChat]
   );
+
+  const addPendingIngestion = useCallback(
+    (item: {
+      jobId?: string | null;
+      sessionId?: string | null;
+      chatId: string;
+      messageId: string;
+    }) => {
+      const cleanJobId = (item.jobId || "").trim() || null;
+      const cleanSessionId = (item.sessionId || "").trim() || null;
+      if (!cleanJobId && !cleanSessionId) return;
+
+      const keyBase = cleanJobId ? `job:${cleanJobId}` : `session:${cleanSessionId}`;
+      const id = `${keyBase}:msg:${item.messageId}`;
+
+      setPendingIngestion((prev) => {
+        if (prev.some((entry) => entry.id === id)) return prev;
+        return [
+          ...prev,
+          {
+            id,
+            jobId: cleanJobId,
+            sessionId: cleanSessionId,
+            chatId: item.chatId,
+            messageId: item.messageId,
+          },
+        ];
+      });
+    },
+    []
+  );
+
+  const clearPendingById = useCallback((id: string) => {
+    setPendingIngestion((prev) => {
+      const next = prev.filter((entry) => entry.id !== id);
+      return next.length === prev.length ? prev : next;
+    });
+  }, []);
+
+  const clearPendingForMessage = useCallback(
+    (chatId: string | null, messageId: string | null) => {
+      if (!chatId || !messageId) return;
+      setPendingIngestion((prev) => {
+        const next = prev.filter(
+          (entry) => !(entry.chatId === chatId && entry.messageId === messageId)
+        );
+        return next.length === prev.length ? prev : next;
+      });
+    },
+    []
+  );
+
+  const handleIngestionReady = useCallback(
+    (
+      item: PendingIngestionPollItem,
+      _status: UploadIngestionStatusResponse
+    ) => {
+      void _status;
+      clearPendingById(item.id);
+      updateMessagesForChat(item.chatId, (prev) =>
+        prev.map((m) =>
+          m.id === item.messageId
+            ? {
+                ...m,
+                status: "done",
+                content: DOC_READY_TEXT,
+                progress: undefined,
+                progressLabel: undefined,
+              }
+            : m
+        )
+      );
+    },
+    [clearPendingById, updateMessagesForChat]
+  );
+
+  const handleIngestionProgress = useCallback(
+    (
+      item: PendingIngestionPollItem,
+      status: UploadIngestionStatusResponse
+    ) => {
+      const rawProgress =
+        typeof status.progress === "number" ? status.progress : undefined;
+      const progress =
+        rawProgress === undefined
+          ? 55
+          : Math.max(0, Math.min(99, Math.round(rawProgress)));
+      const label =
+        (status.progress_label || "").trim() ||
+        (status.message || "").trim() ||
+        DOC_PROCESSING_BACKGROUND_TEXT;
+
+      updateMessagesForChat(item.chatId, (prev) =>
+        prev.map((m) =>
+          m.id === item.messageId
+            ? {
+                ...m,
+                status: "progress",
+                content: "",
+                progress,
+                progressLabel: label,
+              }
+            : m
+        )
+      );
+    },
+    [updateMessagesForChat]
+  );
+
+  const handleIngestionError = useCallback(
+    (
+      item: PendingIngestionPollItem,
+      status: UploadIngestionStatusResponse
+    ) => {
+      clearPendingById(item.id);
+      const detail = (status.error || status.message || "").trim();
+      const message = detail
+        ? `${DOC_ERROR_TEXT_PREFIX}: ${detail}`
+        : DOC_ERROR_TEXT_PREFIX;
+
+      updateMessagesForChat(item.chatId, (prev) =>
+        prev.map((m) =>
+          m.id === item.messageId
+            ? {
+                ...m,
+                status: "error",
+                content: message,
+                progress: undefined,
+                progressLabel: undefined,
+              }
+            : m
+        )
+      );
+    },
+    [clearPendingById, updateMessagesForChat]
+  );
+
+  useIngestionStatusPoller({
+    pending: pendingIngestion,
+    onReady: handleIngestionReady,
+    onProgress: handleIngestionProgress,
+    onError: handleIngestionError,
+    intervalMs: 2500,
+  });
 
   const shortcuts = useMemo(
     () => [
@@ -548,7 +720,7 @@ function AuthedHome({
         );
 
         setUploadPipeline(null);
-        finalizeUploadSuccess(result.filename, result.revision_number);
+        finalizeUploadSuccess();
 
         if (chatId && msgId) {
           updateMessagesForChat(chatId, (prev) =>
@@ -556,15 +728,21 @@ function AuthedHome({
               m.id === msgId
                 ? {
                     ...m,
-                    status: "done",
-                    content:
-                      "Document indexed and ready. Ask a question about it.",
-                    progress: undefined,
-                    progressLabel: undefined,
+                    status: "progress",
+                    content: "",
+                    progress: 45,
+                    progressLabel: "Queued for background processing...",
                   }
                 : m
             )
           );
+
+          addPendingIngestion({
+            jobId: typeof result?.job_id === "string" ? result.job_id : null,
+            sessionId: chatId,
+            chatId,
+            messageId: msgId,
+          });
         }
       } catch (err: any) {
         setUploadPipeline(null);
@@ -588,6 +766,7 @@ function AuthedHome({
 
     const chatId = uploadChatIdRef.current ?? activeId;
     const msgId = uploadProgressMsgIdRef.current;
+    clearPendingForMessage(chatId, msgId);
 
     if (chatId && msgId) {
       updateMessagesForChat(chatId, (prev) =>
@@ -697,10 +876,7 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
     );
 
     // success flow: reuse your finalize helper
-    finalizeUploadSuccess(
-      sidebarMetadataRequest?.filename ?? uploadFileNameRef.current ?? "document.pdf",
-      null
-    );
+    finalizeUploadSuccess();
 
     // clear UI state
     setSidebarMetadataRequest(null);
@@ -713,14 +889,21 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
           m.id === msgId
             ? {
                 ...m,
-                status: "done",
-                content: "Document indexed and ready. Ask a question about it.",
-                progress: undefined,
-                progressLabel: undefined,
+                status: "progress",
+                content: "",
+                progress: 45,
+                progressLabel: "Queued for background processing...",
               }
             : m
         )
       );
+
+      addPendingIngestion({
+        jobId,
+        sessionId: chatId,
+        chatId,
+        messageId: msgId,
+      });
     }
   } catch (err: any) {
     // reuse existing error handler
@@ -788,6 +971,8 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
             userLabel={user.username}
             devSettings={devSettings}
             onModelChange={(m) => handleModelChange(activeChat.id, m)}
+            ingestionPollingActive={activeChatPendingIngestionCount > 0}
+            ingestionPollingCount={activeChatPendingIngestionCount}
             uploadPipeline={uploadPipeline} 
             onRenameSession={(t) => handleRenameChat(activeChat.id, t)}
             onUploadStart={handleSidebarUploadStart}

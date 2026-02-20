@@ -1,61 +1,203 @@
-# ---------------------------------------
-# SECRETS & ENVIRONMENT (Never commit these!)
-# ---------------------------------------
+# =======================================
+# SECRETS & ENVIRONMENT — NEVER COMMIT
+# =======================================
 .env
 .env.local
+.env.development
 .env.development.local
+.env.test
 .env.test.local
+.env.production
 .env.production.local
+backend/secrets/.net_api_key
+backend/auth/users.json
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx
 
-# ---------------------------------------
-# PYTHON / BACKEND IGNORES
-# ---------------------------------------
+# =======================================
+# PYTHON / BACKEND
+# =======================================
+
 # Virtual Environment
 venv/
 env/
 .venv/
+ENV/
+env.bak/
 
-# Python Bytecode and Cache
+# Python Bytecode & Cache
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
 
-# ---------------------------------------
-# JAVASCRIPT / FRONTEND IGNORES
-# ---------------------------------------
-# Dependencies (Heavy)
+# PyInstaller / Build Artifacts
+*.spec
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# Compiled pyc stubs
+*.pyc.*
+
+# MyPy / Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Backend Temp / Runtime
+backend/tmp/
+backend/storage/uploads/
+tmp/
+targettemp/
+
+# =======================================
+# JAVASCRIPT / FRONTEND (Next.js + Tauri)
+# =======================================
+
+# Node Dependencies
 node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
 
 # Next.js Build Output
 .next/
+frontend/.next/
+frontend/.next-app/
+frontend/.next-tauri/
+frontend/.tauri-web-stage*/
 out/
+frontend/out/
 build/
-dist/
 
-# Debug logs
+# Tauri Build Artifacts
+frontend/src-tauri/target/
+frontend/src-tauri/target*/
+frontend/src-tauri/.sidecar-build/
+frontend/src-tauri/binaries/
+frontend/src-tauri/gen/
+.cargo-target/
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Debug Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.pnpm-debug.log*
+lerna-debug.log*
 
-# ---------------------------------------
-# PROJECT SPECIFIC HEAVY DATA
-# ---------------------------------------
-# RAG Models (Too large for Git)
+# Vercel
+.vercel
+
+# =======================================
+# PROJECT-SPECIFIC HEAVY DATA
+# =======================================
+
+# AI Models (Too large for Git — use Git LFS or separate storage)
 models/
+*.gguf
+*.ggml
+*.safetensors
+*.bin
+*.pt
+*.pth
 
-# Database Storage
+# HuggingFace Cache
+cache/
+
+# Object Storage Data
 minio-data/
 postgres-data/
 
-# Temporary generated files
-code_dump/
-backend/tmp/
-backend/storage/uploads/
+# =======================================
+# IDE & SYSTEM FILES
+# =======================================
 
-# ---------------------------------------
-# SYSTEM & IDE FILES
-# ---------------------------------------
-.DS_Store
+# Windows
 Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+*~
+
+# VSCode
 .vscode/
+!.vscode/extensions.json
+
+# JetBrains / IntelliJ / PyCharm
 .idea/
+*.iws
+*.iml
+*.ipr
+
+# Vim
+*.swp
+*.swo
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+
+# =======================================
+# MISC / UTILITY
+# =======================================
+
+# Code dump utility output
+code_dump/
+
+# Log files
+*.log
+logs/
+
+# Coverage reports
+coverage/
+*.lcov
+
+# Runtime PIDs
+*.pid
+*.seed
+*.pid.lock
+
+# OS generated
+.fuse_hidden*
+.nfs*

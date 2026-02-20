@@ -62,6 +62,9 @@ def extract_document_metadata(
 
     # Initialize with default confidence
     metadata = {
+        # Keep both keys for backward compatibility.
+        # `document_type` is what upload/pipeline contracts expect.
+        "document_type": {"value": None, "confidence": 0.0},
         "document_title": {"value": None, "confidence": 0.0},
         "revision_code": {"value": None, "confidence": 0.0},
         "project_name":  {"value": None, "confidence": 0.0}, #  New field
@@ -100,10 +103,12 @@ def extract_document_metadata(
             clean_title = text.replace("\n", " ").strip()
             if len(clean_title) > 10 and metadata["document_title"]["confidence"] < 0.9:
                 metadata["document_title"] = {"value": clean_title, "confidence": 0.9}
+                metadata["document_type"] = {"value": clean_title, "confidence": 0.9}
         
         elif "design basis" in lower and metadata["document_title"]["confidence"] < 0.8:
             clean_title = text.replace("\n", " ").strip()
             metadata["document_title"] = {"value": clean_title, "confidence": 0.8}
+            metadata["document_type"] = {"value": clean_title, "confidence": 0.8}
 
         # --- 3. Detect Revision Code (Rev 01, Rev A) ---
         # Regex: Starts with 'Rev' followed by short alphanumeric
@@ -134,6 +139,10 @@ def extract_document_metadata(
                 "value": extra_metadata["document_type"],
                 "confidence": 1.0,
             }
+        metadata["document_type"] = {
+            "value": extra_metadata["document_type"],
+            "confidence": 1.0,
+        }
 
     return metadata
 
@@ -154,7 +163,7 @@ def enrich_chunks(
     Enrich chunk JSON with REQUIRED RAG metadata.
     """
 
-    print(f"✨ Enriching chunks from: {chunks_file}")
+    print(f"[METADATA] Enriching chunks from: {chunks_file}")
 
     with open(chunks_file, "r", encoding="utf-8") as f:
         chunks = json.load(f)
@@ -233,7 +242,7 @@ def enrich_chunks(
         json.dump(enriched, f, indent=2, ensure_ascii=False)
 
     print(f" Enriched {len(enriched)} chunks.")
-    print(f"💾 Saved to: {output_file}")
+    print(f"[METADATA] Saved to: {output_file}")
 
     return {
         "company_document_id": company_document_id,

@@ -46,7 +46,9 @@ from backend.auth.deps import require_user
 #  NEW IMPORT (LEARNING – FEEDBACK API)
 # ============================================================
 from backend.api.feedback import router as feedback_router
+from backend.api.audit_log import router as audit_log_router
 # ↑ ADDED: registers /feedback endpoint
+# ↑ ADDED: registers /audit endpoints (Phase 3 RAG audit log)
 
 
 # ============================================================
@@ -161,6 +163,7 @@ app.include_router(abort_router, dependencies=_auth)                # POST /abor
 #  NEW ROUTER REGISTRATION (LEARNING FEEDBACK)
 # ============================================================
 app.include_router(feedback_router, dependencies=_auth)              # POST /feedback
+app.include_router(audit_log_router, dependencies=_auth)            # GET /audit/recent, /audit/stats
 # ↑ ADDED: stores user feedback safely
 
 # Debug & external services
@@ -194,8 +197,18 @@ def root_info():
             "Source Highlighting & Rendering",
             "Developer Method Dashboard",
             "Resource Aware Dispatcher",
-            #  NEW FEATURE FLAG
             "Learning Telemetry (Stats + Feedback)",
+            # Phase 1-4 features
+            "BM25 Keyword Search + RRF Fusion (Phase 1)",
+            "Grounding / Hallucination Check (Phase 1)",
+            "Semantic Cache + Multi-Query (Phase 2)",
+            "Feedback-Driven Chunk Boosting (Phase 2)",
+            "RAGAS-Style Evaluation (Phase 3)",
+            "PII Detection (Phase 3)",
+            "RAG Audit Log (Phase 3)",
+            "Adaptive Retrieval K-Tuning (Phase 4)",
+            "Few-Shot In-Context Learning (Phase 4)",
+            "RLHF Training Data Export (Phase 4)",
         ],
     }
 

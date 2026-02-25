@@ -49,6 +49,13 @@ from backend.rag.confidence import compute_confidence
 from backend.learning.retrieval_stats import record_retrieval_stats
 from backend.learning.retrieval_policy import apply_retrieval_policy
 from backend.llm.model_selector import resolve_model_id
+from backend.llm.pii import detect_pii
+from backend.rag.evaluator import evaluate_answer
+from backend.rag.audit import log_rag_turn
+from backend.rag.cache import get_cached_chunks, set_cached_chunks
+from backend.llm.few_shot import get_few_shot_examples, format_few_shot_block
+from backend.learning.adaptive_retrieval import get_adaptive_config
+from backend.rag.retrieve import augment_query_with_context
 
 # ================================
 # MEMORY
@@ -64,6 +71,7 @@ from backend.memory.pg_memory import (
     append_chat_message,
     get_recent_user_messages,
     get_chunks_by_ids,
+    get_summarized_history,
 )
 
 # ================================
@@ -159,6 +167,34 @@ _SMALLTALK_MAP = {
     "how are you?": "I'm doing well. How can I help?",
     "how's it going": "All good here. How can I help?",
 }
+
+
+# ============================================================
+# QUERY ROUTING (Phase 3)
+# Adjusts retrieval strategy based on detected intent
+# ============================================================
+
+def _route_query(intent: str, force_detailed: bool) -> dict:
+    """
+    Return retrieval config based on query intent.
+    - factual   → tight BM25, small K
+    - summary   → wide retrieval, large K
+    - compare   → force detailed, large K
+    - default   → standard settings
+    """
+    if force_detailed:
+        return {"force_detailed": True, "limit": 16}
+
+    if intent in ("summary", "summarize"):
+        return {"force_detailed": True, "limit": 16}
+
+    if intent in ("compare", "comparison"):
+        return {"force_detailed": True, "limit": 14}
+
+    if intent in ("factual", "lookup", "definition"):
+        return {"force_detailed": False, "limit": 8}
+
+    return {"force_detailed": False, "limit": 10}
 
 
 def _static_smalltalk_reply(text: str, intent: Optional[str] = None) -> Optional[str]:
@@ -447,6 +483,17 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     if not company_document_id or revision_number is None:
         raise HTTPException(500, "Invalid document metadata")
 
+    # =====================================================
+    # PII CHECK (Phase 3) — log only, non-blocking
+    # =====================================================
+    try:
+        pii_findings = detect_pii(original_question)
+        if pii_findings:
+            labels = [f["label"] for f in pii_findings]
+            print(f"[PII] Detected in question: {labels}")
+    except Exception:
+        pass
+
     history = get_recent_user_messages(session_id)
     rewritten = rewrite_question(original_question, history)
     intent = classify_intent(rewritten)
@@ -486,15 +533,51 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                     "metadata": rc["metadata"],
                 })
 
+    # =====================================================
+    # QUERY ROUTING (Phase 3)
+    # =====================================================
+    route_config = _route_query(intent, force_detailed_retrieval)
+
+    # =====================================================
+    # ADAPTIVE RETRIEVAL CONFIG (Phase 4)
+    # Overrides route_config K if doc has history
+    # =====================================================
+    try:
+        adaptive = get_adaptive_config(company_document_id, str(revision_number))
+        # Adaptive can widen route_config but not override force_detailed
+        if adaptive["k"] > route_config.get("limit", 8):
+            route_config["limit"] = adaptive["k"]
+        if adaptive["force_detailed"] and not route_config["force_detailed"]:
+            route_config["force_detailed"] = True
+    except Exception:
+        pass
+
+    # =====================================================
+    # SEMANTIC CACHE CHECK (Phase 2)
+    # =====================================================
+    cache_hit = False
     new_rag_chunks = []
+
+    # Conversation-aware query augmentation (Phase 4) - only for cache key + retrieval
+    conv_history = get_recent_user_messages(session_id)
+    augmented_query = augment_query_with_context(rewritten, conv_history)
+
     if not rag_disabled:
-        new_rag_chunks = retrieve_rag_context(
-            question=rewritten,
-            vector_store=vector_store,
-            company_document_id=company_document_id,
-            revision_number=str(revision_number),
-            force_detailed=force_detailed_retrieval,
-        )
+        cached = get_cached_chunks(company_document_id, str(revision_number), augmented_query)
+        if cached is not None:
+            new_rag_chunks = cached
+            cache_hit = True
+        else:
+            new_rag_chunks = retrieve_rag_context(
+                question=augmented_query,
+                vector_store=vector_store,
+                company_document_id=company_document_id,
+                revision_number=str(revision_number),
+                force_detailed=route_config["force_detailed"],
+            )
+            set_cached_chunks(
+                company_document_id, str(revision_number), augmented_query, new_rag_chunks
+            )
 
 
 
@@ -609,12 +692,37 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                 model=model_id,
             ))
         
+        # =====================================================
+        # FEW-SHOT EXAMPLES (Phase 4) — prepended as context turns
+        # =====================================================
+        few_shot_hist = []
+        try:
+            fs_examples = get_few_shot_examples(
+                question=rewritten,
+                company_document_id=company_document_id,
+                revision_number=str(revision_number),
+            )
+            if fs_examples:
+                fs_block = format_few_shot_block(fs_examples)
+                if fs_block:
+                    few_shot_hist = [{"role": "system", "content": fs_block}]
+        except Exception:
+            few_shot_hist = []
+
+        # Summarized history (Phase 2) + few-shot (Phase 4)
+        try:
+            full_history = get_summarized_history(session_id, limit=50)
+        except Exception:
+            full_history = get_recent_user_messages(session_id)
+        combined_history = few_shot_hist + list(full_history)
+
         yield from safe_stream_response(
             generate_answer_stream(
                 question=rewritten,
                 model_id=model_id,
                 context_chunks=rag_chunks,
                 intent=intent,
+                chat_history=combined_history,
                 session_id=session_id,
             ),
             session_id,
@@ -634,6 +742,52 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                     "data": rag_sources,
                 })
             clear_job_for_session(session_id)
+
+        # =====================================================
+        # RAGAS EVALUATION + AUDIT LOG (Phase 3, non-blocking)
+        # =====================================================
+        try:
+            # Collect the answer from memory (already stored by safe_stream_response)
+            from backend.memory.pg_memory import get_chat_messages as _get_msgs
+            recent = _get_msgs(session_id, limit=2)
+            last_answer = ""
+            for m in reversed(recent):
+                if m.get("role") == "assistant":
+                    last_answer = m.get("content", "")
+                    break
+
+            eval_scores = evaluate_answer(
+                question=rewritten,
+                answer=last_answer,
+                rag_chunks=rag_chunks,
+            )
+
+            # Emit eval quality as a UI event (optional — only if high/low)
+            if eval_scores.get("quality") == "low":
+                yield emit_event({
+                    "type": "EVAL",
+                    "quality": eval_scores["quality"],
+                    "overall": eval_scores["overall"],
+                })
+
+            # Write to audit log
+            log_rag_turn(
+                session_id=session_id,
+                company_document_id=company_document_id,
+                revision_number=str(revision_number),
+                question=original_question,
+                rewritten_question=rewritten,
+                intent=intent,
+                chunk_ids=[c["id"] for c in rag_chunks],
+                grounding_score=None,
+                eval_scores=eval_scores,
+                answer_snippet=last_answer[:500],
+                latency_ms=int((time.time() - start_time) * 1000),
+                cache_hit=cache_hit,
+                multi_query_used=False,
+            )
+        except Exception as _e:
+            print(f"[STREAM] eval/audit failed (non-fatal): {_e}")
 
 
 

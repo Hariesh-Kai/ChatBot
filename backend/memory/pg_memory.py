@@ -405,8 +405,7 @@ def get_chunks_by_ids(chunk_ids: List[str]) -> List[Dict[str, Any]]:
             "content": r["content"],
             "section": r["section"],
             "chunk_type": r.get("chunk_type", "text"),
-            "score": 1.0,  # Previous context is assumed highly relevant
-            # Metadata structure matching pipeline
+            "score": 1.0,
             "metadata": {
                 "source_file": r["source_file"],
                 "page_number": int(r["page_number"]) if r["page_number"] else 1,
@@ -417,3 +416,136 @@ def get_chunks_by_ids(chunk_ids: List[str]) -> List[Dict[str, Any]]:
         })
         
     return results
+
+
+# =========================================================
+# CONVERSATION SUMMARIZATION
+# =========================================================
+
+# Auto-create session_summaries table
+_SUMMARY_TABLE_CREATED = False
+
+def _ensure_summary_table():
+    global _SUMMARY_TABLE_CREATED
+    if _SUMMARY_TABLE_CREATED:
+        return
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS session_summaries (
+                        session_id TEXT PRIMARY KEY,
+                        summary TEXT NOT NULL,
+                        message_count INTEGER DEFAULT 0,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+        _SUMMARY_TABLE_CREATED = True
+    except Exception as e:
+        print(f"[MEMORY] session_summaries table init warning: {e}")
+
+
+# Config
+SUMMARIZE_AFTER = 20    # messages before summarizing older turns
+KEEP_VERBATIM  = 10     # most-recent messages kept as-is
+MAX_ASSISTANT_CHARS = 200
+MAX_USER_CHARS      = 100
+
+
+def _compress_messages(messages: List[Dict]) -> str:
+    """
+    Compress older messages into a short context block.
+    No LLM — pure truncation and formatting.
+    """
+    lines = ["[Earlier conversation summary]"]
+    for msg in messages:
+        role    = msg.get("role", "?")
+        content = str(msg.get("content", "")).strip()
+        if role == "user":
+            snippet = content[:MAX_USER_CHARS]
+            lines.append(f"User asked: {snippet}{'…' if len(content) > MAX_USER_CHARS else ''}")
+        elif role == "assistant":
+            snippet = content[:MAX_ASSISTANT_CHARS]
+            lines.append(f"Assistant answered: {snippet}{'…' if len(content) > MAX_ASSISTANT_CHARS else ''}")
+    return "\n".join(lines)
+
+
+def get_summarized_history(
+    session_id: str,
+    limit: int = 50,
+) -> List[Dict[str, str]]:
+    """
+    Return a history list for injection into the LLM prompt.
+
+    If total messages <= SUMMARIZE_AFTER: return all verbatim.
+    If total messages > SUMMARIZE_AFTER:
+        - Compress all but the last KEEP_VERBATIM into a summary pseudo-message
+        - Return [summary_message] + last KEEP_VERBATIM messages verbatim
+
+    Never raises — falls back to get_chat_messages() on error.
+    """
+    _ensure_summary_table()
+
+    try:
+        all_messages = get_chat_messages(session_id, limit=limit)
+
+        if len(all_messages) <= SUMMARIZE_AFTER:
+            return list(all_messages)
+
+        # Split: older (to summarize) + recent (verbatim)
+        older  = all_messages[:-KEEP_VERBATIM]
+        recent = all_messages[-KEEP_VERBATIM:]
+
+        # Check if we have a cached summary for the same message count
+        cached_summary = _get_cached_summary(session_id, len(older))
+        if not cached_summary:
+            cached_summary = _compress_messages(older)
+            _save_cached_summary(session_id, cached_summary, len(older))
+
+        # Inject compressed block as a system message at the front
+        compressed_msg = {
+            "role": "system",
+            "content": cached_summary,
+        }
+
+        return [compressed_msg] + list(recent)
+
+    except Exception as e:
+        print(f"[MEMORY] get_summarized_history failed (non-fatal): {e}")
+        return get_chat_messages(session_id, limit=limit)
+
+
+def _get_cached_summary(session_id: str, message_count: int) -> Optional[str]:
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT summary FROM session_summaries
+                    WHERE session_id = %s AND message_count = %s
+                    """,
+                    (session_id, message_count),
+                )
+                row = cur.fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _save_cached_summary(session_id: str, summary: str, message_count: int):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO session_summaries (session_id, summary, message_count)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        summary = EXCLUDED.summary,
+                        message_count = EXCLUDED.message_count,
+                        updated_at = NOW()
+                    """,
+                    (session_id, summary, message_count),
+                )
+    except Exception as e:
+        print(f"[MEMORY] _save_cached_summary failed (non-fatal): {e}")

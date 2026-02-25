@@ -32,7 +32,7 @@ from backend.llm.answer_policy import decide_answer_style, infer_answer_policy
 from backend.llm.response_policy import apply_response_policy
 from backend.contracts.ui_events import text_event
 from backend.contracts.ui_constants import UI_EVENT_PREFIX
-
+from backend.rag.grounding import check_grounding
 
 
 
@@ -302,6 +302,22 @@ def generate_answer_stream(
 
             if not yielded_anything:
                 yield "No answer could be generated from the documents."
+                return
+
+            # --- Grounding check (soft warning, non-blocking) ---
+            if context_chunks and collected:
+                full_answer = "".join(collected)
+                try:
+                    grounding = check_grounding(full_answer, context_chunks)
+                    if not grounding["is_grounded"] and grounding["grounding_score"] < 0.40:
+                        warning = (
+                            "\n\n> ⚠️ Some values in this answer could not be "
+                            "verified against the source document. "
+                            "Please cross-check with the original PDF."
+                        )
+                        yield warning
+                except Exception:
+                    pass  # grounding check must never crash the stream
             return
 
     # ========================================================
@@ -422,5 +438,19 @@ def generate_answer_stream(
         yield UI_EVENT_PREFIX + json.dumps(
             text_event("How can I help you?")
         ) + "\n"
-
         return
+
+    # --- Grounding check for lite mode (soft warning, non-blocking) ---
+    if context_chunks and collected:
+        full_answer = "".join(collected)
+        try:
+            grounding = check_grounding(full_answer, context_chunks)
+            if not grounding["is_grounded"] and grounding["grounding_score"] < 0.40:
+                warning = (
+                    "\n\n> ⚠️ Some values in this answer could not be "
+                    "verified against the source document. "
+                    "Please cross-check with the original PDF."
+                )
+                yield warning
+        except Exception:
+            pass  # grounding check must never crash the stream

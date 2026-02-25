@@ -57,6 +57,13 @@ CITATION RULES (MANDATORY):
 - If the document gives a RANGE, report the range clearly.
 - If the answer comes from a TABLE, format it as a Markdown Table.
 
+EXTRACTION RULES (MANDATORY):
+- For any numerical value, code, ID, or abbreviation: copy it VERBATIM from the document.
+- Do NOT rephrase, round, abbreviate, or expand codes or abbreviations.
+- If the document says "8000 SBTW", your answer MUST say exactly "8000 SBTW" — not a variation.
+- Prefer direct quotation over paraphrase for ALL factual claims.
+- Never reconstruct or infer a code/ID from partial context — only report what is explicitly written.
+
 SEMANTIC DISAMBIGUATION RULES:
 - Distinguish between the **Document Title** (words describing the scope, e.g., 'Basis of Design') and the **Document Number** (alphanumeric code, e.g., '363010-BGRB').
 - If asked for the Title, prefer the descriptive text.
@@ -66,6 +73,7 @@ FORBIDDEN:
 - Do NOT guess values or page numbers.
 - Do NOT use external knowledge.
 - Do NOT include meta commentary like "Based on the text...".
+- Do NOT paraphrase, abbreviate, or modify any code, ID, or numeric value from the source.
 """.strip()
 
 
@@ -112,6 +120,12 @@ INSTRUCTIONS:
 1. You will be provided with a document context and a question.
 2. FIRST, think step-by-step inside <thinking> tags. Analyze the documents, check for conflicting data, and plan your answer.
 3. SECOND, provide your final response outside the tags.
+
+EXTRACTION RULES (MANDATORY):
+- For any numerical value, code, ID, or abbreviation: copy it VERBATIM from the document.
+- Do NOT rephrase, round, abbreviate, or expand codes or abbreviations.
+- If the document says "8000 SBTW", your answer MUST say exactly "8000 SBTW" — not a variation.
+- Never reconstruct or infer a code/ID from partial context — only report what is explicitly written.
 
 RULES:
 - The user does NOT see the <thinking> section by default, so do not refer to it in your final answer.

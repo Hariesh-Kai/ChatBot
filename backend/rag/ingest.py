@@ -108,6 +108,69 @@ def load_documents(json_path: str) -> List[Document]:
 
 
 # ============================================================
+# CHUNK QUALITY SCORING (at ingest time)
+# ============================================================
+
+def score_chunk_quality(content: str) -> Dict[str, Any]:
+    """
+    Score a chunk's retrieval quality based on content characteristics.
+    Called at ingest time — result stored in metadata.
+
+    Scores 0.0–1.0 on 3 signals:
+    - Length score:   too short/long chunks are harder to retrieve well
+    - Density score:  ratio of alpha chars (avoids noise/gibberish chunks)
+    - Richness score: number of distinct meaningful words (>3 chars)
+
+    Returns: {"quality_score": float, "quality_tier": "high"|"medium"|"low"}
+    """
+    import re as _re
+
+    default = {"quality_score": 0.5, "quality_tier": "medium"}
+    if not content:
+        return default
+
+    try:
+        # 1. Length score (optimal: 200–1500 chars)
+        length = len(content)
+        if length < 50:
+            length_score = 0.1
+        elif length < 200:
+            length_score = 0.5
+        elif length <= 1500:
+            length_score = 1.0
+        elif length <= 3000:
+            length_score = 0.7
+        else:
+            length_score = 0.4
+
+        # 2. Density score (fraction of alpha chars)
+        alpha_chars = sum(1 for c in content if c.isalpha())
+        density_score = min(alpha_chars / max(length, 1), 1.0)
+
+        # 3. Richness score (distinct words > 3 chars, capped at 50)
+        words = _re.findall(r"[a-zA-Z]{4,}", content.lower())
+        distinct = len(set(words))
+        richness_score = min(distinct / 50.0, 1.0)
+
+        overall = round(
+            0.3 * length_score + 0.3 * density_score + 0.4 * richness_score, 3
+        )
+
+        if overall >= 0.70:
+            tier = "high"
+        elif overall >= 0.40:
+            tier = "medium"
+        else:
+            tier = "low"
+
+        return {"quality_score": overall, "quality_tier": tier}
+
+    except Exception as e:
+        print(f"[INGEST] score_chunk_quality error (non-fatal): {e}")
+        return default
+
+
+# ============================================================
 # INGEST DOCUMENT REVISION (NO DELETION, REVISION SAFE)
 # ============================================================
 

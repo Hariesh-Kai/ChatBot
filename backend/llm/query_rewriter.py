@@ -1,13 +1,11 @@
 # backend/llm/query_rewriter.py
 
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 #  NEW: Import Lite LLM loader to perform the correction
 from backend.llm.loader import get_llm
 from backend.llm.model_selector import resolve_model_id
-
-# ============================================================
 # QUERY REWRITER (NOW WITH SPELL CHECK)
 # ------------------------------------------------------------
 # Purpose:
@@ -180,3 +178,73 @@ def rewrite_question(
     # 4️⃣ Safe rewrite
     # --------------------------------------------------------
     return f"{question} about {base_question}"
+
+
+# ============================================================
+# MULTI-QUERY GENERATION (Rule-based, zero LLM cost)
+# ============================================================
+
+# Words to strip when building keyword-only variant
+_KW_STOPWORDS = {
+    "what", "is", "the", "are", "a", "an", "of", "in", "for",
+    "to", "and", "or", "how", "much", "many", "does", "can",
+    "which", "who", "when", "where", "why", "give", "tell",
+    "me", "please", "explain", "describe", "state", "list",
+    "find", "show", "get", "with", "on", "at", "by", "do",
+}
+
+
+def generate_multi_queries(question: str) -> List[str]:
+    """
+    Generate multiple retrieval-optimised variations of a question.
+    Rule-based — no LLM call, no latency.
+
+    Returns a deduplicated list of up to 3 query strings:
+    1. Original (cleaned)
+    2. Keyword-only  (nouns, numbers, abbreviations)
+    3. Spec-style    ("specification for <keywords>")
+
+    Usage: retrieve for all variants, then RRF-merge results.
+    """
+    if not question or not question.strip():
+        return [question]
+
+    q = question.strip()
+
+    # --- Variant 1: Original (already cleaned by caller) ---
+    variants: List[str] = [q]
+
+    # --- Variant 2: Keyword-only ---
+    # Extract tokens that are likely domain-relevant
+    tokens = re.findall(r"[a-zA-Z0-9\-\.]+", q)
+    kw_tokens = [
+        t for t in tokens
+        if t.lower() not in _KW_STOPWORDS and len(t) >= 2
+    ]
+    if kw_tokens:
+        kw_variant = " ".join(kw_tokens)
+        if kw_variant.lower() != q.lower():
+            variants.append(kw_variant)
+
+    # --- Variant 3: Spec-style ---
+    # E.g. "What is the maximum pressure?" → "specification for maximum pressure"
+    spec_tokens = [
+        t for t in kw_tokens
+        if not t.isdigit() and len(t) >= 3
+    ]
+    if spec_tokens:
+        spec_variant = "specification for " + " ".join(spec_tokens[:6])
+        if spec_variant not in variants:
+            variants.append(spec_variant)
+
+    # Deduplicate preserving order
+    seen: set = set()
+    unique: List[str] = []
+    for v in variants:
+        key = v.lower().strip()
+        if key not in seen:
+            seen.add(key)
+            unique.append(v)
+
+    return unique[:3]
+

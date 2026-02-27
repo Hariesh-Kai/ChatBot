@@ -36,7 +36,7 @@ const _KAVIN_MODELS: Record<KavinModelId, KavinModel> = {
 
   base: {
     id: "base",
-    label: "KavinBase v1.0",
+    label: "KavinBase Own v1.0",
     description: "Higher-quality local model (GPU preferred)",
     requiresGpu: true,
   },

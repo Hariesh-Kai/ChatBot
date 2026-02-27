@@ -6,7 +6,8 @@ import { MoreVertical, Pencil, Trash2, Pin } from "lucide-react";
 
 interface Props {
   chats: ChatSession[];
-  activeId: string | null; // 🔥 allow HOME state
+  activeId: string | null;
+  unreadCounts?: Record<string, number>;
   onSelect: (id: string) => void;
   onRename: (id: string) => void;
   onDelete: (id: string) => void;
@@ -17,6 +18,7 @@ interface Props {
 export default function ChatList({
   chats,
   activeId,
+  unreadCounts = {},
   onSelect,
   onRename,
   onDelete,
@@ -26,28 +28,19 @@ export default function ChatList({
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
-  /* ================= CLOSE MENU ON OUTSIDE CLICK ================= */
   useEffect(() => {
     function handleOutsideClick(e: MouseEvent) {
-      if (
-        menuRef.current &&
-        !menuRef.current.contains(e.target as Node)
-      ) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setOpenMenuId(null);
       }
     }
 
     document.addEventListener("mousedown", handleOutsideClick);
-    return () =>
-      document.removeEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, []);
 
-  /* ================= ONLY SHOW CHATS WITH MESSAGES ================= */
-  const visibleChats = chats.filter(
-    (chat) => chat.messages.length > 0
-  );
+  const visibleChats = chats.filter((chat) => chat.messages.length > 0);
 
-  /* ================= EMPTY STATE ================= */
   if (visibleChats.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-gray-500">
@@ -56,18 +49,12 @@ export default function ChatList({
     );
   }
 
-  /* ================= CHAT LIST ================= */
   return (
-    <div
-      className={`space-y-1 ${
-        disabled ? "pointer-events-none opacity-50" : ""
-      }`}
-    >
+    <div className={`space-y-1 ${disabled ? "pointer-events-none opacity-50" : ""}`}>
       {visibleChats.map((chat) => {
-        const isActive =
-          activeId !== null && chat.id === activeId;
-
+        const isActive = activeId !== null && chat.id === activeId;
         const isMenuOpen = openMenuId === chat.id;
+        const unreadCount = unreadCounts[chat.id] || 0;
 
         return (
           <div
@@ -77,24 +64,24 @@ export default function ChatList({
               rounded-md px-3 py-2 text-sm
               cursor-pointer
               transition-colors
-              ${
-                isActive
-                  ? "bg-white/10 text-white"
-                  : "text-gray-400 hover:bg-white/5"
-              }
+              ${isActive ? "bg-white/10 text-white" : "text-gray-400 hover:bg-white/5"}
             `}
             onClick={() => {
               setOpenMenuId(null);
               onSelect(chat.id);
             }}
           >
-            {/* ================= TITLE ================= */}
-            <span className="flex-1 truncate">
-              {chat.pinned && "📌 "}
-              {chat.title || "Untitled chat"}
+            <span className="flex flex-1 items-center gap-1 truncate">
+              {chat.pinned && <Pin size={12} className="shrink-0 text-yellow-300/90" />}
+              <span className="truncate">{chat.title || "Untitled chat"}</span>
             </span>
 
-            {/* ================= 3 DOTS (HOVER ONLY) ================= */}
+            {unreadCount > 0 && (
+              <span className="mr-1 inline-flex min-w-[18px] items-center justify-center rounded-full border border-emerald-500/30 bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
+                {unreadCount > 99 ? "99+" : unreadCount}
+              </span>
+            )}
+
             <button
               type="button"
               onClick={(e) => {
@@ -113,7 +100,6 @@ export default function ChatList({
               <MoreVertical size={16} />
             </button>
 
-            {/* ================= DROPDOWN MENU ================= */}
             {isMenuOpen && (
               <div
                 ref={menuRef}
@@ -161,7 +147,6 @@ export default function ChatList({
   );
 }
 
-/* ================= MENU ITEM ================= */
 function MenuItem({
   icon,
   label,
@@ -180,11 +165,7 @@ function MenuItem({
       className={`
         flex w-full items-center gap-2
         px-3 py-2 text-xs
-        ${
-          danger
-            ? "text-red-400 hover:bg-red-500/10"
-            : "text-gray-300 hover:bg-white/5"
-        }
+        ${danger ? "text-red-400 hover:bg-red-500/10" : "text-gray-300 hover:bg-white/5"}
       `}
     >
       {icon}

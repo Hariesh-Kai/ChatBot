@@ -13,25 +13,38 @@ SET PROJECT_ROOT=D:\chat-ui
 :: (IMPORTANT: If your folder is named 'text_venv', change 'venv' to 'text_venv' below)
 SET VENV_NAME=venv
 
-:: Minio Configuration
-SET MINIO_EXE=D:\minio\minio.exe
-SET MINIO_DATA=D:\chat-ui\minio-data
+:: MinIO Configuration
+SET "MINIO_EXE="
+SET "MINIO_DATA=%PROJECT_ROOT%\minio-data"
 
-:: Fallbacks for local MinIO binaries
-IF NOT EXIST "%MINIO_EXE%" IF EXIST "%PROJECT_ROOT%\minio-run\minio.exe" SET MINIO_EXE=%PROJECT_ROOT%\minio-run\minio.exe
-IF NOT EXIST "%MINIO_EXE%" IF EXIST "%PROJECT_ROOT%\minio.exe" SET MINIO_EXE=%PROJECT_ROOT%\minio.exe
+:: Preferred + fallback MinIO binary locations
+IF EXIST "D:\minio\minio.exe" SET "MINIO_EXE=D:\minio\minio.exe"
+IF NOT DEFINED MINIO_EXE IF EXIST "D:\minio.exe\minio.exe" SET "MINIO_EXE=D:\minio.exe\minio.exe"
+IF NOT DEFINED MINIO_EXE IF EXIST "%PROJECT_ROOT%\minio-run\minio.exe" SET "MINIO_EXE=%PROJECT_ROOT%\minio-run\minio.exe"
+IF NOT DEFINED MINIO_EXE IF EXIST "%PROJECT_ROOT%\minio.exe" SET "MINIO_EXE=%PROJECT_ROOT%\minio.exe"
+FOR /F "delims=" %%I IN ('where minio 2^>nul') DO (
+  IF NOT DEFINED MINIO_EXE SET "MINIO_EXE=%%I"
+)
+
+:: RabbitMQ / Celery defaults (required for Developer Dashboard to show "configured")
+IF "%CELERY_ENABLED%"=="" SET "CELERY_ENABLED=1"
+IF "%CELERY_BROKER_URL%"=="" IF NOT "%RABBITMQ_URL%"=="" SET "CELERY_BROKER_URL=%RABBITMQ_URL%"
+IF "%CELERY_BROKER_URL%"=="" SET "CELERY_BROKER_URL=amqp://guest:guest@127.0.0.1:5672//"
+IF "%RABBITMQ_URL%"=="" SET "RABBITMQ_URL=%CELERY_BROKER_URL%"
+IF "%CELERY_RESULT_BACKEND%"=="" SET "CELERY_RESULT_BACKEND=rpc://"
+IF "%CELERY_OUTBOX_ENABLED%"=="" SET "CELERY_OUTBOX_ENABLED=1"
 
 :: ====================================================
 :: 2. STARTUP SEQUENCE
 :: ====================================================
 
 echo.
-echo [1/3] Launching Minio Server...
+echo [1/5] Launching Minio Server...
 IF EXIST "%MINIO_EXE%" (
   IF NOT EXIST "%MINIO_DATA%" mkdir "%MINIO_DATA%"
   start "Kavin Minio" cmd /k "%MINIO_EXE% server %MINIO_DATA% --console-address :9001"
 ) ELSE (
-  echo [WARN] Minio executable not found at "%MINIO_EXE%". Continuing without Minio.
+  echo [WARN] MinIO executable not found. Checked: D:\minio\minio.exe, D:\minio.exe\minio.exe, %PROJECT_ROOT%\minio-run\minio.exe, %PROJECT_ROOT%\minio.exe, PATH
 )
 
 echo [2/5] Launching Backend (Uvicorn)...
@@ -58,7 +71,7 @@ timeout /t 5 /nobreak >nul
 
 echo Opening Browser Tabs...
 start http://localhost:3000
-start http://localhost:9001
+IF EXIST "%MINIO_EXE%" start http://localhost:9001
 start http://localhost:8000/docs
 
 :: ====================================================
@@ -71,7 +84,8 @@ echo   KAVIN AI IS RUNNING
 echo ========================================================
 echo.
 echo   [Status]
-echo   - Minio:   Running on Port 9000/9001
+echo   - Minio:   Starts when MinIO binary is found
+echo   - RabbitMQ Broker: %CELERY_BROKER_URL%
 echo   - Backend: Running on Port 8000
 echo   - Celery Worker: Running (RabbitMQ queue consumer)
 echo   - Celery Beat: Running (scheduled outbox retries)

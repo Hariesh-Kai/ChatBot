@@ -2,7 +2,7 @@
 
 import { useState, useRef } from "react";
 import PromptCard from "./chat/PromptCard";
-import { Send } from "lucide-react";
+import { Send, LayoutDashboard, BellRing, MessageSquareText, FileText, Sparkles } from "lucide-react";
 import PdfUploadButton from "./upload/PdfUploadButton";
 import { UploadStatus } from "@/app/hooks/useSmartUpload";
 
@@ -10,10 +10,13 @@ interface Props {
   onSend: (text?: string) => void;
   disabled?: boolean;
   sessionId: string | null;
+  userLabel?: string;
+  userRole?: string;
+  totalChats?: number;
+  unreadNotifications?: number;
   onUploadStart?: (file: File) => void;
   onUploadSuccess?: (result: any) => void;
   onUploadError?: (error: string) => void;
-  //  NEW: Receive progress callback
   onUploadProgress?: (status: UploadStatus, percent: number, label: string) => void;
 }
 
@@ -21,10 +24,14 @@ export default function EmptyState({
   onSend,
   disabled = false,
   sessionId,
+  userLabel,
+  userRole,
+  totalChats = 0,
+  unreadNotifications = 0,
   onUploadStart,
   onUploadSuccess,
   onUploadError,
-  onUploadProgress, //  Destructure
+  onUploadProgress,
 }: Props) {
   const [value, setValue] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -40,22 +47,46 @@ export default function EmptyState({
 
   return (
     <div className="flex h-full w-full items-center justify-center">
-      <div className="w-full max-w-2xl px-4 text-center animate-fade-in">
+      <div className="w-full max-w-3xl px-4 text-center animate-fade-in">
+        <div className="mb-6 rounded-2xl border border-white/10 bg-[radial-gradient(circle_at_top_right,#1f2937_0%,#0f172a_35%,#0a0a0a_100%)] p-4 text-left shadow-lg">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-sky-300">User Dashboard</div>
+              <h2 className="mt-1 text-lg font-semibold text-white">
+                Welcome to KavinBase, {userLabel || "User"}
+              </h2>
+              <p className="mt-1 text-xs text-gray-300">
+                Role: {(userRole || "user").toUpperCase()} - start a conversation or upload a project PDF.
+              </p>
+            </div>
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-sky-400/30 bg-sky-500/10 text-sky-300">
+              <LayoutDashboard size={18} />
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <DashboardStat icon={MessageSquareText} label="Chats" value={String(totalChats)} />
+            <DashboardStat icon={BellRing} label="Unread" value={String(unreadNotifications)} />
+            <DashboardStat icon={FileText} label="PDF" value="Ready" />
+            <DashboardStat icon={Sparkles} label="Assistant" value="Online" />
+          </div>
+        </div>
+
         <h1 className="text-2xl font-semibold text-white">How can I help you today?</h1>
         <p className="mt-2 text-sm text-gray-400">Ask a question or upload a PDF to get started</p>
 
         <div className="mt-8">
-          <div className={`flex items-end gap-3 rounded-xl px-3 py-3 border border-white/10 bg-[#1a1a1a] shadow-md transition ${disabled ? "opacity-60" : ""}`}>
+          <div className={`flex items-end gap-3 rounded-xl border border-white/10 bg-[#1a1a1a] px-3 py-3 shadow-md transition ${disabled ? "opacity-60" : ""}`}>
             <div className="pb-1">
-                <PdfUploadButton 
-                    sessionId={sessionId}
-                    iconOnly={true}
-                    disabled={disabled}
-                    onUploadStart={onUploadStart}
-                    onUploadSuccess={onUploadSuccess}
-                    onUploadError={onUploadError}
-                    onUploadProgress={onUploadProgress} //  Pass it down
-                />
+              <PdfUploadButton
+                sessionId={sessionId}
+                iconOnly={true}
+                disabled={disabled}
+                onUploadStart={onUploadStart}
+                onUploadSuccess={onUploadSuccess}
+                onUploadError={onUploadError}
+                onUploadProgress={onUploadProgress}
+              />
             </div>
 
             <input
@@ -63,30 +94,76 @@ export default function EmptyState({
               value={value}
               disabled={disabled}
               onChange={(e) => setValue(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && canSend) handleSubmit(); }}
-              placeholder={disabled ? "AI is responding…" : "Ask anything…"}
-              className="flex-1 bg-transparent text-sm text-white placeholder:text-gray-500 outline-none py-3"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && canSend) handleSubmit();
+              }}
+              placeholder={disabled ? "AI is responding..." : "Ask anything..."}
+              className="flex-1 bg-transparent py-3 text-sm text-white outline-none placeholder:text-gray-500"
             />
 
             <div className="pb-1">
-                <button
+              <button
                 onClick={() => canSend && handleSubmit()}
                 disabled={!canSend}
-                className={`flex h-9 w-9 items-center justify-center rounded-lg transition ${canSend ? "bg-white text-black hover:bg-gray-200" : "bg-white/10 text-gray-500 cursor-not-allowed"}`}
-                >
+                className={`flex h-9 w-9 items-center justify-center rounded-lg transition ${
+                  canSend
+                    ? "bg-white text-black hover:bg-gray-200"
+                    : "cursor-not-allowed bg-white/10 text-gray-500"
+                }`}
+              >
                 <Send size={16} />
-                </button>
+              </button>
             </div>
           </div>
         </div>
 
         <div className="mt-8 grid w-full grid-cols-1 gap-4 sm:grid-cols-2">
-          <PromptCard title="Summarize a PDF" description="Upload a document and get a concise summary" onClick={() => handleSubmit("Summarize this PDF")} disabled={disabled} />
-          <PromptCard title="Ask about requirements" description="Clarify design specs, scope, or constraints" onClick={() => handleSubmit("What are the requirements for this?")} disabled={disabled} />
-          <PromptCard title="Extract key points" description="Pull tables, bullets, or highlights" onClick={() => handleSubmit("Extract the key points from this")} disabled={disabled} />
-          <PromptCard title="Explain technical sections" description="Understand complex engineering content" onClick={() => handleSubmit("Explain the technical sections")} disabled={disabled} />
+          <PromptCard
+            title="Summarize a PDF"
+            description="Upload a document and get a concise summary"
+            onClick={() => handleSubmit("Summarize this PDF")}
+            disabled={disabled}
+          />
+          <PromptCard
+            title="Ask about requirements"
+            description="Clarify design specs, scope, or constraints"
+            onClick={() => handleSubmit("What are the requirements for this?")}
+            disabled={disabled}
+          />
+          <PromptCard
+            title="Extract key points"
+            description="Pull tables, bullets, or highlights"
+            onClick={() => handleSubmit("Extract the key points from this")}
+            disabled={disabled}
+          />
+          <PromptCard
+            title="Explain technical sections"
+            description="Understand complex engineering content"
+            onClick={() => handleSubmit("Explain the technical sections")}
+            disabled={disabled}
+          />
         </div>
       </div>
+    </div>
+  );
+}
+
+function DashboardStat({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: React.ComponentType<{ size?: number; className?: string }>;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-black/30 px-3 py-2">
+      <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-gray-400">
+        <Icon size={12} className="text-sky-300" />
+        <span>{label}</span>
+      </div>
+      <div className="mt-1 text-sm font-semibold text-white">{value}</div>
     </div>
   );
 }

@@ -116,6 +116,9 @@ interface ChatWindowProps {
   model: KavinModelId;
   sessionId: string | null;
   userLabel?: string;
+  userRole?: string;
+  totalChats?: number;
+  unreadNotifications?: number;
   devSettings?: any;
   title?: string;
   ingestionPollingActive?: boolean;
@@ -155,6 +158,9 @@ export default function ChatWindow({
   model,
   sessionId,
   userLabel,
+  userRole,
+  totalChats = 0,
+  unreadNotifications = 0,
   devSettings,
   uploadPipeline,
   title = "New Chat",
@@ -212,7 +218,7 @@ export default function ChatWindow({
   const jobFinishedRef = useRef(false);
   const externalMetadataSeenJobIdRef = useRef<string | null>(null);
   const lastModelRef = useRef<KavinModelId>(model);
-  const modelLabel = useMemo(() => SAFE_MODELS.find((m) => m.id === model)?.label ?? "KavinBase v1.0", [model]);
+  const modelLabel = useMemo(() => SAFE_MODELS.find((m) => m.id === model)?.label ?? "KavinBase Own v1.0", [model]);
   const lastMessageContent = messages[messages.length - 1]?.content;
 
 
@@ -858,6 +864,10 @@ useEffect(() => {
                   disabled={isUIBlocked}
                   onSend={handleSend}
                   sessionId={sessionId}
+                  userLabel={userLabel}
+                  userRole={userRole}
+                  totalChats={totalChats}
+                  unreadNotifications={unreadNotifications}
                   onUploadStart={onUploadStart}
                   onUploadProgress={onUploadProgress}
                   onUploadSuccess={onUploadSuccess}

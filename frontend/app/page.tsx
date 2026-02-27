@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Sidebar from "@/app/components/sidebar/Sidebar";
 import ChatWindow from "@/app/components/chat/ChatWindow";
+import EnterpriseMessagingWorkspace from "@/app/components/messaging/EnterpriseMessagingWorkspace";
 import StartupSplash from "@/app/components/StartupSplash";
 import GettingStartedModal from "@/app/components/onboarding/GettingStartedModal";
 import ShortcutsModal from "@/app/components/onboarding/ShortcutsModal";
@@ -13,6 +14,14 @@ import { KavinModelId } from "@/app/lib/kavin-models";
 import { loadChats, saveChats } from "@/app/lib/chat-store";
 import { authLogout, authMe, updateMetadata } from "@/app/lib/api";
 import type { AuthUser, UploadIngestionStatusResponse } from "@/app/lib/api";
+import {
+  getTeamMemberId,
+  getTotalTeamUnreadCount,
+  loadTeamWorkspace,
+  saveTeamWorkspace,
+  type TeamWorkspaceState,
+  type WorkspaceMode,
+} from "@/app/lib/enterprise-messaging";
 import { MetadataRequestField } from "@/app/lib/llm-ui-events";
 import { UploadStatus } from "@/app/hooks/useSmartUpload";
 import {
@@ -40,6 +49,23 @@ const DOC_PROCESSING_BACKGROUND_TEXT =
 const DOC_READY_TEXT =
   "Document is ready. Answers now include this document automatically.";
 const DOC_ERROR_TEXT_PREFIX = "Document processing failed in background";
+const CHAT_READ_KEY_PREFIX = "kavin-chat-read-at";
+const WELCOME_SEEN_KEY_PREFIX = "kavin-welcome-seen";
+const WORKSPACE_MODE_KEY_PREFIX = "kavin-workspace-mode";
+
+function getIncomingMessageTimestamp(chat: ChatSession): number {
+  return chat.messages.reduce((latest, msg) => {
+    if (msg.role === "user") return latest;
+    return Math.max(latest, msg.createdAt || 0);
+  }, 0);
+}
+
+function getIncomingMessageCountSince(chat: ChatSession, sinceTs: number): number {
+  return chat.messages.reduce((count, msg) => {
+    if (msg.role === "user") return count;
+    return msg.createdAt > sinceTs ? count + 1 : count;
+  }, 0);
+}
 
 
 
@@ -51,6 +77,7 @@ export default function Home() {
   const router = useRouter();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [welcomeGateResolved, setWelcomeGateResolved] = useState(false);
 
   useEffect(() => {
     authMe()
@@ -63,6 +90,33 @@ export default function Home() {
       })
       .finally(() => setAuthChecked(true));
   }, [router]);
+
+  useEffect(() => {
+    if (!authChecked) return;
+
+    if (!user) {
+      setWelcomeGateResolved(true);
+      return;
+    }
+
+    if (typeof window === "undefined") {
+      setWelcomeGateResolved(true);
+      return;
+    }
+
+    const key = `${WELCOME_SEEN_KEY_PREFIX}:${(user.username || user.email || "default")
+      .trim()
+      .toLowerCase()}`;
+    const hasSeenWelcome = Boolean(window.localStorage.getItem(key));
+
+    if (!hasSeenWelcome) {
+      window.localStorage.setItem(key, new Date().toISOString());
+      router.replace("/welcome");
+      return;
+    }
+
+    setWelcomeGateResolved(true);
+  }, [authChecked, user, router]);
 
   const handleSignOut = useCallback(async () => {
     try {
@@ -89,6 +143,14 @@ export default function Home() {
     );
   }
 
+  if (!welcomeGateResolved) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-black text-gray-400">
+        Redirecting to dashboard...
+      </div>
+    );
+  }
+
   return <AuthedHome user={user} onSignOut={handleSignOut} />;
 }
 
@@ -109,7 +171,26 @@ function AuthedHome({
   const [chats, setChats] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("ai");
+  const [teamWorkspace, setTeamWorkspace] = useState<TeamWorkspaceState | null>(null);
   const [devSettings, setDevSettings] = useState<any>(null);
+  const readStateKey = useMemo(
+    () =>
+      `${CHAT_READ_KEY_PREFIX}:${(user.username || user.email || "default")
+        .trim()
+        .toLowerCase()}`,
+    [user.email, user.username]
+  );
+  const workspaceModeKey = useMemo(
+    () =>
+      `${WORKSPACE_MODE_KEY_PREFIX}:${(user.username || user.email || "default")
+        .trim()
+        .toLowerCase()}`,
+    [user.email, user.username]
+  );
+  const teamMemberId = useMemo(() => getTeamMemberId(user), [user]);
+  const [chatReadAt, setChatReadAt] = useState<Record<string, number>>({});
+  const [readStateLoaded, setReadStateLoaded] = useState(false);
 
   const [sidebarMetadataRequest, setSidebarMetadataRequest] = useState<{
     jobId: string;
@@ -190,6 +271,74 @@ function AuthedHome({
   }, [chats]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem(workspaceModeKey);
+    setWorkspaceMode(raw === "team" ? "team" : "ai");
+  }, [workspaceModeKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(workspaceModeKey, workspaceMode);
+  }, [workspaceMode, workspaceModeKey]);
+
+  useEffect(() => {
+    setTeamWorkspace(loadTeamWorkspace(user));
+  }, [user]);
+
+  useEffect(() => {
+    if (!teamWorkspace) return;
+    saveTeamWorkspace(user, teamWorkspace);
+  }, [teamWorkspace, user]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setReadStateLoaded(false);
+    try {
+      const raw = window.localStorage.getItem(readStateKey);
+      const parsed = raw ? JSON.parse(raw) : {};
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        setChatReadAt(parsed as Record<string, number>);
+      } else {
+        setChatReadAt({});
+      }
+    } catch {
+      setChatReadAt({});
+    } finally {
+      setReadStateLoaded(true);
+    }
+  }, [readStateKey]);
+
+  useEffect(() => {
+    if (!readStateLoaded || typeof window === "undefined") return;
+    window.localStorage.setItem(readStateKey, JSON.stringify(chatReadAt));
+  }, [chatReadAt, readStateKey, readStateLoaded]);
+
+  useEffect(() => {
+    if (!readStateLoaded) return;
+    setChatReadAt((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      const chatIdSet = new Set(chats.map((chat) => chat.id));
+
+      for (const chat of chats) {
+        if (typeof next[chat.id] !== "number") {
+          next[chat.id] = getIncomingMessageTimestamp(chat);
+          changed = true;
+        }
+      }
+
+      for (const chatId of Object.keys(next)) {
+        if (!chatIdSet.has(chatId)) {
+          delete next[chatId];
+          changed = true;
+        }
+      }
+
+      return changed ? next : prev;
+    });
+  }, [chats, readStateLoaded]);
+
+  useEffect(() => {
     const chatIds = new Set(chats.map((c) => c.id));
     setPendingIngestion((prev) => {
       const next = prev.filter((entry) => chatIds.has(entry.chatId));
@@ -232,6 +381,42 @@ function AuthedHome({
   /* ================= DERIVED ================= */
 
   const activeChat = chats.find((c) => c.id === activeId);
+  useEffect(() => {
+    if (!readStateLoaded || !activeChat) return;
+    const latestIncoming = getIncomingMessageTimestamp(activeChat);
+    setChatReadAt((prev) => {
+      if ((prev[activeChat.id] || 0) >= latestIncoming) return prev;
+      return { ...prev, [activeChat.id]: latestIncoming };
+    });
+  }, [activeChat, readStateLoaded]);
+
+  const unreadCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const chat of chats) {
+      const since = chatReadAt[chat.id] || 0;
+      const unread = getIncomingMessageCountSince(chat, since);
+      if (unread > 0) counts[chat.id] = unread;
+    }
+    return counts;
+  }, [chats, chatReadAt]);
+
+  const totalUnread = useMemo(
+    () => Object.values(unreadCounts).reduce((sum, value) => sum + value, 0),
+    [unreadCounts]
+  );
+  const teamUnreadTotal = useMemo(
+    () =>
+      teamWorkspace
+        ? getTotalTeamUnreadCount(teamWorkspace, teamMemberId)
+        : 0,
+    [teamMemberId, teamWorkspace]
+  );
+
+  const visibleChatCount = useMemo(
+    () => chats.filter((chat) => chat.messages.length > 0).length,
+    [chats]
+  );
+
   const activeChatPendingIngestionCount = useMemo(() => {
     if (!activeId) return 0;
     return pendingIngestion.reduce(
@@ -277,13 +462,17 @@ function AuthedHome({
 
       if (meta && key === "k") {
         e.preventDefault();
-        chatInputRef.current?.focus();
+        if (workspaceMode === "ai") {
+          chatInputRef.current?.focus();
+        }
         return;
       }
 
       if (meta && e.shiftKey && key === "n") {
         e.preventDefault();
-        createNewChat();
+        if (workspaceMode === "ai") {
+          createNewChat();
+        }
         return;
       }
 
@@ -295,7 +484,9 @@ function AuthedHome({
 
       if (meta && e.shiftKey && key === "u") {
         e.preventDefault();
-        triggerUpload();
+        if (workspaceMode === "ai") {
+          triggerUpload();
+        }
         return;
       }
 
@@ -317,6 +508,7 @@ function AuthedHome({
   }, [
     createNewChat,
     triggerUpload,
+    workspaceMode,
     showShortcuts,
     showGettingStarted,
     closeGettingStarted,
@@ -941,7 +1133,12 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
         activeId={activeId}
         sessionId={activeId}
         user={user}
+        workspaceMode={workspaceMode}
+        teamUnreadTotal={teamUnreadTotal}
+        unreadCounts={unreadCounts}
+        totalUnread={totalUnread}
         onSignOut={onSignOut}
+        onWorkspaceModeChange={setWorkspaceMode}
         onSelect={setActiveId}
         onNew={createNewChat}
         onRename={handleRenameChat}
@@ -962,38 +1159,51 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
           sidebarOpen ? "md:ml-72" : "md:ml-14"
         }`}
       >
-        {activeChat ? (
-          <ChatWindow
-            messages={activeChat.messages}
-            onUpdateMessages={updateMessages}
-            model={activeChat.model}
-            sessionId={activeChat.id}
-            userLabel={user.username}
-            devSettings={devSettings}
-            onModelChange={(m) => handleModelChange(activeChat.id, m)}
-            ingestionPollingActive={activeChatPendingIngestionCount > 0}
-            ingestionPollingCount={activeChatPendingIngestionCount}
-            uploadPipeline={uploadPipeline} 
-            onRenameSession={(t) => handleRenameChat(activeChat.id, t)}
-            onUploadStart={handleSidebarUploadStart}
-            onUploadProgress={handleSidebarUploadProgress}
-            onUploadSuccess={handleSidebarUploadSuccess}
-            onUploadError={handleSidebarUploadError}
-            externalMetadataRequest={sidebarMetadataRequest}
-            metadataActive={!!sidebarMetadataRequest} 
-            onExternalMetadataSubmit={handleExternalMetadataSubmit}
-            inputRefExternal={chatInputRef}
-
-
+        {workspaceMode === "ai" ? (
+          activeChat ? (
+            <ChatWindow
+              messages={activeChat.messages}
+              onUpdateMessages={updateMessages}
+              model={activeChat.model}
+              sessionId={activeChat.id}
+              userLabel={user.username}
+              userRole={user.role}
+              totalChats={visibleChatCount}
+              unreadNotifications={totalUnread}
+              devSettings={devSettings}
+              onModelChange={(m) => handleModelChange(activeChat.id, m)}
+              ingestionPollingActive={activeChatPendingIngestionCount > 0}
+              ingestionPollingCount={activeChatPendingIngestionCount}
+              uploadPipeline={uploadPipeline}
+              onRenameSession={(t) => handleRenameChat(activeChat.id, t)}
+              onUploadStart={handleSidebarUploadStart}
+              onUploadProgress={handleSidebarUploadProgress}
+              onUploadSuccess={handleSidebarUploadSuccess}
+              onUploadError={handleSidebarUploadError}
+              externalMetadataRequest={sidebarMetadataRequest}
+              metadataActive={!!sidebarMetadataRequest}
+              onExternalMetadataSubmit={handleExternalMetadataSubmit}
+              inputRefExternal={chatInputRef}
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center text-gray-500">
+              <button
+                onClick={createNewChat}
+                className="underline hover:text-white"
+              >
+                Create a new chat
+              </button>
+            </div>
+          )
+        ) : teamWorkspace ? (
+          <EnterpriseMessagingWorkspace
+            user={user}
+            workspace={teamWorkspace}
+            onChange={setTeamWorkspace}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-gray-500">
-            <button
-              onClick={createNewChat}
-              className="underline hover:text-white"
-            >
-              Create a new chat
-            </button>
+            Loading team workspace...
           </div>
         )}
       </main>

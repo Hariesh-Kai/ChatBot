@@ -5,44 +5,52 @@ interface BrandProps {
 }
 
 export default function Brand({ iconOnly = false }: BrandProps) {
+  const logoSize = iconOnly ? 32 : 32;
   return (
-    <div
-      className="
-        group relative flex items-center gap-3 px-4 py-3
-        cursor-pointer
-      "
-    >
+    <div className={`group relative flex items-center ${iconOnly ? "" : "cursor-pointer gap-3 px-4 py-3"}`}>
       {/* Logo wrapper */}
       <div
-        className="
+        className={`
           relative
           transition-transform duration-300 ease-out
-          group-hover:scale-105
-        "
+          ${iconOnly ? "group-hover:scale-[1.03]" : "group-hover:scale-105"}
+          ${
+            iconOnly
+              ? "flex h-9 w-9 items-center justify-center"
+              : ""
+          }
+        `}
       >
         {/* Glow layer */}
-        <div
-          className="
-            absolute inset-0 rounded-full
-            opacity-0 group-hover:opacity-100
-            transition-opacity duration-300
-            blur-md
-            bg-white/40
-          "
-        />
+        {!iconOnly && (
+          <div
+            className="
+              absolute inset-0 rounded-full
+              opacity-0 group-hover:opacity-100
+              transition-opacity duration-300
+              blur-md
+              bg-white/40
+            "
+          />
+        )}
 
         {/* Logo */}
         <Image
           src="/kavin-logo.svg"
           alt="KAVIN"
-          width={26}
-          height={26}
-          className="
+          width={logoSize}
+          height={logoSize}
+          className={`
             relative z-10
-            opacity-90
+            object-contain
             transition-opacity duration-300
             group-hover:opacity-100
-          "
+            ${
+              iconOnly
+                ? "h-8 w-8 opacity-100"
+                : "opacity-90"
+            }
+          `}
         />
       </div>
 

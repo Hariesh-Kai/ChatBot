@@ -4,7 +4,8 @@ import os
 import json
 import uuid
 import time
-from typing import List, Literal, Generator, Dict, Optional
+import re
+from typing import List, Literal, Generator, Dict, Optional, Any
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
@@ -168,6 +169,16 @@ _SMALLTALK_MAP = {
     "how's it going": "All good here. How can I help?",
 }
 
+_ANSWER_SOURCE_STOPWORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "there", "their", "then",
+    "when", "where", "while", "what", "which", "into", "about", "after", "before",
+    "over", "under", "between", "your", "you", "they", "them", "its", "our", "are",
+    "was", "were", "has", "have", "had", "will", "shall", "can", "could", "would",
+    "should", "may", "might", "must", "not", "only", "also", "than", "such", "each",
+    "using", "used", "use", "per", "via", "all", "any", "out", "off", "new", "old",
+    "one", "two", "three", "how", "why", "who",
+}
+
 
 # ============================================================
 # QUERY ROUTING (Phase 3)
@@ -223,11 +234,129 @@ def _static_smalltalk_reply(text: str, intent: Optional[str] = None) -> Optional
     return None
 
 
+def _extract_answer_terms(answer: str) -> List[str]:
+    text = (answer or "").strip().lower()
+    if not text:
+        return []
+
+    raw_terms = re.findall(r"[a-z0-9][a-z0-9._\\-/]{2,}", text)
+    terms: List[str] = []
+    seen: set[str] = set()
+
+    for token in raw_terms:
+        clean = token.strip(".,:;()[]{}\"'`")
+        if not clean or clean in seen:
+            continue
+        if clean in _ANSWER_SOURCE_STOPWORDS:
+            continue
+        seen.add(clean)
+        terms.append(clean)
+
+    numeric_terms = re.findall(r"\b\d[\d,\.]*\b", text)
+    for token in numeric_terms:
+        clean = token.replace(",", "").strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            terms.append(clean)
+
+    return terms
+
+
+def _select_answer_supporting_chunks(
+    answer: str,
+    rag_chunks: List[Dict[str, Any]],
+    *,
+    max_chunks: int = 8,
+) -> List[Dict[str, Any]]:
+    if not rag_chunks:
+        return []
+
+    terms = _extract_answer_terms(answer)
+    if not terms:
+        return rag_chunks[: min(3, len(rag_chunks))]
+
+    scored: List[tuple[int, int, float, int, Dict[str, Any]]] = []
+    for idx, chunk in enumerate(rag_chunks):
+        content = str(chunk.get("content") or "").lower()
+        if not content:
+            continue
+
+        hit_count = 0
+        weighted_hits = 0
+        for term in terms:
+            if term in content:
+                hit_count += 1
+                weighted_hits += 2 if any(ch.isdigit() for ch in term) else 1
+
+        if hit_count == 0:
+            continue
+
+        retrieval_score = float(chunk.get("score") or 0.0)
+        scored.append((weighted_hits, hit_count, retrieval_score, -idx, chunk))
+
+    if not scored:
+        return rag_chunks[: min(3, len(rag_chunks))]
+
+    scored.sort(reverse=True)
+
+    selected: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for _, _, _, _, chunk in scored:
+        chunk_id = str(chunk.get("id") or "").strip()
+        if chunk_id and chunk_id in seen_ids:
+            continue
+        if chunk_id:
+            seen_ids.add(chunk_id)
+        selected.append(chunk)
+        if len(selected) >= max_chunks:
+            break
+
+    return selected
+
+
+def _build_sources_from_chunks(
+    chunks: List[Dict[str, Any]],
+    *,
+    company_document_id: str,
+    revision_number: int,
+) -> List[Dict[str, Any]]:
+    sources: List[Dict[str, Any]] = []
+    seen_pages: set[tuple[str, int, str, int]] = set()
+
+    for chunk in chunks:
+        meta = chunk.get("metadata", {}) or {}
+        file_name = str(meta.get("source_file") or "Unknown")
+        try:
+            page_number = int(meta.get("page_number") or 1)
+        except Exception:
+            page_number = 1
+
+        page_key = (file_name, page_number, company_document_id, int(revision_number))
+        if page_key in seen_pages:
+            continue
+        seen_pages.add(page_key)
+
+        sources.append(
+            {
+                "id": chunk.get("id"),
+                "fileName": file_name,
+                "page": page_number,
+                "bbox": meta.get("bbox", ""),
+                "chunk_type": chunk.get("chunk_type"),
+                "section": chunk.get("section"),
+                "company_document_id": company_document_id,
+                "revision_number": int(revision_number),
+            }
+        )
+
+    return sources
+
+
 def safe_stream_response(
     token_stream: Generator[str, None, None],
     session_id: str,
     original_question: str,
-) -> Generator[str, None, None]:
+) -> Generator[str, None, str]:
 
     collected: List[str] = []
     saw_error_event = False
@@ -236,7 +365,7 @@ def safe_stream_response(
         for chunk in token_stream:
             if is_aborted(session_id):
                 yield emit_event(error_event("Generation aborted"))
-                return
+                return ""
 
             if not chunk:
                 continue
@@ -267,21 +396,23 @@ def safe_stream_response(
     except Exception:
         signal_abort(session_id)
         yield emit_event(error_event("Generation failed"))
-        return
+        return ""
 
     final_answer = "".join(collected).strip()
 
     if not final_answer:
         if saw_error_event:
-            return
+            return ""
         yield emit_event(system_message_event("Model produced no output"))
-        return
+        return ""
 
     try:
         append_chat_message(session_id, "user", original_question)
         append_chat_message(session_id, "assistant", final_answer)
     except Exception:
         pass
+
+    return final_answer
 
 
 
@@ -600,22 +731,6 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
 
     did_retrieve = bool(rag_chunks) and not rag_disabled
 
-    rag_sources = []
-    for c in rag_chunks:
-        meta = c.get("metadata", {})
-        rag_sources.append({
-            "id": c["id"],
-            "fileName": meta.get("source_file", "Unknown"),
-            "page": meta.get("page_number", 1),
-            "bbox": meta.get("bbox", ""),
-            "chunk_type": c.get("chunk_type"),
-            "section": c.get("section"),
-            "company_document_id": company_document_id,
-            "revision_number": int(revision_number),
-        })
-
-    add_used_chunk_ids(session_id, [c["id"] for c in rag_chunks])
-
     confidence_payload = compute_confidence(
         rag_chunks=rag_chunks,
         similarity_scores=[c.get("score", SQL_BASE_SCORE) for c in rag_chunks],
@@ -716,7 +831,7 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
             full_history = get_recent_user_messages(session_id)
         combined_history = few_shot_hist + list(full_history)
 
-        yield from safe_stream_response(
+        final_answer = yield from safe_stream_response(
             generate_answer_stream(
                 question=rewritten,
                 model_id=model_id,
@@ -728,6 +843,32 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
             session_id,
             original_question,
         )
+
+        answer_supported_chunks = _select_answer_supporting_chunks(
+            final_answer,
+            rag_chunks,
+        )
+        if not answer_supported_chunks:
+            answer_supported_chunks = rag_chunks
+
+        try:
+            resolved_revision_number = int(revision_number)
+        except Exception:
+            resolved_revision_number = 1
+
+        rag_sources = _build_sources_from_chunks(
+            answer_supported_chunks,
+            company_document_id=company_document_id,
+            revision_number=resolved_revision_number,
+        )
+
+        try:
+            add_used_chunk_ids(
+                session_id,
+                [c["id"] for c in answer_supported_chunks if c.get("id")],
+            )
+        except Exception:
+            pass
 
         if emit_answer_confidence:
             yield emit_event(answer_confidence_event(
@@ -759,7 +900,7 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
             eval_scores = evaluate_answer(
                 question=rewritten,
                 answer=last_answer,
-                rag_chunks=rag_chunks,
+                rag_chunks=answer_supported_chunks or rag_chunks,
             )
 
             # Emit eval quality as a UI event (optional — only if high/low)
@@ -778,7 +919,7 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                 question=original_question,
                 rewritten_question=rewritten,
                 intent=intent,
-                chunk_ids=[c["id"] for c in rag_chunks],
+                chunk_ids=[c["id"] for c in (answer_supported_chunks or rag_chunks)],
                 grounding_score=None,
                 eval_scores=eval_scores,
                 answer_snippet=last_answer[:500],

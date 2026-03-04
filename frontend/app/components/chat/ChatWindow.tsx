@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useMemo, useCallback, type RefObject } from "react";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
-import EmptyState from "../EmptyState";
+import EmptyState, { type EmptyPrompt } from "../EmptyState";
 import InlineMetadataPrompt from "./InlineMetadataPrompt";
 import SourceViewerModal from "./SourceViewerModal";
 import ChatHeader from "./ChatHeader";
@@ -145,6 +145,27 @@ interface ChatWindowProps {
   jobId: string,
   fields: MetadataRequestField[]
 ) => Promise<void> | void;
+  streamChatOverride?: (
+    payload: { session_id: string; question: string; mode: KavinModelId },
+    signal?: AbortSignal
+  ) => Promise<ReadableStream<Uint8Array>>;
+  showUpload?: boolean;
+  showSources?: boolean;
+  lockModelSelector?: boolean;
+  lockedModelLabel?: string;
+  disableMetadataWorkflow?: boolean;
+  emptyStateConfig?: {
+    dashboardTitle?: string;
+    dashboardSubtitle?: string;
+    heroTitle?: string;
+    heroSubtitle?: string;
+    prompts?: EmptyPrompt[];
+    showPmlEntryCard?: boolean;
+    showSummaryCard?: boolean;
+  };
+  inputPlaceholderText?: string;
+  disclaimerText?: string;
+  generateTitleOverride?: (question: string) => Promise<string>;
 }
 
 type FinalizeOptions = {
@@ -175,6 +196,16 @@ export default function ChatWindow({
   inputRefExternal,
   externalMetadataRequest,
   onExternalMetadataSubmit,
+  streamChatOverride,
+  showUpload = true,
+  showSources = true,
+  lockModelSelector = false,
+  lockedModelLabel,
+  disableMetadataWorkflow = false,
+  emptyStateConfig,
+  inputPlaceholderText,
+  disclaimerText = "KavinBase can make mistakes. Verify important information.",
+  generateTitleOverride,
 }: ChatWindowProps) {
   
   // --- UI State ---
@@ -264,6 +295,7 @@ export default function ChatWindow({
 
   // Handle external metadata requests (from Sidebar)
   useEffect(() => {
+    if (disableMetadataWorkflow) return;
     if (!externalMetadataRequest) return;
     if (inlineMetadataFields) return;
 
@@ -275,13 +307,14 @@ export default function ChatWindow({
     setPendingJobId(externalMetadataRequest.jobId);
     setInlineMetadataFields(externalMetadataRequest.fields);
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
-  }, [externalMetadataRequest, inlineMetadataFields]);
+  }, [externalMetadataRequest, inlineMetadataFields, disableMetadataWorkflow]);
 
   // ----------------------------------------------------------------------
   // 2. INLINE METADATA SUBMISSION
   // ----------------------------------------------------------------------
 
 async function handleInlineMetadataSubmit(values: Record<string, string>) {
+  if (disableMetadataWorkflow) return;
   if (!pendingJobId || !inlineMetadataFields) {
     console.error("Missing jobId or metadata fields", {
       pendingJobId,
@@ -412,14 +445,16 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
     const pendingTitle = pendingTitleRef.current;
     if (pendingTitle && onRenameSession && title === "New Chat") {
       pendingTitleRef.current = null;
-      generateChatTitle(pendingTitle).then((t) => onRenameSession(t));
+      const titleFn = generateTitleOverride ?? generateChatTitle;
+      titleFn(pendingTitle).then((t) => onRenameSession(t));
     } else if (pendingTitle) {
       pendingTitleRef.current = null;
     }
-  }, [onUpdateMessages, onRenameSession, title]);
+  }, [onUpdateMessages, onRenameSession, title, generateTitleOverride]);
 
   const handleUIEvent = useCallback((event: LLMUIEvent) => {
     if (event.type === "REQUEST_METADATA") {
+      if (disableMetadataWorkflow) return;
       ignoreStreamRef.current = true;
       abortJob();
 
@@ -477,6 +512,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
     }
 
     if (event.type === "METADATA_CONFIRMED") {
+      if (disableMetadataWorkflow) return;
       // Backend confirmed metadata saved
       setInlineMetadataFields(null);
       setPendingJobId(null);
@@ -592,12 +628,18 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
     if (event.type === "SOURCES") {
       const cid = assistantIdRef.current;
       if (!cid) return;
+      const sourceData = Array.isArray((event as any).data)
+        ? (event as any).data
+        : Array.isArray((event as any).sources)
+          ? (event as any).sources
+          : [];
+      if (sourceData.length === 0) return;
 
       onUpdateMessages(prev =>
-        prev.map(m => m.id === cid ? { ...m, sources: event.data } : m)
+        prev.map(m => m.id === cid ? { ...m, sources: sourceData } : m)
       );
     }
-  }, [inlineMetadataFields, onUpdateMessages, sessionId, ragVisualizationEnabled, finalizeAssistant]);
+  }, [inlineMetadataFields, onUpdateMessages, sessionId, ragVisualizationEnabled, finalizeAssistant, disableMetadataWorkflow]);
 
   const generateAIResponse = useCallback(async (question: string) => {
     if (!sessionId) return;
@@ -630,14 +672,15 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
 
 
     try {
-      const stream = await streamChat(
-      {
-        session_id: sessionId,
-        question,
-        mode: model,
-      },
-      controller.signal
-    );
+      const streamFn = streamChatOverride ?? streamChat;
+      const stream = await streamFn(
+        {
+          session_id: sessionId,
+          question,
+          mode: model,
+        },
+        controller.signal
+      );
 
 
       const assistantId = uuidv4();
@@ -774,7 +817,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
       }
     } 
    
-  }, [sessionId, isNetBlocked, model, ragVisualizationEnabled, onUpdateMessages, handleUIEvent, finalizeAssistant]);
+  }, [sessionId, isNetBlocked, model, ragVisualizationEnabled, onUpdateMessages, handleUIEvent, finalizeAssistant, streamChatOverride]);
 
 
   useEffect(() => {
@@ -847,6 +890,8 @@ useEffect(() => {
           ingestionPollingActive={ingestionPollingActive}
           ingestionPollingCount={ingestionPollingCount}
           activeModel={model}
+          lockModelSelector={lockModelSelector}
+          lockedModelLabel={lockedModelLabel}
           onModelChange={(nextModel) => {
             if (nextModel === "net" && netRateLimitedUntil) {
               setNetModalOpen(true);   // 🔥 TRIGGER HERE
@@ -868,6 +913,14 @@ useEffect(() => {
                   userRole={userRole}
                   totalChats={totalChats}
                   unreadNotifications={unreadNotifications}
+                  showUploadButton={showUpload}
+                  showPmlEntryCard={emptyStateConfig?.showPmlEntryCard}
+                  showSummaryCard={emptyStateConfig?.showSummaryCard}
+                  dashboardTitle={emptyStateConfig?.dashboardTitle}
+                  dashboardSubtitle={emptyStateConfig?.dashboardSubtitle}
+                  heroTitle={emptyStateConfig?.heroTitle}
+                  heroSubtitle={emptyStateConfig?.heroSubtitle}
+                  prompts={emptyStateConfig?.prompts}
                   onUploadStart={onUploadStart}
                   onUploadProgress={onUploadProgress}
                   onUploadSuccess={onUploadSuccess}
@@ -932,15 +985,19 @@ useEffect(() => {
                                   sessionId={sessionId}
                                   companyDocumentId={m.sources?.[0]?.company_document_id}
                                   revisionNumber={m.sources?.[0]?.revision_number}
-                                  onViewSources={(sources) => {
-                                    setActiveSources(sources);
-                                    setViewerOpen(true);
-                                  }}
+                                  onViewSources={
+                                    showSources
+                                      ? (sources) => {
+                                          setActiveSources(sources);
+                                          setViewerOpen(true);
+                                        }
+                                      : undefined
+                                  }
                                 />
                             );
                         })}
 
-                        {inlineMetadataFields && (
+                        {!disableMetadataWorkflow && inlineMetadataFields && (
                             <InlineMetadataPrompt
                                 fields={inlineMetadataFields}
                                 onSubmit={handleInlineMetadataSubmit}
@@ -963,6 +1020,8 @@ useEffect(() => {
                           isGenerating={isTyping}
                           onStop={handleStop}
                           sessionId={sessionId}
+                          showUploadButton={showUpload}
+                          placeholderText={inputPlaceholderText}
                           onUploadStart={onUploadStart}
                           onUploadProgress={onUploadProgress}
                           onUploadSuccess={onUploadSuccess}
@@ -972,7 +1031,7 @@ useEffect(() => {
 
                         {/*  DISCLAIMER ADDED */}
                         <div className="mt-2">
-                            <Disclaimer text="KavinBase can make mistakes. Verify important information." />
+                            <Disclaimer text={disclaimerText} />
                         </div>
                     </div>
                 </div>
@@ -985,11 +1044,13 @@ useEffect(() => {
           onClose={() => setNetModalOpen(false)}
         />
 
-        <SourceViewerModal
-          open={viewerOpen}
-          sources={activeSources}
-          onClose={() => setViewerOpen(false)}
-        />
+        {showSources && (
+          <SourceViewerModal
+            open={viewerOpen}
+            sources={activeSources}
+            onClose={() => setViewerOpen(false)}
+          />
+        )}
     </>
   );
 }

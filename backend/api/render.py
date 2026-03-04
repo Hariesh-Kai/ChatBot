@@ -18,8 +18,10 @@ def render_page_image(
     file: str = Query(..., description="Filename in MinIO"),
     page: int = Query(1, ge=1, description="Page number"),
     bbox: Optional[str] = Query(None, description="JSON coords"),
-    company_doc_id: str = Query(..., description="Folder ID"),
-    revision: int = Query(..., description="Version number")
+    company_document_id: Optional[str] = Query(None, description="Folder ID"),
+    revision_number: Optional[int] = Query(None, description="Version number"),
+    company_doc_id: Optional[str] = Query(None, description="Legacy folder ID"),
+    revision: Optional[int] = Query(None, description="Legacy version number"),
 ):
     """
     Streams a specific PDF page as a PNG with optional highlighting.
@@ -33,8 +35,18 @@ def render_page_image(
     except Exception:
         bucket = "kavin-documents" # Fallback if config fails
     
+    # Accept both new and legacy query parameter names.
+    resolved_company_document_id = (company_document_id or company_doc_id or "").strip()
+    resolved_revision = revision_number if revision_number is not None else revision
+
+    if not resolved_company_document_id or resolved_revision is None:
+        raise HTTPException(
+            422,
+            "company_document_id/company_doc_id and revision_number/revision are required",
+        )
+
     # 1. Construct Path
-    object_path = f"{company_doc_id}/v{revision}/{file}"
+    object_path = f"{resolved_company_document_id}/v{int(resolved_revision)}/{file}"
     
     # 2. Download PDF (In-Memory)
     try:

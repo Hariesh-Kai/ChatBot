@@ -1,25 +1,25 @@
 {
   "users": [
     {
-      "username": "vievk",
-      "email": "vicek@kavin.com",
-      "role": "user",
+      "username": "hariesh",
+      "email": "hariesh@gmail.com",
+      "role": "piping_admin",
       "disabled": false,
-      "password_hash": "58ecb6d0c029f3d7f041f67ae30fa86f3aef689bdb333afdc95c9e7a6ca0d1cb",
-      "salt": "660894ae829e47bb2ba6ef7e0f6a2fdc",
-      "created_at": 1770282840,
-      "updated_at": 1770282841,
+      "password_hash": "fac30e29c33ca6320d431c52cc63e0c4b50cc2540d67dd23a3d64153bb48ad0c",
+      "salt": "9406799d4f875cb634c4d74f87b6c19c",
+      "created_at": 1772441689,
+      "updated_at": 1772441690,
       "resources": {
         "postgres": {
-          "database": "kavin_vievk",
+          "database": "kavin_hariesh",
           "created": true
         },
         "minio": {
-          "bucket": "kavin-vievk",
+          "bucket": "kavin-hariesh",
           "created": true
         },
         "redis": {
-          "namespace": "user:vievk:"
+          "namespace": "user:hariesh:"
         }
       }
     }

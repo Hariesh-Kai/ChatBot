@@ -39,7 +39,7 @@ export default function ChatList({
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, []);
 
-  const visibleChats = chats.filter((chat) => chat.messages.length > 0);
+  const visibleChats = chats;
 
   if (visibleChats.length === 0) {
     return (
@@ -61,10 +61,14 @@ export default function ChatList({
             key={chat.id}
             className={`
               group relative flex items-center
-              rounded-md px-3 py-2 text-sm
+              rounded-[12px] px-3 py-2.5 text-sm
               cursor-pointer
-              transition-colors
-              ${isActive ? "bg-white/10 text-white" : "text-gray-400 hover:bg-white/5"}
+              transition-all duration-200
+              ${
+                isActive
+                  ? "border border-white/20 bg-white/10 text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.2)]"
+                  : "text-gray-400 hover:bg-white/5 hover:text-gray-200"
+              }
             `}
             onClick={() => {
               setOpenMenuId(null);
@@ -77,7 +81,7 @@ export default function ChatList({
             </span>
 
             {unreadCount > 0 && (
-              <span className="mr-1 inline-flex min-w-[18px] items-center justify-center rounded-full border border-emerald-500/30 bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
+              <span className="mr-1 inline-flex min-w-[18px] items-center justify-center rounded-full border border-white/30 bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-white">
                 {unreadCount > 99 ? "99+" : unreadCount}
               </span>
             )}
@@ -92,8 +96,7 @@ export default function ChatList({
                 ml-2 flex items-center justify-center
                 rounded-md p-1
                 text-gray-400 hover:text-white hover:bg-white/10
-                opacity-0 group-hover:opacity-100
-                transition-opacity
+                opacity-0 transition-opacity group-hover:opacity-100
               "
               aria-label="Chat options"
             >

@@ -19,6 +19,8 @@ interface Props {
   //  NEW: Progress Prop
   onUploadProgress?: (status: UploadStatus, percent: number, label: string) => void;
   netBlocked?: boolean;
+  showUploadButton?: boolean;
+  placeholderText?: string;
 
   /* Hidden power features */
   onArrowUp?: () => void;   
@@ -40,6 +42,8 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
       onUploadError,
       onUploadProgress, //  Destructure
       netBlocked,
+      showUploadButton = true,
+      placeholderText,
       onArrowUp,
       disabled = false,
       isGenerating = false,
@@ -50,39 +54,43 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
     const text = typeof value === "string" ? value : "";
     const effectiveDisabled = disabled || Boolean(netBlocked);
     const canSend = !effectiveDisabled && text.trim().length > 0;
-    const placeholder = netBlocked
+    const fallbackPlaceholder = netBlocked
       ? "Net model rate-limited. Try again soon."
       : effectiveDisabled
         ? "AI is responding..."
         : "Message KAVIN...";
+    const placeholder = placeholderText || fallbackPlaceholder;
 
     return (
       <div
         aria-disabled={effectiveDisabled}
         className={`
-          flex items-end gap-3 rounded-xl px-3 py-3 border border-white/10 bg-[#1a1a1a] shadow-md transition
+          flex items-end gap-3 rounded-xl px-3 py-3 border border-white/25 bg-[#1a1a1a] shadow-md transition
           ${effectiveDisabled ? "opacity-60" : ""} focus-within:ring-1 focus-within:ring-white/20
         `}
       >
         {/* ================= UPLOAD BUTTON ================= */}
-        <div className="pb-1">
-            <PdfUploadButton 
-                sessionId={sessionId}
-                iconOnly={true}
-                dataId="chat"
-                disabled={effectiveDisabled || isGenerating}
-                onUploadStart={onUploadStart}
-                onUploadSuccess={onUploadSuccess}
-                onUploadError={onUploadError}
-                onUploadProgress={onUploadProgress} //  Pass it down
-            />
-        </div>
+        {showUploadButton && (
+          <div className="pb-1">
+              <PdfUploadButton 
+                  sessionId={sessionId}
+                  iconOnly={true}
+                  dataId="chat"
+                  disabled={effectiveDisabled || isGenerating}
+                  onUploadStart={onUploadStart}
+                  onUploadSuccess={onUploadSuccess}
+                  onUploadError={onUploadError}
+                  onUploadProgress={onUploadProgress} //  Pass it down
+              />
+          </div>
+        )}
 
         {/* ================= TEXTAREA ================= */}
         <div className="flex-1 min-w-0">
           <TextareaAutosize
             ref={ref}
             value={text}
+            spellCheck={false}
             disabled={effectiveDisabled}
             minRows={1}
             maxRows={6}

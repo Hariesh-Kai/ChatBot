@@ -18,7 +18,7 @@ from typing import Optional, Dict, Any, List, Tuple
 class User:
     username: str
     email: str
-    role: str = "user"
+    role: str = "pipe_designer"
     disabled: bool = False
 
 
@@ -27,11 +27,51 @@ _USER_DB_PATH = Path(__file__).resolve().parent / "users.json"
 _USERNAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.-]{2,31}$")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+ROLE_PIPE_DESIGNER = "pipe_designer"
+ROLE_PIPE_STRESS_ENGINEER = "pipe_stress_engineer"
+ROLE_PIPE_LEAD = "pipe_lead"
+ROLE_PIPING_ADMIN = "piping_admin"
+
+_ROLE_ALIASES = {
+    "user": ROLE_PIPE_DESIGNER,
+    "developer": ROLE_PIPE_STRESS_ENGINEER,
+    "admin": ROLE_PIPING_ADMIN,
+    "pipe designer": ROLE_PIPE_DESIGNER,
+    "pipe_designer": ROLE_PIPE_DESIGNER,
+    "pipe stress engineer": ROLE_PIPE_STRESS_ENGINEER,
+    "pipe stress enginner": ROLE_PIPE_STRESS_ENGINEER,
+    "pipe_stress_engineer": ROLE_PIPE_STRESS_ENGINEER,
+    "pipe lead": ROLE_PIPE_LEAD,
+    "pipe_lead": ROLE_PIPE_LEAD,
+    "piping admin": ROLE_PIPING_ADMIN,
+    "piping_admin": ROLE_PIPING_ADMIN,
+}
+
+_ROLE_HIERARCHY = {
+    ROLE_PIPE_DESIGNER: 10,
+    ROLE_PIPE_STRESS_ENGINEER: 20,
+    ROLE_PIPE_LEAD: 30,
+    ROLE_PIPING_ADMIN: 40,
+}
+SUPPORTED_ROLES = tuple(_ROLE_HIERARCHY.keys())
+
+
+def normalize_role(role: Optional[str]) -> str:
+    key = (role or ROLE_PIPE_DESIGNER).strip().lower()
+    mapped = _ROLE_ALIASES.get(key, key)
+    if mapped not in _ROLE_HIERARCHY:
+        return ROLE_PIPE_DESIGNER
+    return mapped
+
+
+def role_level(role: Optional[str]) -> int:
+    return _ROLE_HIERARCHY.get(normalize_role(role), _ROLE_HIERARCHY[ROLE_PIPE_DESIGNER])
+
 
 def get_configured_user() -> User:
     username = os.getenv("KAVIN_ADMIN_USERNAME", "admin").strip() or "admin"
     email = os.getenv("KAVIN_ADMIN_EMAIL", "admin@example.com").strip() or "admin@example.com"
-    return User(username=username, email=email, role="admin", disabled=False)
+    return User(username=username, email=email, role=ROLE_PIPING_ADMIN, disabled=False)
 
 
 def _get_configured_password() -> str:
@@ -41,7 +81,7 @@ def _get_configured_password() -> str:
 
 def is_admin(user: User) -> bool:
     admin = get_configured_user()
-    return user.role in ("admin", "developer") or (
+    return role_level(user.role) >= _ROLE_HIERARCHY[ROLE_PIPING_ADMIN] or (
         user.username == admin.username and user.email == admin.email
     )
 
@@ -100,7 +140,7 @@ def list_users() -> List[Dict[str, Any]]:
         out.append({
             "username": u.get("username"),
             "email": u.get("email"),
-            "role": u.get("role", "user"),
+            "role": normalize_role(u.get("role")),
             "disabled": bool(u.get("disabled", False)),
             "created_at": u.get("created_at"),
             "updated_at": u.get("updated_at"),
@@ -126,7 +166,7 @@ def get_user_by_identifier(identifier: str) -> Optional[User]:
     return User(
         username=rec.get("username", ""),
         email=rec.get("email", ""),
-        role=rec.get("role", "user"),
+        role=normalize_role(rec.get("role")),
         disabled=bool(rec.get("disabled", False)),
     )
 
@@ -141,13 +181,11 @@ def get_user_for_token(username: Optional[str], email: Optional[str]) -> Optiona
     return None
 
 
-def create_user(*, email: str, username: str, password: str, role: str = "user", resources: Optional[Dict[str, Any]] = None) -> User:
+def create_user(*, email: str, username: str, password: str, role: str = ROLE_PIPE_DESIGNER, resources: Optional[Dict[str, Any]] = None) -> User:
     email = (email or "").strip()
     username = (username or "").strip()
     password = password or ""
-    role = (role or "user").strip()
-    if role not in ("user", "admin", "developer"):
-        raise ValueError("role must be 'user', 'developer', or 'admin'")
+    role = normalize_role(role)
 
     if not email or not username or not password:
         raise ValueError("email, username, and password are required")
@@ -181,7 +219,7 @@ def create_user(*, email: str, username: str, password: str, role: str = "user",
     record = {
         "username": username,
         "email": email,
-        "role": role if role else "user",
+        "role": role,
         "disabled": False,
         "password_hash": pwd_hash,
         "salt": salt.hex(),
@@ -209,6 +247,8 @@ def set_user_disabled(identifier: str, disabled: bool) -> User:
     idx, rec = _find_user_record(db, ident)
     if idx is None or rec is None:
         raise ValueError("User not found")
+    if normalize_role(rec.get("role")) == ROLE_PIPING_ADMIN:
+        raise ValueError("Cannot disable piping admin user")
 
     rec["disabled"] = bool(disabled)
     rec["updated_at"] = int(time.time())
@@ -218,7 +258,7 @@ def set_user_disabled(identifier: str, disabled: bool) -> User:
     return User(
         username=rec.get("username", ""),
         email=rec.get("email", ""),
-        role=rec.get("role", "user"),
+        role=normalize_role(rec.get("role")),
         disabled=bool(rec.get("disabled", False)),
     )
 
@@ -238,6 +278,8 @@ def reset_user_password(identifier: str, new_password: str) -> User:
     idx, rec = _find_user_record(db, ident)
     if idx is None or rec is None:
         raise ValueError("User not found")
+    if normalize_role(rec.get("role")) == ROLE_PIPING_ADMIN:
+        raise ValueError("Cannot reset piping admin password here")
 
     salt = _new_salt()
     rec["salt"] = salt.hex()
@@ -249,7 +291,7 @@ def reset_user_password(identifier: str, new_password: str) -> User:
     return User(
         username=rec.get("username", ""),
         email=rec.get("email", ""),
-        role=rec.get("role", "user"),
+        role=normalize_role(rec.get("role")),
         disabled=bool(rec.get("disabled", False)),
     )
 
@@ -259,9 +301,7 @@ def set_user_role(identifier: str, role: str) -> User:
     if not ident:
         raise ValueError("identifier is required")
 
-    role = (role or "").strip()
-    if role not in ("user", "admin", "developer"):
-        raise ValueError("role must be 'user', 'developer', or 'admin'")
+    role = normalize_role(role)
 
     admin = get_configured_user()
     if ident in (_normalize_identifier(admin.username), _normalize_identifier(admin.email)):
@@ -272,6 +312,10 @@ def set_user_role(identifier: str, role: str) -> User:
     if idx is None or rec is None:
         raise ValueError("User not found")
 
+    current_role = normalize_role(rec.get("role"))
+    if current_role == ROLE_PIPING_ADMIN:
+        raise ValueError("Cannot change piping admin role")
+
     rec["role"] = role
     rec["updated_at"] = int(time.time())
     db["users"][idx] = rec
@@ -280,7 +324,7 @@ def set_user_role(identifier: str, role: str) -> User:
     return User(
         username=rec.get("username", ""),
         email=rec.get("email", ""),
-        role=rec.get("role", "user"),
+        role=normalize_role(rec.get("role")),
         disabled=bool(rec.get("disabled", False)),
     )
 
@@ -299,13 +343,16 @@ def delete_user(identifier: str) -> User:
     if idx is None or rec is None:
         raise ValueError("User not found")
 
+    if normalize_role(rec.get("role")) == ROLE_PIPING_ADMIN:
+        raise ValueError("Cannot delete piping admin user")
+
     removed = db["users"].pop(idx)
     _save_db(db)
 
     return User(
         username=removed.get("username", ""),
         email=removed.get("email", ""),
-        role=removed.get("role", "user"),
+        role=normalize_role(removed.get("role")),
         disabled=bool(removed.get("disabled", False)),
     )
 
@@ -328,7 +375,7 @@ def set_user_resources(identifier: str, resources: Dict[str, Any]) -> User:
     return User(
         username=rec.get("username", ""),
         email=rec.get("email", ""),
-        role=rec.get("role", "user"),
+        role=normalize_role(rec.get("role")),
         disabled=bool(rec.get("disabled", False)),
     )
 
@@ -370,6 +417,6 @@ def verify_credentials(identifier: str, password: str) -> Optional[User]:
     return User(
         username=rec.get("username", ""),
         email=rec.get("email", ""),
-        role=rec.get("role", "user"),
+        role=normalize_role(rec.get("role")),
         disabled=bool(rec.get("disabled", False)),
     )

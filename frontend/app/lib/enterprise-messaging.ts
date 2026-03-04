@@ -1,6 +1,6 @@
 import type { AuthUser } from "@/app/lib/api";
 
-export type WorkspaceMode = "ai" | "team";
+export type WorkspaceMode = "ai" | "pml" | "team";
 
 export type ProjectPriority = "low" | "medium" | "high" | "critical";
 export type ProjectStatus = "planning" | "active" | "blocked" | "done";
@@ -397,6 +397,13 @@ export function getMemberName(members: TeamMember[], memberId: string) {
   return member?.name || "Unknown Member";
 }
 
+export function isProjectSystemTeamMessage(message: TeamMessage | undefined) {
+  if (!message) return false;
+  if (message.projectId) return true;
+  const text = (message.content || "").trim().toLowerCase();
+  return text.startsWith("[project setup]") || text.startsWith("[project status]");
+}
+
 export function getConversationUnreadCount(
   conversation: TeamConversation,
   memberId: string
@@ -404,6 +411,7 @@ export function getConversationUnreadCount(
   const seenAt = conversation.lastSeenAt[memberId] || 0;
   return conversation.messages.reduce((count, message) => {
     if (message.senderId === memberId) return count;
+    if (isProjectSystemTeamMessage(message)) return count;
     if (message.createdAt > seenAt) return count + 1;
     return count;
   }, 0);

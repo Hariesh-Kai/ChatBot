@@ -33,6 +33,7 @@ from backend.api.net import router as net_router
 from backend.api.net_key import router as net_key_router
 from backend.api.debug_rag import router as debug_router
 from backend.api.retrieve import router as retrieve_router
+from backend.api.pml_chat import router as pml_chat_router
 
 # Render & DevTools
 from backend.api.render import router as render_router
@@ -41,6 +42,7 @@ from backend.api.devtools import router as devtools_router
 # Auth
 from backend.api.auth import router as auth_router
 from backend.auth.deps import require_user
+from backend.api.team import router as team_router
 
 # ============================================================
 #  NEW IMPORT (LEARNING – FEEDBACK API)
@@ -150,6 +152,7 @@ app.add_middleware(
 
 # Auth (public)
 app.include_router(auth_router)                 # /auth/*
+app.include_router(team_router)                 # /team/* (HTTP auth inside routes + /team/ws)
 
 # Core APIs (protected)
 _auth = [Depends(require_user)]
@@ -171,6 +174,7 @@ app.include_router(debug_router, dependencies=_auth)                # GET /debug
 app.include_router(net_router, dependencies=_auth)                  # /net/*
 app.include_router(net_key_router, dependencies=_auth)              # /net-key/*
 app.include_router(retrieve_router, dependencies=_auth)             # /retrieve/*
+app.include_router(pml_chat_router, dependencies=_auth)             # /pml-chat/*
 
 # Viewer & Dev tools
 app.include_router(render_router, dependencies=_auth)               # GET /render/image

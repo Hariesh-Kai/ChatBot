@@ -5,6 +5,13 @@ import PromptCard from "./chat/PromptCard";
 import { Send, LayoutDashboard, BellRing, MessageSquareText, FileText, Sparkles } from "lucide-react";
 import PdfUploadButton from "./upload/PdfUploadButton";
 import { UploadStatus } from "@/app/hooks/useSmartUpload";
+import { getRoleLabel } from "@/app/lib/org-role-catalog";
+
+export type EmptyPrompt = {
+  title: string;
+  description: string;
+  prompt: string;
+};
 
 interface Props {
   onSend: (text?: string) => void;
@@ -18,6 +25,14 @@ interface Props {
   onUploadSuccess?: (result: any) => void;
   onUploadError?: (error: string) => void;
   onUploadProgress?: (status: UploadStatus, percent: number, label: string) => void;
+  showUploadButton?: boolean;
+  showPmlEntryCard?: boolean;
+  showSummaryCard?: boolean;
+  dashboardTitle?: string;
+  dashboardSubtitle?: string;
+  heroTitle?: string;
+  heroSubtitle?: string;
+  prompts?: EmptyPrompt[];
 }
 
 export default function EmptyState({
@@ -32,10 +47,42 @@ export default function EmptyState({
   onUploadSuccess,
   onUploadError,
   onUploadProgress,
+  showUploadButton = true,
+  showPmlEntryCard = true,
+  showSummaryCard = true,
+  dashboardTitle,
+  dashboardSubtitle,
+  heroTitle,
+  heroSubtitle,
+  prompts,
 }: Props) {
   const [value, setValue] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const canSend = !disabled && value.trim().length > 0;
+
+  const defaultPrompts: EmptyPrompt[] = [
+    {
+      title: "Summarize a PDF",
+      description: "Upload a document and get a concise summary",
+      prompt: "Summarize this PDF",
+    },
+    {
+      title: "Ask about requirements",
+      description: "Clarify design specs, scope, or constraints",
+      prompt: "What are the requirements for this?",
+    },
+    {
+      title: "Extract key points",
+      description: "Pull tables, bullets, or highlights",
+      prompt: "Extract the key points from this",
+    },
+    {
+      title: "Explain technical sections",
+      description: "Understand complex engineering content",
+      prompt: "Explain the technical sections",
+    },
+  ];
+  const effectivePrompts = prompts ?? defaultPrompts;
 
   function handleSubmit(text?: string) {
     if (disabled) return;
@@ -48,50 +95,58 @@ export default function EmptyState({
   return (
     <div className="flex h-full w-full items-center justify-center">
       <div className="w-full max-w-3xl px-4 text-center animate-fade-in">
-        <div className="mb-6 rounded-2xl border border-white/10 bg-[radial-gradient(circle_at_top_right,#1f2937_0%,#0f172a_35%,#0a0a0a_100%)] p-4 text-left shadow-lg">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="text-[11px] uppercase tracking-[0.18em] text-sky-300">User Dashboard</div>
-              <h2 className="mt-1 text-lg font-semibold text-white">
-                Welcome to KavinBase, {userLabel || "User"}
-              </h2>
-              <p className="mt-1 text-xs text-gray-300">
-                Role: {(userRole || "user").toUpperCase()} - start a conversation or upload a project PDF.
-              </p>
+        {showSummaryCard && (
+          <div className="mb-6 rounded-2xl border border-white/10 bg-[radial-gradient(circle_at_top_right,#1f2937_0%,#0f172a_35%,#0a0a0a_100%)] p-4 text-left shadow-lg">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-300">User Dashboard</div>
+                <h2 className="mt-1 text-lg font-semibold text-white">
+                  {dashboardTitle || `Welcome to KavinBase, ${userLabel || "User"}`}
+                </h2>
+                <p className="mt-1 text-xs text-gray-300">
+                  {dashboardSubtitle ||
+                    `Role: ${getRoleLabel(userRole)} - start a conversation or upload a project PDF.`}
+                </p>
+              </div>
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-cyan-400/30 bg-cyan-500/10 text-cyan-300">
+                <LayoutDashboard size={18} />
+              </div>
             </div>
-            <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-sky-400/30 bg-sky-500/10 text-sky-300">
-              <LayoutDashboard size={18} />
+
+            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <DashboardStat icon={MessageSquareText} label="Chats" value={String(totalChats)} />
+              <DashboardStat icon={BellRing} label="Unread" value={String(unreadNotifications)} />
+              <DashboardStat icon={FileText} label="PDF" value="Ready" />
+              <DashboardStat icon={Sparkles} label="Assistant" value="Online" />
             </div>
           </div>
+        )}
 
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <DashboardStat icon={MessageSquareText} label="Chats" value={String(totalChats)} />
-            <DashboardStat icon={BellRing} label="Unread" value={String(unreadNotifications)} />
-            <DashboardStat icon={FileText} label="PDF" value="Ready" />
-            <DashboardStat icon={Sparkles} label="Assistant" value="Online" />
-          </div>
-        </div>
-
-        <h1 className="text-2xl font-semibold text-white">How can I help you today?</h1>
-        <p className="mt-2 text-sm text-gray-400">Ask a question or upload a PDF to get started</p>
+        <h1 className="text-2xl font-semibold text-white">{heroTitle || "How can I help you today?"}</h1>
+        <p className="mt-2 text-sm text-gray-400">
+          {heroSubtitle || "Ask a question or upload a PDF to get started"}
+        </p>
 
         <div className="mt-8">
-          <div className={`flex items-end gap-3 rounded-xl border border-white/10 bg-[#1a1a1a] px-3 py-3 shadow-md transition ${disabled ? "opacity-60" : ""}`}>
-            <div className="pb-1">
-              <PdfUploadButton
-                sessionId={sessionId}
-                iconOnly={true}
-                disabled={disabled}
-                onUploadStart={onUploadStart}
-                onUploadSuccess={onUploadSuccess}
-                onUploadError={onUploadError}
-                onUploadProgress={onUploadProgress}
-              />
-            </div>
+          <div className={`flex items-end gap-3 rounded-xl border border-white/25 bg-[#1a1a1a] px-3 py-3 shadow-md transition ${disabled ? "opacity-60" : ""}`}>
+            {showUploadButton && (
+              <div className="pb-1">
+                <PdfUploadButton
+                  sessionId={sessionId}
+                  iconOnly={true}
+                  disabled={disabled}
+                  onUploadStart={onUploadStart}
+                  onUploadSuccess={onUploadSuccess}
+                  onUploadError={onUploadError}
+                  onUploadProgress={onUploadProgress}
+                />
+              </div>
+            )}
 
             <input
               ref={inputRef}
               value={value}
+              spellCheck={false}
               disabled={disabled}
               onChange={(e) => setValue(e.target.value)}
               onKeyDown={(e) => {
@@ -117,32 +172,30 @@ export default function EmptyState({
           </div>
         </div>
 
-        <div className="mt-8 grid w-full grid-cols-1 gap-4 sm:grid-cols-2">
-          <PromptCard
-            title="Summarize a PDF"
-            description="Upload a document and get a concise summary"
-            onClick={() => handleSubmit("Summarize this PDF")}
-            disabled={disabled}
-          />
-          <PromptCard
-            title="Ask about requirements"
-            description="Clarify design specs, scope, or constraints"
-            onClick={() => handleSubmit("What are the requirements for this?")}
-            disabled={disabled}
-          />
-          <PromptCard
-            title="Extract key points"
-            description="Pull tables, bullets, or highlights"
-            onClick={() => handleSubmit("Extract the key points from this")}
-            disabled={disabled}
-          />
-          <PromptCard
-            title="Explain technical sections"
-            description="Understand complex engineering content"
-            onClick={() => handleSubmit("Explain the technical sections")}
-            disabled={disabled}
-          />
-        </div>
+        {(showPmlEntryCard || effectivePrompts.length > 0) && (
+          <div className="mt-8 grid w-full grid-cols-1 gap-4 sm:grid-cols-2">
+            {showPmlEntryCard && (
+              <a
+                href="/pml"
+                className="block rounded-xl border border-cyan-300/30 bg-cyan-500/10 p-4 text-left transition hover:bg-cyan-500/20"
+              >
+                <div className="text-sm font-semibold text-cyan-100">Open PML Assistant</div>
+                <div className="mt-1 text-xs text-cyan-100/80">
+                  Dedicated code-writing assistant module for PML generation.
+                </div>
+              </a>
+            )}
+            {effectivePrompts.map((item) => (
+              <PromptCard
+                key={item.title}
+                title={item.title}
+                description={item.description}
+                onClick={() => handleSubmit(item.prompt)}
+                disabled={disabled}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -160,7 +213,7 @@ function DashboardStat({
   return (
     <div className="rounded-lg border border-white/10 bg-black/30 px-3 py-2">
       <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-gray-400">
-        <Icon size={12} className="text-sky-300" />
+        <Icon size={12} className="text-cyan-300" />
         <span>{label}</span>
       </div>
       <div className="mt-1 text-sm font-semibold text-white">{value}</div>

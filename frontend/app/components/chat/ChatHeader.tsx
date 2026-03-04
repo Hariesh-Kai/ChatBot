@@ -26,6 +26,8 @@ interface Props {
 
   activeModel: KavinModelId;
   onModelChange: (model: KavinModelId) => void;
+  lockModelSelector?: boolean;
+  lockedModelLabel?: string;
 
   onRename: (title: string) => void;
   onClear: () => void;
@@ -58,6 +60,8 @@ export default function ChatHeader({
   ingestionPollingCount = 0,
   activeModel,
   onModelChange,
+  lockModelSelector = false,
+  lockedModelLabel,
   onRename,
   onClear,
 }: Props) {
@@ -122,11 +126,12 @@ export default function ChatHeader({
 
   /* ---------------- Active label ---------------- */
   const activeLabel = useMemo(() => {
+    if (lockModelSelector && lockedModelLabel) return lockedModelLabel;
     return (
       ALL_MODELS.find((m) => m.id === activeModel)?.label ??
       "Model"
     );
-  }, [activeModel]);
+  }, [activeModel, lockModelSelector, lockedModelLabel]);
 
   const avatar = useMemo(() => getModelAvatar(activeModel), [activeModel]);
 
@@ -151,24 +156,35 @@ export default function ChatHeader({
               size="sm"
             />
             <div ref={modelRef} className="relative">
-            <button
-              onClick={() => !isTyping && setModelOpen((v) => !v)}
-              disabled={isTyping}
-              className="
-                flex items-center gap-1
-                text-xs font-medium text-gray-400
-                hover:text-white
-                disabled:opacity-50
-              "
-            >
-              {activeLabel}
-              {activeModel === "net" && (
-                <Cloud size={12} className="text-sky-400" />
-              )}
-              <ChevronDown size={14} />
-            </button>
+            {lockModelSelector ? (
+              <div
+                className="
+                  flex items-center gap-1
+                  text-xs font-medium text-gray-400
+                "
+              >
+                {activeLabel}
+              </div>
+            ) : (
+              <button
+                onClick={() => !isTyping && setModelOpen((v) => !v)}
+                disabled={isTyping}
+                className="
+                  flex items-center gap-1
+                  text-xs font-medium text-gray-400
+                  hover:text-white
+                  disabled:opacity-50
+                "
+              >
+                {activeLabel}
+                {activeModel === "net" && (
+                  <Cloud size={12} className="text-cyan-300" />
+                )}
+                <ChevronDown size={14} />
+              </button>
+            )}
 
-            {modelOpen && (
+            {!lockModelSelector && modelOpen && (
               <div
                 className="
                   absolute left-0 mt-2 w-52
@@ -205,7 +221,7 @@ export default function ChatHeader({
                     <span>{m.label}</span>
 
                     {m.id === "net" && (
-                      <span className="flex items-center gap-1 text-xs text-sky-400">
+                      <span className="flex items-center gap-1 text-xs text-cyan-300">
                         <Cloud size={12} />
                         Cloud
                       </span>
@@ -250,12 +266,12 @@ export default function ChatHeader({
                 title="Document processing is running in background"
                 className="
                   mr-1 inline-flex items-center gap-1
-                  rounded-full border border-emerald-500/30
-                  bg-emerald-500/10 px-2 py-1
+                  rounded-full border border-cyan-500/30
+                  bg-cyan-500/10 px-2 py-1
                 "
               >
-                <LoaderCircle size={12} className="animate-spin text-emerald-400" />
-                <span className="hidden sm:inline text-[11px] font-medium text-emerald-300">
+                <LoaderCircle size={12} className="animate-spin text-cyan-300" />
+                <span className="hidden sm:inline text-[11px] font-medium text-cyan-200">
                   Processing{ingestionPollingCount > 1 ? ` (${ingestionPollingCount})` : ""}
                 </span>
               </div>
@@ -268,8 +284,8 @@ export default function ChatHeader({
                 disabled={isTyping}
                 title="Configure KavinBase Net v1.0"
                 className="
-                  rounded-md p-2 text-sky-400
-                  hover:bg-white/10 hover:text-sky-300
+                  rounded-md p-2 text-cyan-300
+                  hover:bg-white/10 hover:text-cyan-200
                   disabled:opacity-50
                 "
               >
@@ -312,7 +328,7 @@ export default function ChatHeader({
                   disabled={isTyping}
                   title="Save title"
                   className="
-                    rounded-md p-2 text-green-400
+                    rounded-md p-2 text-cyan-300
                     hover:bg-white/10
                     disabled:opacity-50
                   "

@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 from urllib.parse import urlparse, urlunparse
@@ -363,6 +364,263 @@ def _truncate_tables(dsn: str, tables: List[str]) -> Dict[str, Any]:
             except Exception:
                 pass
     return {"truncated": truncated, "missing": missing}
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _to_float(value: Any, digits: int = 3) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return round(float(value), digits)
+    except Exception:
+        return None
+
+
+def _collect_mvp_overview(window_hours: int) -> Dict[str, Any]:
+    ingestion: Dict[str, Any] = {
+        "counts": {
+            "waiting_metadata": 0,
+            "processing": 0,
+            "ready": 0,
+            "error": 0,
+            "total": 0,
+        },
+        "success_rate": None,
+        "avg_completion_seconds": None,
+        "top_errors": [],
+    }
+    rag_quality: Dict[str, Any] = {
+        "total_turns": 0,
+        "quality_distribution": {
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "unknown": 0,
+        },
+        "cache_hit_rate": None,
+        "avg_latency_ms": None,
+        "low_quality_rate": None,
+        "worst_docs": [],
+    }
+    feedback: Dict[str, Any] = {
+        "total": 0,
+        "positive": 0,
+        "negative": 0,
+        "avg_score": None,
+        "label_distribution": [],
+    }
+    warnings: List[str] = []
+
+    dsn = _psycopg2_dsn(os.getenv("CHAT_DB_URL", CHAT_DB_URL))
+    conn = None
+    cur = None
+
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        def fetch_one(query: str, params: tuple) -> Dict[str, Any]:
+            try:
+                cur.execute(query, params)
+                row = cur.fetchone()
+                return dict(row) if row else {}
+            except psycopg2.errors.UndefinedTable:
+                return {}
+            except Exception as e:
+                warnings.append(str(e))
+                return {}
+
+        def fetch_all(query: str, params: tuple) -> List[Dict[str, Any]]:
+            try:
+                cur.execute(query, params)
+                return [dict(r) for r in (cur.fetchall() or [])]
+            except psycopg2.errors.UndefinedTable:
+                return []
+            except Exception as e:
+                warnings.append(str(e))
+                return []
+
+        ingest_row = fetch_one(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'WAIT_FOR_METADATA') AS waiting_metadata,
+                COUNT(*) FILTER (WHERE status = 'PROCESSING') AS processing,
+                COUNT(*) FILTER (WHERE status = 'READY') AS ready,
+                COUNT(*) FILTER (WHERE status = 'ERROR') AS error,
+                COUNT(*) AS total,
+                AVG(EXTRACT(EPOCH FROM (updated_at - created_at))) FILTER (
+                    WHERE status IN ('READY', 'ERROR')
+                ) AS avg_completion_seconds
+            FROM rag_job_runs
+            WHERE updated_at >= NOW() - make_interval(hours => %s)
+            """,
+            (window_hours,),
+        )
+        ingestion["counts"] = {
+            "waiting_metadata": _to_int(ingest_row.get("waiting_metadata"), 0),
+            "processing": _to_int(ingest_row.get("processing"), 0),
+            "ready": _to_int(ingest_row.get("ready"), 0),
+            "error": _to_int(ingest_row.get("error"), 0),
+            "total": _to_int(ingest_row.get("total"), 0),
+        }
+        ingestion["avg_completion_seconds"] = _to_float(ingest_row.get("avg_completion_seconds"), 1)
+
+        completed = ingestion["counts"]["ready"] + ingestion["counts"]["error"]
+        ingestion["success_rate"] = (
+            round(ingestion["counts"]["ready"] / completed, 3) if completed > 0 else None
+        )
+
+        top_errors_rows = fetch_all(
+            """
+            SELECT
+                LEFT(COALESCE(error, 'Unknown error'), 180) AS error,
+                COUNT(*) AS count
+            FROM rag_job_runs
+            WHERE
+                status = 'ERROR'
+                AND updated_at >= NOW() - make_interval(hours => %s)
+            GROUP BY LEFT(COALESCE(error, 'Unknown error'), 180)
+            ORDER BY count DESC, error ASC
+            LIMIT 5
+            """,
+            (window_hours,),
+        )
+        ingestion["top_errors"] = [
+            {
+                "error": str(r.get("error") or "Unknown error"),
+                "count": _to_int(r.get("count"), 0),
+            }
+            for r in top_errors_rows
+        ]
+
+        quality_row = fetch_one(
+            """
+            SELECT
+                COUNT(*) AS total_turns,
+                COUNT(*) FILTER (WHERE eval_quality = 'high') AS high_quality,
+                COUNT(*) FILTER (WHERE eval_quality = 'medium') AS medium_quality,
+                COUNT(*) FILTER (WHERE eval_quality = 'low') AS low_quality,
+                COUNT(*) FILTER (
+                    WHERE eval_quality IS NULL OR eval_quality NOT IN ('high', 'medium', 'low')
+                ) AS unknown_quality,
+                AVG(latency_ms) AS avg_latency_ms,
+                AVG(CASE WHEN cache_hit THEN 1.0 ELSE 0.0 END) AS cache_hit_rate
+            FROM rag_audit_log
+            WHERE created_at >= NOW() - make_interval(hours => %s)
+            """,
+            (window_hours,),
+        )
+        total_turns = _to_int(quality_row.get("total_turns"), 0)
+        low_turns = _to_int(quality_row.get("low_quality"), 0)
+        rag_quality["total_turns"] = total_turns
+        rag_quality["quality_distribution"] = {
+            "high": _to_int(quality_row.get("high_quality"), 0),
+            "medium": _to_int(quality_row.get("medium_quality"), 0),
+            "low": low_turns,
+            "unknown": _to_int(quality_row.get("unknown_quality"), 0),
+        }
+        rag_quality["cache_hit_rate"] = _to_float(quality_row.get("cache_hit_rate"), 3)
+        rag_quality["avg_latency_ms"] = _to_float(quality_row.get("avg_latency_ms"), 1)
+        rag_quality["low_quality_rate"] = round(low_turns / total_turns, 3) if total_turns > 0 else None
+
+        worst_docs_rows = fetch_all(
+            """
+            SELECT
+                company_document_id,
+                revision_number,
+                COUNT(*) AS turns,
+                AVG(latency_ms) AS avg_latency_ms,
+                AVG(CASE WHEN eval_quality = 'low' THEN 1.0 ELSE 0.0 END) AS low_quality_rate
+            FROM rag_audit_log
+            WHERE
+                created_at >= NOW() - make_interval(hours => %s)
+                AND COALESCE(company_document_id, '') <> ''
+            GROUP BY company_document_id, revision_number
+            HAVING COUNT(*) >= 3
+            ORDER BY low_quality_rate DESC NULLS LAST, avg_latency_ms DESC NULLS LAST, turns DESC
+            LIMIT 5
+            """,
+            (window_hours,),
+        )
+        rag_quality["worst_docs"] = [
+            {
+                "company_document_id": str(r.get("company_document_id") or ""),
+                "revision_number": str(r.get("revision_number") or ""),
+                "turns": _to_int(r.get("turns"), 0),
+                "avg_latency_ms": _to_float(r.get("avg_latency_ms"), 1),
+                "low_quality_rate": _to_float(r.get("low_quality_rate"), 3),
+            }
+            for r in worst_docs_rows
+        ]
+
+        feedback_row = fetch_one(
+            """
+            SELECT
+                COUNT(*) AS total_feedback,
+                COUNT(*) FILTER (
+                    WHERE feedback_label IN ('correct', 'helpful', 'thumbs_up')
+                ) AS positive_feedback,
+                COUNT(*) FILTER (
+                    WHERE feedback_label IN ('incorrect', 'hallucination', 'missing_context')
+                ) AS negative_feedback,
+                AVG(feedback_score::float) AS avg_score
+            FROM retrieval_feedback
+            WHERE created_at >= NOW() - make_interval(hours => %s)
+            """,
+            (window_hours,),
+        )
+        feedback["total"] = _to_int(feedback_row.get("total_feedback"), 0)
+        feedback["positive"] = _to_int(feedback_row.get("positive_feedback"), 0)
+        feedback["negative"] = _to_int(feedback_row.get("negative_feedback"), 0)
+        feedback["avg_score"] = _to_float(feedback_row.get("avg_score"), 2)
+
+        labels_rows = fetch_all(
+            """
+            SELECT
+                COALESCE(feedback_label, 'unknown') AS label,
+                COUNT(*) AS count
+            FROM retrieval_feedback
+            WHERE created_at >= NOW() - make_interval(hours => %s)
+            GROUP BY COALESCE(feedback_label, 'unknown')
+            ORDER BY count DESC, label ASC
+            LIMIT 8
+            """,
+            (window_hours,),
+        )
+        feedback["label_distribution"] = [
+            {
+                "label": str(r.get("label") or "unknown"),
+                "count": _to_int(r.get("count"), 0),
+            }
+            for r in labels_rows
+        ]
+    except Exception as e:
+        warnings.append(str(e))
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return {
+        "ingestion": ingestion,
+        "rag_quality": rag_quality,
+        "feedback": feedback,
+        "warnings": warnings,
+    }
 
 
 # -------------------- Database Introspection --------------------
@@ -810,6 +1068,26 @@ def active_models(_admin: User = Depends(require_admin)):
 def runtime_status(_admin: User = Depends(require_admin)):
     """Runtime visibility for GPU, RabbitMQ broker and worker queues."""
     return get_runtime_status()
+
+
+@router.get("/mvp/overview")
+def mvp_overview(
+    window_hours: int = Query(24, ge=1, le=168),
+    _admin: User = Depends(require_admin),
+):
+    """
+    MVP command center contract:
+    - runtime: GPU, queue, broker status
+    - ingestion: job funnel + failures
+    - rag_quality: quality/latency/cache metrics
+    - feedback: user feedback mix and score
+    """
+    return {
+        "window_hours": int(window_hours),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "runtime": get_runtime_status(),
+        **_collect_mvp_overview(int(window_hours)),
+    }
 
 
 @router.post("/models/hf/install")

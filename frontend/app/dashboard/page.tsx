@@ -24,6 +24,17 @@ interface DevtoolsHealthEntry {
   detail?: string;
 }
 
+function canAccessDeveloperDashboard(role?: string) {
+  const normalized = (role || "").trim().toLowerCase();
+  return (
+    normalized === "admin" ||
+    normalized === "developer" ||
+    normalized === "piping_admin" ||
+    normalized === "pipe_lead" ||
+    normalized === "pipe_stress_engineer"
+  );
+}
+
 export default function DashboardPage() {
   const router = useRouter();
 
@@ -231,7 +242,7 @@ export default function DashboardPage() {
       router.replace("/signin");
       return;
     }
-    if (u.role !== "admin" && u.role !== "developer") {
+    if (!canAccessDeveloperDashboard(u.role)) {
       router.replace("/");
       return;
     }

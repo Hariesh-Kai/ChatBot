@@ -12,7 +12,6 @@ import {
   FileText,
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRightOpen,
   Plus,
   Search,
 } from "lucide-react";
@@ -64,6 +63,8 @@ interface SidebarProps {
   teamAiAssistActive?: boolean;
   pmlCenterTab?: "editor" | "output";
   onPmlCenterTabChange?: (tab: "editor" | "output") => void;
+  pmlTemplateLibraryOpen?: boolean;
+  onPmlTemplateLibraryToggle?: () => void;
 }
 
 export default function Sidebar({
@@ -100,6 +101,8 @@ export default function Sidebar({
   teamAiAssistActive = false,
   pmlCenterTab = "editor",
   onPmlCenterTabChange,
+  pmlTemplateLibraryOpen = false,
+  onPmlTemplateLibraryToggle,
 }: SidebarProps) {
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -154,25 +157,29 @@ export default function Sidebar({
 
   return (
     <>
-      {isOpen &&  <div
-      onClick={() =>
-        !interactionBlocked &&
-        onClose()
-      }
-            className="fixed inset-0 z-30 bg-black/60 md:hidden"
-    />}
-      <aside
-        className={`app-sidebar-shell fixed left-0 top-0 z-40 h-[100dvh] overflow-hidden border-r border-white/10 bg-black transition-all duration-300 ease-in-out ${
-          isOpen
-            ? "app-sidebar-open-state w-[78vw] max-w-[18.5rem] sm:w-72"
-            : "app-sidebar-closed-state w-10 min-[361px]:w-11 sm:w-14"
+      <div
+        onClick={() => onClose()}
+        className={`fixed inset-0 z-40 bg-black/65 backdrop-blur-[1px] transition-opacity duration-300 md:hidden ${
+          isOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
         }`}
+      />
+      <aside
+        className={`app-sidebar-shell fixed left-0 top-0 z-[60] h-[100dvh] overflow-hidden border-r border-transparent bg-black transition-[width,box-shadow,border-color,border-radius] duration-320 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[width] ${
+          isOpen
+            ? "app-sidebar-open-state w-[86vw] min-w-[17rem] max-w-[22rem] rounded-r-2xl border-transparent shadow-[8px_0_24px_rgba(0,0,0,0.45)] md:w-72 md:min-w-0 md:max-w-none md:rounded-none md:border-transparent md:shadow-none"
+            : "app-sidebar-closed-state w-10 min-[361px]:w-11 sm:w-14"
+        } relative`}
       >
-        {!isOpen && (
-          <div className="app-sidebar-collapsed flex h-full flex-col items-center overflow-y-auto">
-            <div className="app-sidebar-collapsed-header flex h-12 w-full items-center justify-center border-b border-white/10 sm:h-14"><Brand iconOnly /></div>
+        <div
+          className={`app-sidebar-collapsed absolute inset-0 flex h-full flex-col items-center overflow-y-auto transition-[opacity,transform] duration-220 ease-out ${
+            isOpen
+              ? "pointer-events-none -translate-x-1 opacity-0"
+              : "pointer-events-auto translate-x-0 opacity-100"
+          }`}
+        >
+            <div className="app-sidebar-collapsed-header flex h-12 w-full items-center justify-center border-b border-transparent sm:h-14"><Brand iconOnly /></div>
             <div className="mt-3 flex flex-col gap-2.5 sm:mt-4 sm:gap-3">
-              <button onClick={onOpen} disabled={interactionBlocked} className="relative rounded-md p-1.5 text-gray-400 hover:bg-white/10 hover:text-white disabled:opacity-50 sm:p-2">
+              <button onClick={onOpen} className="relative rounded-md p-1.5 text-gray-400 hover:bg-white/10 hover:text-white sm:p-2">
                 <PanelLeftOpen size={18} />
                 {combinedUnread > 0 && (
                   <span className="absolute -right-1 -top-1 min-w-[16px] rounded-full bg-white px-1 text-center text-[10px] font-semibold text-black">
@@ -202,10 +209,10 @@ export default function Sidebar({
                 <button
                   type="button"
                   onClick={onTeamAiClick}
-                  className={`rounded-md p-1.5 transition sm:p-2 ${
+                  className={`rounded-md border p-1.5 transition sm:p-2 ${
                     teamAiAssistActive
-                      ? "bg-white text-black"
-                      : "bg-white text-black hover:bg-gray-200"
+                      ? "border-white/30 bg-white/10 text-white"
+                      : "border-white/15 bg-white/5 text-gray-200 hover:bg-white/10 hover:text-white"
                   }`}
                   title="Team AI Assist"
                   aria-label="Team AI Assist"
@@ -251,20 +258,24 @@ export default function Sidebar({
                     }`}
                     title="PML Output Panel"
                   >
-                    <PanelRightOpen size={16} />
+                    <FileText size={16} />
                   </button>
                 </>
               )}
             </div>
-          </div>
-        )}
+        </div>
 
-        {isOpen && (
-          <div className="app-sidebar-open flex h-full min-h-0 flex-col overflow-hidden">
-            <div className="app-sidebar-open-header flex h-12 items-center justify-between border-b border-white/10 px-3 sm:h-14 sm:px-4">
+        <div
+          className={`app-sidebar-open absolute inset-0 flex h-full min-h-0 flex-col overflow-hidden transition-[opacity,transform] duration-260 ease-out ${
+            isOpen
+              ? "pointer-events-auto translate-x-0 opacity-100"
+              : "pointer-events-none translate-x-1 opacity-0"
+          }`}
+        >
+            <div className="app-sidebar-open-header flex h-12 items-center justify-between border-b border-transparent px-3 sm:h-14 sm:px-4">
               <Brand iconOnly />
               <div className="flex items-center gap-1">
-                <button onClick={onClose} disabled={interactionBlocked} className="rounded-md p-1 text-gray-400 hover:bg-white/10 hover:text-white disabled:opacity-50"><PanelLeftClose size={16} /></button>
+                <button onClick={onClose} className="rounded-md p-1 text-gray-400 hover:bg-white/10 hover:text-white"><PanelLeftClose size={16} /></button>
               </div>
             </div>
             <div className="app-sidebar-controls space-y-3 px-2.5 py-3 sm:px-4 sm:py-4">
@@ -351,8 +362,20 @@ export default function Sidebar({
                           : "text-gray-200 hover:bg-white/10 hover:text-white"
                       }`}
                     >
-                      <PanelRightOpen size={14} />
+                      <FileText size={14} />
                       Output Panel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onPmlTemplateLibraryToggle}
+                      className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-xs font-medium transition ${
+                        pmlTemplateLibraryOpen
+                          ? "bg-white text-black"
+                          : "text-gray-200 hover:bg-white/10 hover:text-white"
+                      }`}
+                    >
+                      <FileText size={14} />
+                      Template Library
                     </button>
                   </div>
                 </div>
@@ -395,9 +418,6 @@ export default function Sidebar({
                     onSelect={(id) => {
                       if (isTyping) return;
                       onSelect(id);
-                      if (typeof window !== "undefined" && window.innerWidth < 768) {
-                        onClose();
-                      }
                     }}
                     onRename={(id) => {
                       const title = prompt("Rename chat");
@@ -420,9 +440,6 @@ export default function Sidebar({
                         type="button"
                         onClick={() => {
                           onSelectTeamProject?.(project.id);
-                          if (typeof window !== "undefined" && window.innerWidth < 768) {
-                            onClose();
-                          }
                         }}
                         className={`w-full rounded-lg border px-3 py-2 text-left transition ${
                           isActive
@@ -454,7 +471,7 @@ export default function Sidebar({
               )}
 
             </div>
-            <div className="app-sidebar-footer border-t border-white/10 px-2.5 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-4 sm:pb-3">
+            <div className="app-sidebar-footer border-t border-transparent px-2.5 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-4 sm:pb-3">
               <div className="flex items-center gap-2.5 sm:gap-3">
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/10 text-xs font-semibold text-white sm:h-9 sm:w-9 sm:text-sm">
                   {userInitial}
@@ -486,7 +503,7 @@ export default function Sidebar({
                 <div className="flex items-center justify-between gap-2">
                   <a
                     href="/dashboard"
-                    className="sidebar-dashboard-link truncate text-[11px] text-gray-400 hover:text-white hover:underline max-[360px]:hidden"
+                    className="sidebar-dashboard-link truncate text-[11px] text-gray-400 hover:text-white hover:underline max-[430px]:hidden"
                   >
                     Developer dashboard
                   </a>
@@ -501,8 +518,7 @@ export default function Sidebar({
                 </div>
               </div>
             </div>
-          </div>
-        )}
+        </div>
       </aside>
     </>
   );

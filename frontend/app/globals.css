@@ -106,6 +106,29 @@ button:active {
 }
 
 /* ===============================
+   Centering With Open Sidebar
+=============================== */
+
+/* Keep chat/prompt centered inside the visible area when drawer is open. */
+@media (max-width: 360px) {
+  .app-main-sidebar-open {
+    transform: translateX(calc((min(86vw, 22rem) - 2.5rem) / 2));
+  }
+}
+
+@media (min-width: 361px) and (max-width: 767px) {
+  .app-main-sidebar-open {
+    transform: translateX(calc((min(86vw, 22rem) - 2.75rem) / 2));
+  }
+}
+
+@media (min-width: 768px) {
+  .app-main-sidebar-open {
+    transform: translateX(7.25rem);
+  }
+}
+
+/* ===============================
    Animations (Unified)
 =============================== */
 

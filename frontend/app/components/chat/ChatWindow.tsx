@@ -966,7 +966,7 @@ useEffect(() => {
 
             <div className={`absolute inset-0 flex flex-col transition-opacity ${hasStarted ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
                 <div className="chat-window-scroll flex-1 overflow-y-auto px-2.5 pt-4 sm:px-4 sm:pt-6">
-                    <div className="mx-auto max-w-3xl space-y-5">
+                    <div className="mx-auto w-full max-w-3xl space-y-5">
                         {false && !inlineMetadataFields && currentStage && (
                           <div className="mb-6 flex justify-start">
                             <ProcessingBubble
@@ -1045,7 +1045,7 @@ useEffect(() => {
                 </div>
 
                 <div className="chat-window-input-area border-t border-white/10 bg-black pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-3 sm:pt-4">
-                    <div className="mx-auto max-w-3xl px-2.5 sm:px-4">
+                    <div className="mx-auto w-full max-w-3xl px-2.5 sm:px-4">
                       {/* ================= CHAT INPUT ================= */}
                       <ChatInput
                           ref={inputRef}

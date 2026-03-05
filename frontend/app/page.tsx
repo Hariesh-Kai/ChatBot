@@ -76,6 +76,7 @@ const DOC_ERROR_TEXT_PREFIX = "Document processing failed in background";
 const CHAT_READ_KEY_PREFIX = "kavin-chat-read-at";
 const WELCOME_SEEN_KEY_PREFIX = "kavin-welcome-seen";
 const WORKSPACE_MODE_KEY_PREFIX = "kavin-workspace-mode";
+const SIDEBAR_OPEN_KEY_PREFIX = "kavin-sidebar-open";
 
 function normalizeRevisionLabel(value?: string | number | null) {
   if (value === null || value === undefined) return "R-";
@@ -360,7 +361,7 @@ function AuthedHome({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [pmlChats, setPmlChats] = useState<ChatSession[]>([]);
   const [pmlActiveId, setPmlActiveId] = useState<string | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("ai");
   const [teamWorkspace, setTeamWorkspace] = useState<TeamWorkspaceState | null>(null);
   const [teamLoading, setTeamLoading] = useState(false);
@@ -380,9 +381,17 @@ function AuthedHome({
         .toLowerCase()}`,
     [user.email, user.username]
   );
+  const sidebarOpenKey = useMemo(
+    () =>
+      `${SIDEBAR_OPEN_KEY_PREFIX}:${(user.username || user.email || "default")
+        .trim()
+        .toLowerCase()}`,
+    [user.email, user.username]
+  );
   const teamMemberId = useMemo(() => getTeamMemberId(user), [user]);
   const [chatReadAt, setChatReadAt] = useState<Record<string, number>>({});
   const [readStateLoaded, setReadStateLoaded] = useState(false);
+  const [sidebarPrefLoaded, setSidebarPrefLoaded] = useState(false);
 
   const [sidebarMetadataRequest, setSidebarMetadataRequest] = useState<{
     jobId: string;
@@ -404,6 +413,7 @@ function AuthedHome({
   const [selectedTeamProjectId, setSelectedTeamProjectId] = useState<string | null>(null);
   const [projectSetupRequestId, setProjectSetupRequestId] = useState(0);
   const [pmlCenterTab, setPmlCenterTab] = useState<"editor" | "output">("editor");
+  const [showPmlTemplateLibraryMobile, setShowPmlTemplateLibraryMobile] = useState(false);
   const [pmlTemplates, setPmlTemplates] = useState<PmlTemplate[]>([]);
   const [pmlTemplatesLoading, setPmlTemplatesLoading] = useState(false);
   const [pmlTemplatesError, setPmlTemplatesError] = useState<string | null>(null);
@@ -432,7 +442,6 @@ function AuthedHome({
     };
     setChats((prev) => [newChat, ...prev]);
     setActiveId(newChat.id);
-    if (typeof window !== "undefined" && window.innerWidth < 768) setSidebarOpen(false);
   }, []);
 
   const createNewPmlChat = useCallback(() => {
@@ -446,7 +455,6 @@ function AuthedHome({
     setPmlChats((prev) => [newChat, ...prev]);
     setPmlActiveId(newChat.id);
     setPmlCenterTab("editor");
-    if (typeof window !== "undefined" && window.innerWidth < 768) setSidebarOpen(false);
   }, []);
 
   const closeGettingStarted = useCallback(() => {
@@ -516,6 +524,27 @@ function AuthedHome({
     }
     setWorkspaceMode("ai");
   }, [workspaceModeKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(sidebarOpenKey);
+      if (raw === "1") {
+        setSidebarOpen(true);
+      } else if (raw === "0") {
+        setSidebarOpen(false);
+      } else {
+        setSidebarOpen(false);
+      }
+    } finally {
+      setSidebarPrefLoaded(true);
+    }
+  }, [sidebarOpenKey]);
+
+  useEffect(() => {
+    if (!sidebarPrefLoaded || typeof window === "undefined") return;
+    window.localStorage.setItem(sidebarOpenKey, sidebarOpen ? "1" : "0");
+  }, [sidebarOpen, sidebarOpenKey, sidebarPrefLoaded]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -723,6 +752,12 @@ function AuthedHome({
     if (workspaceMode !== "team") {
       setTeamSidePanel("none");
       setTeamAiSeed(null);
+    }
+  }, [workspaceMode]);
+
+  useEffect(() => {
+    if (workspaceMode !== "pml") {
+      setShowPmlTemplateLibraryMobile(false);
     }
   }, [workspaceMode]);
 
@@ -2018,17 +2053,19 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
   return (
     <div className="flex h-full w-full bg-black text-white">
       <StartupSplash open={showStartup} onDone={() => setShowStartup(false)} />
-      <GettingStartedModal
-        open={showGettingStarted}
-        onClose={closeGettingStarted}
-        onOpenShortcuts={() => setShowShortcuts(true)}
-      />
-      <ShortcutsModal
-        open={showShortcuts}
-        onClose={() => setShowShortcuts(false)}
-        shortcuts={shortcuts}
-      />
-      <Sidebar
+      {!showStartup && (
+        <>
+          <GettingStartedModal
+            open={showGettingStarted}
+            onClose={closeGettingStarted}
+            onOpenShortcuts={() => setShowShortcuts(true)}
+          />
+          <ShortcutsModal
+            open={showShortcuts}
+            onClose={() => setShowShortcuts(false)}
+            shortcuts={shortcuts}
+          />
+          <Sidebar
         chats={workspaceMode === "pml" ? pmlChats : chats}
         activeId={workspaceMode === "pml" ? pmlActiveId : activeId}
         sessionId={workspaceMode === "pml" ? pmlActiveId : activeId}
@@ -2073,14 +2110,18 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
         showUpload={workspaceMode === "ai"}
         pmlCenterTab={pmlCenterTab}
         onPmlCenterTabChange={setPmlCenterTab}
+        pmlTemplateLibraryOpen={showPmlTemplateLibraryMobile}
+        onPmlTemplateLibraryToggle={() =>
+          setShowPmlTemplateLibraryMobile((prev) => !prev)
+        }
       />
 
-      <main
-        className={`app-main-shell relative flex h-full min-w-0 flex-1 flex-col transition-all duration-300 ease-in-out ${
-          sidebarOpen ? "md:ml-72" : "ml-10 min-[361px]:ml-11 md:ml-14"
+          <main
+        className={`app-main-shell relative flex h-full min-w-0 flex-1 flex-col ml-10 min-[361px]:ml-11 md:ml-14 transition-[margin-left,transform] duration-320 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[margin-left,transform] ${
+          sidebarOpen ? "app-main-sidebar-open" : ""
         }`}
       >
-        <header className="app-main-header h-14 shrink-0 border-b border-white/10 bg-black">
+        <header className="app-main-header h-14 shrink-0 border-b border-transparent bg-black">
           <div className="app-main-header-inner flex h-full items-center px-2 sm:px-4 md:px-6">
             <div className="flex min-w-0 items-center gap-2 sm:gap-3">
               <span className="truncate text-sm font-semibold tracking-wide text-white">
@@ -2093,6 +2134,15 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
                 onChange={setWorkspaceMode}
               />
             </div>
+            {workspaceMode === "pml" && (
+              <button
+                type="button"
+                onClick={() => setShowPmlTemplateLibraryMobile(true)}
+                className="ml-auto inline-flex items-center rounded-md border border-white/20 bg-white/5 px-2.5 py-1.5 text-xs font-medium text-gray-200 transition hover:bg-white/10 lg:hidden"
+              >
+                Templates
+              </button>
+            )}
           </div>
         </header>
 
@@ -2207,10 +2257,34 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
                 }}
                 onDelete={handleDeletePmlTemplate}
               />
+              {showPmlTemplateLibraryMobile && (
+                <>
+                  <button
+                    type="button"
+                    className="fixed inset-0 z-40 bg-black/60 lg:hidden"
+                    onClick={() => setShowPmlTemplateLibraryMobile(false)}
+                    aria-label="Close template library backdrop"
+                  />
+                  <aside className="fixed inset-y-14 right-0 z-50 flex w-full max-w-sm flex-col border-l border-transparent bg-black lg:hidden">
+                    <TemplateLibraryPanel
+                      mode="mobile"
+                      templates={pmlTemplates}
+                      loading={pmlTemplatesLoading}
+                      error={pmlTemplatesError}
+                      deletingId={pmlTemplateDeletingId}
+                      onRefresh={() => {
+                        void loadPmlTemplateLibrary();
+                      }}
+                      onDelete={handleDeletePmlTemplate}
+                      onClose={() => setShowPmlTemplateLibraryMobile(false)}
+                    />
+                  </aside>
+                </>
+              )}
             </div>
           ) : (
             <div className="relative flex h-full min-h-0 flex-col">
-              <div className="border-b border-white/10 bg-black px-2.5 py-2.5 sm:px-4 md:px-6">
+              <div className="border-b border-transparent bg-black px-2.5 py-2.5 sm:px-4 md:px-6">
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs font-semibold text-white sm:px-3 sm:py-2 sm:text-base">
                     <Users className="h-4 w-4 sm:h-5 sm:w-5" />
@@ -2283,8 +2357,8 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
                     </div>
 
                     {teamSidePanelOpen && (
-                      <aside className="hidden h-full w-[min(36vw,420px)] max-w-[420px] shrink-0 flex-col border-l border-white/10 bg-black/40 lg:flex">
-                        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+                      <aside className="hidden h-full w-[min(36vw,420px)] max-w-[420px] shrink-0 flex-col border-l border-transparent bg-black/40 lg:flex">
+                        <div className="flex items-center justify-between border-b border-transparent px-4 py-3">
                           <div className="text-sm font-semibold text-white">{teamSidePanelTitle}</div>
                           <button
                             type="button"
@@ -2316,8 +2390,8 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
                     onClick={() => setTeamSidePanel("none")}
                     aria-label="Close side panel backdrop"
                   />
-                  <aside className="team-mobile-sidepanel fixed inset-y-14 right-0 z-50 flex w-full max-w-sm flex-col border-l border-white/10 bg-black lg:hidden">
-                    <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+                  <aside className="team-mobile-sidepanel fixed inset-y-14 right-0 z-50 flex w-full max-w-sm flex-col border-l border-transparent bg-black lg:hidden">
+                    <div className="flex items-center justify-between border-b border-transparent px-4 py-3">
                       <div className="text-sm font-semibold text-white">{teamSidePanelTitle}</div>
                       <button
                         type="button"
@@ -2337,7 +2411,9 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
             </div>
           )}
         </div>
-      </main>
+          </main>
+        </>
+      )}
     </div>
   );
 }

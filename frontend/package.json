@@ -14,8 +14,6 @@
     "tauri:icon": "node scripts/run-tauri.mjs icon public/tauri-icon.png"
   },
   "dependencies": {
-    "clsx": "^2.1.1",
-    "highlight.js": "^11.11.1",
     "lucide-react": "^0.562.0",
     "next": "^16.1.1",
     "prism-react-renderer": "^2.4.1",
@@ -23,8 +21,7 @@
     "react-dom": "^19.2.3",
     "react-markdown": "^10.1.0",
     "react-textarea-autosize": "^8.5.9",
-    "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.4.0"
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

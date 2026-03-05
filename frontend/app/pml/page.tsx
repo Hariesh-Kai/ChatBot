@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { authMe } from "@/app/lib/api";
+import { pmlAuthMe } from "@/app/lib/pml-auth-api";
 
 const WORKSPACE_MODE_KEY_PREFIX = "kavin-workspace-mode";
 
@@ -12,7 +12,7 @@ export default function PmlEntryRedirectPage() {
   useEffect(() => {
     let cancelled = false;
 
-    authMe()
+    pmlAuthMe()
       .then((user) => {
         if (cancelled) return;
         if (!user) {

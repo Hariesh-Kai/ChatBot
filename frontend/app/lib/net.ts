@@ -31,7 +31,7 @@ export async function verifyNetKey(
   apiKey: string
 ): Promise<NetVerifyResult> {
   try {
-    const res = await fetch(`${API_BASE}/net/verify`, {
+    const res = await fetch(`${API_BASE}/net-key/verify`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

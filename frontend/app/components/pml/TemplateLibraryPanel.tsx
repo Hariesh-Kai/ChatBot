@@ -1,6 +1,6 @@
 "use client";
 
-import { RefreshCcw, Trash2 } from "lucide-react";
+import { RefreshCcw, Trash2, X } from "lucide-react";
 import type { PmlTemplate } from "@/app/lib/pml-api";
 
 interface TemplateLibraryPanelProps {
@@ -10,6 +10,8 @@ interface TemplateLibraryPanelProps {
   deletingId?: string | null;
   onRefresh: () => void;
   onDelete: (templateId: string) => Promise<void> | void;
+  mode?: "desktop" | "mobile";
+  onClose?: () => void;
 }
 
 function formatTimestamp(value?: string): string {
@@ -35,23 +37,45 @@ export default function TemplateLibraryPanel({
   deletingId,
   onRefresh,
   onDelete,
+  mode = "desktop",
+  onClose,
 }: TemplateLibraryPanelProps) {
+  const isMobileMode = mode === "mobile";
+
   return (
-    <aside className="hidden h-full w-[320px] shrink-0 border-l border-white/10 bg-black/30 lg:flex lg:flex-col">
+    <aside
+      className={
+        isMobileMode
+          ? "flex h-full w-full flex-col bg-black"
+          : "hidden h-full w-[320px] shrink-0 border-l border-white/10 bg-black/30 lg:flex lg:flex-col"
+      }
+    >
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
           <div className="text-sm font-semibold text-white">Template Library</div>
           <div className="text-[11px] text-gray-500">{templates.length} saved</div>
         </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={loading}
-          className="inline-flex items-center gap-1 rounded-md border border-white/20 bg-white/5 px-2 py-1 text-[11px] text-gray-200 transition hover:bg-white/10 disabled:opacity-50"
-        >
-          <RefreshCcw size={12} className={loading ? "animate-spin" : ""} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={loading}
+            className="inline-flex items-center gap-1 rounded-md border border-white/20 bg-white/5 px-2 py-1 text-[11px] text-gray-200 transition hover:bg-white/10 disabled:opacity-50"
+          >
+            <RefreshCcw size={12} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+          {isMobileMode && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/20 bg-white/5 text-gray-200 transition hover:bg-white/10"
+              aria-label="Close template library"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">

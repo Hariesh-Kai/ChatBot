@@ -34,6 +34,7 @@ from backend.api.net_key import router as net_key_router
 from backend.api.debug_rag import router as debug_router
 from backend.api.retrieve import router as retrieve_router
 from backend.api.pml_chat import router as pml_chat_router
+from backend.api.session import router as session_router
 
 # Render & DevTools
 from backend.api.render import router as render_router
@@ -161,6 +162,7 @@ app.include_router(upload_router, dependencies=_auth)               # POST /uplo
 app.include_router(metadata_correct_router, dependencies=_auth)     # POST /metadata/correct
 app.include_router(metadata_commit_router, dependencies=_auth)      # POST /metadata/update
 app.include_router(abort_router, dependencies=_auth)                # POST /abort
+app.include_router(session_router, dependencies=_auth)              # /session/*
 
 # ============================================================
 #  NEW ROUTER REGISTRATION (LEARNING FEEDBACK)

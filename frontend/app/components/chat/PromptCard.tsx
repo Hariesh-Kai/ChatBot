@@ -18,7 +18,7 @@ export default function PromptCard({
       onClick={() => !disabled && onClick?.()}
       disabled={disabled}
       className={`
-        w-full rounded-xl border p-4 text-left transition-all duration-200
+        w-full rounded-xl border p-3 text-left transition-all duration-200 sm:p-4
         ${
           disabled
             ? "border-white/5 bg-[#1a1a1a]/50 text-gray-600 cursor-not-allowed" // Disabled style
@@ -26,7 +26,7 @@ export default function PromptCard({
         }
       `}
     >
-      <h3 className={`text-sm font-medium ${disabled ? "text-gray-500" : "text-white"}`}>
+      <h3 className={`text-xs font-medium sm:text-sm ${disabled ? "text-gray-500" : "text-white"}`}>
         {title}
       </h3>
       <p className={`mt-1 text-xs ${disabled ? "text-gray-600" : "text-gray-400"}`}>

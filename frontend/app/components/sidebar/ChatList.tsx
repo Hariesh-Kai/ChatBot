@@ -61,7 +61,7 @@ export default function ChatList({
             key={chat.id}
             className={`
               group relative flex items-center
-              rounded-[12px] px-3 py-2.5 text-sm
+              rounded-[12px] px-2.5 py-2 text-xs sm:px-3 sm:py-2.5 sm:text-sm
               cursor-pointer
               transition-all duration-200
               ${
@@ -96,7 +96,7 @@ export default function ChatList({
                 ml-2 flex items-center justify-center
                 rounded-md p-1
                 text-gray-400 hover:text-white hover:bg-white/10
-                opacity-0 transition-opacity group-hover:opacity-100
+                opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100
               "
               aria-label="Chat options"
             >

@@ -83,6 +83,7 @@ export default function EmptyState({
     },
   ];
   const effectivePrompts = prompts ?? defaultPrompts;
+  const verticalNudgeClass = showSummaryCard ? "" : "md:-translate-y-4";
 
   function handleSubmit(text?: string) {
     if (disabled) return;
@@ -93,10 +94,10 @@ export default function EmptyState({
   }
 
   return (
-    <div className="flex h-full w-full items-center justify-center">
-      <div className="w-full max-w-3xl px-4 text-center animate-fade-in">
+    <div className={`empty-state-shell flex h-full w-full items-center justify-center ${verticalNudgeClass}`}>
+      <div className="empty-state-content w-full max-w-3xl px-2.5 text-center animate-fade-in sm:px-4">
         {showSummaryCard && (
-          <div className="mb-6 rounded-2xl border border-white/10 bg-[radial-gradient(circle_at_top_right,#1f2937_0%,#0f172a_35%,#0a0a0a_100%)] p-4 text-left shadow-lg">
+          <div className="empty-state-summary mb-6 rounded-2xl border border-white/10 bg-[radial-gradient(circle_at_top_right,#1f2937_0%,#0f172a_35%,#0a0a0a_100%)] p-4 text-left shadow-lg">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-300">User Dashboard</div>
@@ -122,13 +123,13 @@ export default function EmptyState({
           </div>
         )}
 
-        <h1 className="text-2xl font-semibold text-white">{heroTitle || "How can I help you today?"}</h1>
-        <p className="mt-2 text-sm text-gray-400">
+        <h1 className="text-xl font-semibold text-white sm:text-2xl">{heroTitle || "How can I help you today?"}</h1>
+        <p className="mt-2 text-xs text-gray-400 sm:text-sm">
           {heroSubtitle || "Ask a question or upload a PDF to get started"}
         </p>
 
-        <div className="mt-8">
-          <div className={`flex items-end gap-3 rounded-xl border border-white/25 bg-[#1a1a1a] px-3 py-3 shadow-md transition ${disabled ? "opacity-60" : ""}`}>
+        <div className="mt-6 sm:mt-8">
+          <div className={`empty-state-input flex items-end gap-3 rounded-3xl border border-white/25 bg-[#1a1a1a] px-3 py-3 shadow-md transition ${disabled ? "opacity-60" : ""}`}>
             {showUploadButton && (
               <div className="pb-1">
                 <PdfUploadButton
@@ -153,14 +154,14 @@ export default function EmptyState({
                 if (e.key === "Enter" && canSend) handleSubmit();
               }}
               placeholder={disabled ? "AI is responding..." : "Ask anything..."}
-              className="flex-1 bg-transparent py-3 text-sm text-white outline-none placeholder:text-gray-500"
+              className="flex-1 bg-transparent py-2.5 text-[13px] text-white outline-none placeholder:text-gray-500 sm:py-3 sm:text-sm"
             />
 
             <div className="pb-1">
               <button
                 onClick={() => canSend && handleSubmit()}
                 disabled={!canSend}
-                className={`flex h-9 w-9 items-center justify-center rounded-lg transition ${
+                className={`flex h-8 w-8 items-center justify-center rounded-xl transition sm:h-9 sm:w-9 sm:rounded-2xl ${
                   canSend
                     ? "bg-white text-black hover:bg-gray-200"
                     : "cursor-not-allowed bg-white/10 text-gray-500"
@@ -173,7 +174,7 @@ export default function EmptyState({
         </div>
 
         {(showPmlEntryCard || effectivePrompts.length > 0) && (
-          <div className="mt-8 grid w-full grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="empty-state-prompts mt-6 grid w-full grid-cols-1 gap-3 sm:mt-8 sm:gap-4 sm:grid-cols-2">
             {showPmlEntryCard && (
               <a
                 href="/pml"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 PML_SYSTEM_PROMPT = """
@@ -30,8 +30,35 @@ def _normalize_history(history: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return normalized
 
 
-def build_pml_messages(question: str, history: List[Dict[str, str]]) -> List[Dict[str, str]]:
+def _build_examples_prompt(examples: List[Dict[str, str]]) -> str:
+    lines: List[str] = [
+        "Reference patterns learned from your PML examples.",
+        "Reuse structure and naming where relevant, but adapt to the new requirement.",
+        "Do not copy unrelated logic blindly.",
+    ]
+    for idx, item in enumerate(examples, start=1):
+        code = str(item.get("code") or "").strip()
+        if not code:
+            continue
+        note = str(item.get("note") or "").strip()
+        source = str(item.get("source") or "").strip()
+        meta_parts = [part for part in [note, source] if part]
+        meta = f" ({' | '.join(meta_parts)})" if meta_parts else ""
+        lines.append(f"Example {idx}{meta}:")
+        lines.append("```pml")
+        lines.append(code)
+        lines.append("```")
+    return "\n".join(lines)
+
+
+def build_pml_messages(
+    question: str,
+    history: List[Dict[str, str]],
+    examples: Optional[List[Dict[str, str]]] = None,
+) -> List[Dict[str, str]]:
     messages: List[Dict[str, str]] = [{"role": "system", "content": PML_SYSTEM_PROMPT}]
+    if examples:
+        messages.append({"role": "system", "content": _build_examples_prompt(examples)})
     messages.extend(_normalize_history(history))
     messages.append({"role": "user", "content": question.strip()})
     return messages

@@ -141,7 +141,7 @@ export default function WelcomePage() {
           <div className="flex items-center gap-3">
             <Image src="/kavin-logo.svg" alt="Kavin" width={30} height={30} />
             <div>
-              <div className="text-[11px] uppercase tracking-[0.18em] text-sky-300">KavinBase Own</div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-sky-300">KavinBase Base</div>
               <h1 className="text-xl font-semibold">Launch Workspace</h1>
             </div>
           </div>

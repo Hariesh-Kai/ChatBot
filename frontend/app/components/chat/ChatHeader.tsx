@@ -139,16 +139,16 @@ export default function ChatHeader({
     <>
       <header
         className={`
-          sticky top-0 z-40 h-14
+          chat-top-header sticky top-0 z-40 h-14
           border-b border-white/10 bg-black
           transition-opacity
           ${isTyping ? "opacity-70" : ""}
         `}
       >
-        <div className="flex h-full items-center justify-between px-4">
+        <div className="flex h-full items-center justify-between px-2.5 sm:px-4">
 
           {/* ================= LEFT — MODEL DROPDOWN ================= */}
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
             <Avatar
               role="assistant"
               assistantLabel={avatar.label}
@@ -159,24 +159,24 @@ export default function ChatHeader({
             {lockModelSelector ? (
               <div
                 className="
-                  flex items-center gap-1
-                  text-xs font-medium text-gray-400
+                  flex max-w-[120px] items-center gap-1
+                  text-[11px] font-medium text-gray-400 sm:text-xs
                 "
               >
-                {activeLabel}
+                <span className="truncate">{activeLabel}</span>
               </div>
             ) : (
               <button
                 onClick={() => !isTyping && setModelOpen((v) => !v)}
                 disabled={isTyping}
                 className="
-                  flex items-center gap-1
-                  text-xs font-medium text-gray-400
+                  flex max-w-[120px] items-center gap-1
+                  text-[11px] font-medium text-gray-400 sm:text-xs
                   hover:text-white
                   disabled:opacity-50
                 "
               >
-                {activeLabel}
+                <span className="truncate">{activeLabel}</span>
                 {activeModel === "net" && (
                   <Cloud size={12} className="text-cyan-300" />
                 )}
@@ -187,7 +187,7 @@ export default function ChatHeader({
             {!lockModelSelector && modelOpen && (
               <div
                 className="
-                  absolute left-0 mt-2 w-52
+                  absolute left-0 mt-2 w-44 sm:w-52
                   rounded-md border border-white/10
                   bg-black shadow-xl z-50
                 "
@@ -234,9 +234,9 @@ export default function ChatHeader({
           </div>
 
           {/* ================= CENTER — CHAT TITLE ================= */}
-          <div className="flex-1 text-center px-4">
+          <div className="max-[360px]:hidden flex-1 px-2 text-center sm:px-4">
             {!editing ? (
-              <span className="block truncate text-sm font-medium text-white">
+              <span className="block truncate text-[13px] font-medium text-white sm:text-sm">
                 {title || " "}
               </span>
             ) : (
@@ -260,7 +260,7 @@ export default function ChatHeader({
           </div>
 
           {/* ================= RIGHT — ACTIONS ================= */}
-          <div className="flex items-center gap-1">
+            <div className="flex items-center gap-0.5 sm:gap-1">
             {ingestionPollingActive && (
               <div
                 title="Document processing is running in background"
@@ -284,7 +284,7 @@ export default function ChatHeader({
                 disabled={isTyping}
                 title="Configure KavinBase Net v1.0"
                 className="
-                  rounded-md p-2 text-cyan-300
+                  rounded-md p-1.5 text-cyan-300 sm:p-2
                   hover:bg-white/10 hover:text-cyan-200
                   disabled:opacity-50
                 "
@@ -300,7 +300,7 @@ export default function ChatHeader({
                   disabled={isTyping}
                   title="Rename chat"
                   className="
-                    rounded-md p-2 text-gray-400
+                    rounded-md p-1.5 text-gray-400 sm:p-2
                     hover:text-white hover:bg-white/10
                     disabled:opacity-50
                   "
@@ -313,7 +313,7 @@ export default function ChatHeader({
                   disabled={isTyping}
                   title="Clear messages"
                   className="
-                    rounded-md p-2 text-gray-400
+                    rounded-md p-1.5 text-gray-400 sm:p-2
                     hover:text-white hover:bg-white/10
                     disabled:opacity-50
                   "
@@ -328,7 +328,7 @@ export default function ChatHeader({
                   disabled={isTyping}
                   title="Save title"
                   className="
-                    rounded-md p-2 text-cyan-300
+                    rounded-md p-1.5 text-cyan-300 sm:p-2
                     hover:bg-white/10
                     disabled:opacity-50
                   "
@@ -340,7 +340,7 @@ export default function ChatHeader({
                   onClick={cancelEdit}
                   title="Cancel"
                   className="
-                    rounded-md p-2 text-gray-400
+                    rounded-md p-1.5 text-gray-400 sm:p-2
                     hover:text-white hover:bg-white/10
                   "
                 >

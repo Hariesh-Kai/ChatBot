@@ -27,14 +27,14 @@ export default function WorkspaceModeSwitcher({
   const inactiveClass = "text-gray-300 hover:bg-white/10 hover:text-white";
 
   return (
-    <div className="rounded-[12px] border border-white/10 bg-black p-1">
-      <div className="flex items-center gap-1">
+    <div className="mode-switcher max-w-full overflow-x-auto rounded-[12px] border border-white/10 bg-black p-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex min-w-max items-center gap-1">
         <button
           type="button"
           onClick={() => onChange("ai")}
-          className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-all duration-200 ${isAiMode ? activeClass : inactiveClass}`}
+          className={`inline-flex items-center gap-1 rounded-md px-1.5 py-1.5 text-[10px] font-medium transition-all duration-200 min-[361px]:px-2 min-[361px]:text-[11px] sm:gap-1.5 sm:px-2.5 sm:text-xs ${isAiMode ? activeClass : inactiveClass}`}
         >
-          <Bot size={13} />
+          <Bot size={13} className="hidden sm:block" />
           AI
         </button>
 
@@ -42,9 +42,9 @@ export default function WorkspaceModeSwitcher({
           <button
             type="button"
             onClick={() => onChange("team")}
-            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-all duration-200 ${isTeamMode ? activeClass : inactiveClass}`}
+            className={`inline-flex items-center gap-1 rounded-md px-1.5 py-1.5 text-[10px] font-medium transition-all duration-200 min-[361px]:px-2 min-[361px]:text-[11px] sm:gap-1.5 sm:px-2.5 sm:text-xs ${isTeamMode ? activeClass : inactiveClass}`}
           >
-            <MessagesSquare size={13} />
+            <MessagesSquare size={13} className="hidden sm:block" />
             Team
             {teamUnreadTotal > 0 && (
               <span className={`rounded-full px-1.5 text-[10px] leading-4 ${
@@ -62,9 +62,9 @@ export default function WorkspaceModeSwitcher({
           <button
             type="button"
             onClick={() => onChange("pml")}
-            className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-all duration-200 ${isPmlMode ? activeClass : inactiveClass}`}
+            className={`inline-flex items-center gap-1 rounded-md px-1.5 py-1.5 text-[10px] font-medium transition-all duration-200 min-[361px]:px-2 min-[361px]:text-[11px] sm:gap-1.5 sm:px-2.5 sm:text-xs ${isPmlMode ? activeClass : inactiveClass}`}
           >
-            <Code2 size={13} />
+            <Code2 size={13} className="hidden sm:block" />
             PML
           </button>
         )}

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Bell, FileClock, Users, X } from "lucide-react";
 import Sidebar from "@/app/components/sidebar/Sidebar";
 import ChatWindow from "@/app/components/chat/ChatWindow";
+import TemplateLibraryPanel from "@/app/components/pml/TemplateLibraryPanel";
 import EnterpriseMessagingWorkspace from "@/app/components/messaging/EnterpriseMessagingWorkspace";
 import WorkspaceModeSwitcher from "@/app/components/workspace/WorkspaceModeSwitcher";
 import StartupSplash from "@/app/components/StartupSplash";
@@ -41,7 +42,13 @@ import {
   type PendingIngestionPollItem,
 } from "@/app/hooks/useIngestionStatusPoller";
 import { API_BASE } from "@/app/lib/config";
-import { streamPmlChat } from "@/app/lib/pml-api";
+import {
+  deletePmlTemplate as deletePmlTemplateApi,
+  fetchPmlTemplates,
+  learnPmlTemplate,
+  streamPmlChat,
+  type PmlTemplate,
+} from "@/app/lib/pml-api";
 import { getRoleLabel } from "@/app/lib/org-role-catalog";
 import type {
   WorkspaceDocumentRow,
@@ -397,6 +404,10 @@ function AuthedHome({
   const [selectedTeamProjectId, setSelectedTeamProjectId] = useState<string | null>(null);
   const [projectSetupRequestId, setProjectSetupRequestId] = useState(0);
   const [pmlCenterTab, setPmlCenterTab] = useState<"editor" | "output">("editor");
+  const [pmlTemplates, setPmlTemplates] = useState<PmlTemplate[]>([]);
+  const [pmlTemplatesLoading, setPmlTemplatesLoading] = useState(false);
+  const [pmlTemplatesError, setPmlTemplatesError] = useState<string | null>(null);
+  const [pmlTemplateDeletingId, setPmlTemplateDeletingId] = useState<string | null>(null);
 
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const pmlChatsRef = useRef<ChatSession[]>([]);
@@ -1256,6 +1267,57 @@ function AuthedHome({
     return trimmed.length > 40 ? `${trimmed.slice(0, 40)}...` : trimmed;
   }, []);
 
+  const loadPmlTemplateLibrary = useCallback(async () => {
+    setPmlTemplatesLoading(true);
+    setPmlTemplatesError(null);
+    try {
+      const res = await fetchPmlTemplates(120);
+      const list = Array.isArray(res?.templates) ? res.templates : [];
+      setPmlTemplates(list);
+    } catch (err: any) {
+      setPmlTemplatesError(err?.message || "Failed to load templates.");
+    } finally {
+      setPmlTemplatesLoading(false);
+    }
+  }, []);
+
+  const handleDeletePmlTemplate = useCallback(
+    async (templateId: string) => {
+      const cleanId = (templateId || "").trim();
+      if (!cleanId) return;
+
+      setPmlTemplateDeletingId(cleanId);
+      setPmlTemplatesError(null);
+      try {
+        await deletePmlTemplateApi(cleanId);
+        setPmlTemplates((prev) => prev.filter((item) => item.id !== cleanId));
+      } catch (err: any) {
+        setPmlTemplatesError(err?.message || "Failed to delete template.");
+      } finally {
+        setPmlTemplateDeletingId(null);
+      }
+    },
+    []
+  );
+
+  const handleSavePmlTemplate = useCallback(
+    async (content: string) => {
+      const code = (content || "").trim();
+      if (!code) {
+        throw new Error("No code found to save.");
+      }
+
+      const note =
+        pmlActiveChat && pmlActiveChat.title && pmlActiveChat.title !== "New Chat"
+          ? `chat:${pmlActiveChat.title}`
+          : "pml-ui";
+
+      await learnPmlTemplate({ code, note });
+      await loadPmlTemplateLibrary();
+    },
+    [pmlActiveChat, loadPmlTemplateLibrary]
+  );
+
   const handleAiSelectChat = useCallback((id: string) => {
     setActiveId(id);
   }, []);
@@ -1851,6 +1913,11 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
     }
   }, [workspaceMode, pmlChats, pmlActiveId, handlePmlNewChat]);
 
+  useEffect(() => {
+    if (workspaceMode !== "pml") return;
+    void loadPmlTemplateLibrary();
+  }, [workspaceMode, loadPmlTemplateLibrary]);
+
   const workspaceName = "KAVIN Workspace";
   const unassignedProjectCount = useMemo(() => {
     if (!teamWorkspace?.projects?.length) return 0;
@@ -2009,15 +2076,16 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
       />
 
       <main
-        className={`relative flex h-full min-w-0 flex-1 flex-col transition-all duration-300 ease-in-out ${
-          sidebarOpen ? "md:ml-72" : "md:ml-14"
+        className={`app-main-shell relative flex h-full min-w-0 flex-1 flex-col transition-all duration-300 ease-in-out ${
+          sidebarOpen ? "md:ml-72" : "ml-10 min-[361px]:ml-11 md:ml-14"
         }`}
       >
-        <header className="h-14 shrink-0 border-b border-white/10 bg-black">
-          <div className="flex h-full items-center px-4 md:px-6">
-            <div className="flex min-w-0 items-center gap-3">
+        <header className="app-main-header h-14 shrink-0 border-b border-white/10 bg-black">
+          <div className="app-main-header-inner flex h-full items-center px-2 sm:px-4 md:px-6">
+            <div className="flex min-w-0 items-center gap-2 sm:gap-3">
               <span className="truncate text-sm font-semibold tracking-wide text-white">
-                {workspaceName}
+                <span className="max-[360px]:hidden sm:hidden">KAVIN</span>
+                <span className="hidden sm:inline">{workspaceName}</span>
               </span>
               <WorkspaceModeSwitcher
                 workspaceMode={workspaceMode}
@@ -2062,12 +2130,12 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
               </div>
             )
           ) : workspaceMode === "pml" ? (
-            <div className="flex h-full min-h-0 flex-col">
+            <div className="flex h-full min-h-0">
               <div className="min-h-0 flex-1">
                 {pmlCenterTab === "output" ? (
-                  <div className="h-full overflow-y-auto bg-black px-4 py-6 md:px-6">
-                    <div className="mx-auto max-w-5xl rounded-[14px] border border-white/10 bg-black/20 p-6 shadow-[0_4px_20px_rgba(0,0,0,0.25)]">
-                      <div className="mb-3 flex items-center justify-between">
+                  <div className="h-full overflow-y-auto bg-black px-3 py-4 sm:px-4 md:px-6 md:py-6">
+                    <div className="mx-auto max-w-5xl rounded-[14px] border border-white/10 bg-black/20 p-4 shadow-[0_4px_20px_rgba(0,0,0,0.25)] sm:p-6">
+                      <div className="mb-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <h3 className="text-sm font-semibold text-white">PML Output Panel</h3>
                         <button
                           type="button"
@@ -2078,7 +2146,7 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
                         </button>
                       </div>
                       {latestPmlOutput ? (
-                        <pre className="max-h-[65vh] overflow-auto rounded-lg border border-white/10 bg-black p-3 text-xs text-gray-200">
+                        <pre className="max-h-[62vh] overflow-auto rounded-lg border border-white/10 bg-black p-3 text-xs text-gray-200">
                           {latestPmlOutput}
                         </pre>
                       ) : (
@@ -2120,6 +2188,8 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
                     disclaimerText="Generated code can contain mistakes. Validate before production use."
                     generateTitleOverride={handlePmlTitleOverride}
                     inputRefExternal={chatInputRef}
+                    onSaveLatestAssistant={handleSavePmlTemplate}
+                    saveLatestAssistantLabel="Save as PML Template"
                   />
                 ) : (
                   <div className="flex h-full items-center justify-center text-gray-500">
@@ -2127,16 +2197,27 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
                   </div>
                 )}
               </div>
+              <TemplateLibraryPanel
+                templates={pmlTemplates}
+                loading={pmlTemplatesLoading}
+                error={pmlTemplatesError}
+                deletingId={pmlTemplateDeletingId}
+                onRefresh={() => {
+                  void loadPmlTemplateLibrary();
+                }}
+                onDelete={handleDeletePmlTemplate}
+              />
             </div>
           ) : (
             <div className="relative flex h-full min-h-0 flex-col">
-              <div className="border-b border-white/10 bg-black px-3 py-2.5 sm:px-4 md:px-6">
+              <div className="border-b border-white/10 bg-black px-2.5 py-2.5 sm:px-4 md:px-6">
                 <div className="flex flex-wrap items-center gap-2">
-                  <div className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm font-semibold text-white sm:text-base">
+                  <div className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-xs font-semibold text-white sm:px-3 sm:py-2 sm:text-base">
                     <Users className="h-4 w-4 sm:h-5 sm:w-5" />
-                    Team Workspace
+                    <span className="sm:hidden">Team</span>
+                    <span className="hidden sm:inline">Team Workspace</span>
                   </div>
-                  <div className="ml-auto flex items-center gap-2">
+                  <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
                     <button
                       type="button"
                       onClick={() =>
@@ -2146,13 +2227,13 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
                       }
                       title="Notifications"
                       aria-label="Notifications"
-                      className={`relative inline-flex h-11 items-center gap-2 rounded-lg border px-3 transition ${
+                      className={`relative inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 transition sm:h-11 sm:gap-2 sm:px-3 ${
                         teamSidePanel === "notifications"
                           ? "border-white bg-white text-black"
                           : "border-white/15 bg-white/5 text-gray-200 hover:bg-white/10 hover:text-white"
                       }`}
                     >
-                      <Bell className="h-5 w-5" />
+                      <Bell className="h-4 w-4 sm:h-5 sm:w-5" />
                       <span className="hidden text-sm font-medium sm:inline">Notifications</span>
                       {teamUnreadNotificationCount > 0 && (
                         <span className="absolute -right-1 -top-1 inline-flex min-w-[18px] items-center justify-center rounded-full bg-white px-1 text-[10px] font-semibold text-black">
@@ -2167,13 +2248,13 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
                       }
                       title="Document History"
                       aria-label="Document History"
-                      className={`inline-flex h-11 items-center gap-2 rounded-lg border px-3 transition ${
+                      className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 transition sm:h-11 sm:gap-2 sm:px-3 ${
                         teamSidePanel === "history"
                           ? "border-white bg-white text-black"
                           : "border-white/15 bg-white/5 text-gray-200 hover:bg-white/10 hover:text-white"
                       }`}
                     >
-                      <FileClock className="h-5 w-5" />
+                      <FileClock className="h-4 w-4 sm:h-5 sm:w-5" />
                       <span className="hidden text-sm font-medium sm:inline">History</span>
                     </button>
                   </div>
@@ -2235,7 +2316,7 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
                     onClick={() => setTeamSidePanel("none")}
                     aria-label="Close side panel backdrop"
                   />
-                  <aside className="fixed inset-y-14 right-0 z-50 flex w-full max-w-sm flex-col border-l border-white/10 bg-black lg:hidden">
+                  <aside className="team-mobile-sidepanel fixed inset-y-14 right-0 z-50 flex w-full max-w-sm flex-col border-l border-white/10 bg-black lg:hidden">
                     <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
                       <div className="text-sm font-semibold text-white">{teamSidePanelTitle}</div>
                       <button

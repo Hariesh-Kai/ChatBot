@@ -166,6 +166,8 @@ interface ChatWindowProps {
   inputPlaceholderText?: string;
   disclaimerText?: string;
   generateTitleOverride?: (question: string) => Promise<string>;
+  onSaveLatestAssistant?: (content: string) => Promise<void> | void;
+  saveLatestAssistantLabel?: string;
 }
 
 type FinalizeOptions = {
@@ -206,6 +208,8 @@ export default function ChatWindow({
   inputPlaceholderText,
   disclaimerText = "KavinBase can make mistakes. Verify important information.",
   generateTitleOverride,
+  onSaveLatestAssistant,
+  saveLatestAssistantLabel = "Save as Template",
 }: ChatWindowProps) {
   
   // --- UI State ---
@@ -226,6 +230,8 @@ export default function ChatWindow({
   const [netRateLimitedUntil, setNetRateLimitedUntil] = useState<number | null>(null);
   const [ragSteps, setRagSteps] = useState<{ stage: string; message: string; ts: number }[]>([]);
   const [ragPanelOpen, setRagPanelOpen] = useState(false);
+  const [saveTemplateBusy, setSaveTemplateBusy] = useState(false);
+  const [saveTemplateStatus, setSaveTemplateStatus] = useState<string | null>(null);
 
   
   const [pendingJobId, setPendingJobId] = useState<string | null>(null);
@@ -249,8 +255,18 @@ export default function ChatWindow({
   const jobFinishedRef = useRef(false);
   const externalMetadataSeenJobIdRef = useRef<string | null>(null);
   const lastModelRef = useRef<KavinModelId>(model);
-  const modelLabel = useMemo(() => SAFE_MODELS.find((m) => m.id === model)?.label ?? "KavinBase Own v1.0", [model]);
+  const modelLabel = useMemo(() => SAFE_MODELS.find((m) => m.id === model)?.label ?? "KavinBase Base v1.0", [model]);
   const lastMessageContent = messages[messages.length - 1]?.content;
+  const latestAssistantContent = useMemo(() => {
+    for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+      const item = messages[idx];
+      if (item.role !== "assistant") continue;
+      const content = (item.content || "").trim();
+      if (!content) continue;
+      return content;
+    }
+    return "";
+  }, [messages]);
 
 
   // --- Blocking Logic ---
@@ -858,6 +874,26 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
     }
   }
 
+  async function handleSaveLatestAssistant() {
+    if (!onSaveLatestAssistant || saveTemplateBusy) return;
+    const code = latestAssistantContent.trim();
+    if (!code) {
+      setSaveTemplateStatus("No generated code to save yet.");
+      return;
+    }
+
+    setSaveTemplateBusy(true);
+    setSaveTemplateStatus(null);
+    try {
+      await Promise.resolve(onSaveLatestAssistant(code));
+      setSaveTemplateStatus("Saved as PML template.");
+    } catch (err: any) {
+      setSaveTemplateStatus(err?.message || "Failed to save template.");
+    } finally {
+      setSaveTemplateBusy(false);
+    }
+  }
+
   
 
  
@@ -882,7 +918,7 @@ useEffect(() => {
   // ----------------------------------------------------------------------
   return (
     <>
-      <div className="relative h-full w-full flex flex-col">
+      <div className="chat-window-shell relative h-full w-full flex flex-col">
         <ChatHeader 
           key={sessionId ?? "new"}
           title={title}
@@ -929,7 +965,7 @@ useEffect(() => {
             </div>
 
             <div className={`absolute inset-0 flex flex-col transition-opacity ${hasStarted ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
-                <div className="flex-1 overflow-y-auto px-4 pt-6">
+                <div className="chat-window-scroll flex-1 overflow-y-auto px-2.5 pt-4 sm:px-4 sm:pt-6">
                     <div className="mx-auto max-w-3xl space-y-5">
                         {false && !inlineMetadataFields && currentStage && (
                           <div className="mb-6 flex justify-start">
@@ -1008,8 +1044,8 @@ useEffect(() => {
                     </div>
                 </div>
 
-                <div className="border-t border-white/10 bg-black pt-4 pb-2">
-                    <div className="mx-auto max-w-3xl px-4">
+                <div className="chat-window-input-area border-t border-white/10 bg-black pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-3 sm:pt-4">
+                    <div className="mx-auto max-w-3xl px-2.5 sm:px-4">
                       {/* ================= CHAT INPUT ================= */}
                       <ChatInput
                           ref={inputRef}
@@ -1030,9 +1066,26 @@ useEffect(() => {
                         />
 
                         {/*  DISCLAIMER ADDED */}
-                        <div className="mt-2">
+                        <div className="chat-window-disclaimer mt-2">
                             <Disclaimer text={disclaimerText} />
                         </div>
+                        {onSaveLatestAssistant && (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void handleSaveLatestAssistant();
+                              }}
+                              disabled={saveTemplateBusy || !latestAssistantContent.trim()}
+                              className="rounded-md border border-white/30 bg-white px-3 py-1.5 text-xs font-medium text-black transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {saveTemplateBusy ? "Saving..." : saveLatestAssistantLabel}
+                            </button>
+                            {saveTemplateStatus && (
+                              <span className="text-[11px] text-gray-400">{saveTemplateStatus}</span>
+                            )}
+                          </div>
+                        )}
                     </div>
                 </div>
             </div>

@@ -161,12 +161,18 @@ export default function Sidebar({
       }
             className="fixed inset-0 z-30 bg-black/60 md:hidden"
     />}
-      <aside className={`fixed left-0 top-0 z-40 h-screen overflow-hidden border-r border-white/10 bg-black transition-all duration-300 ease-in-out ${isOpen ? "w-72" : "w-14"}`}>
+      <aside
+        className={`app-sidebar-shell fixed left-0 top-0 z-40 h-[100dvh] overflow-hidden border-r border-white/10 bg-black transition-all duration-300 ease-in-out ${
+          isOpen
+            ? "app-sidebar-open-state w-[78vw] max-w-[18.5rem] sm:w-72"
+            : "app-sidebar-closed-state w-10 min-[361px]:w-11 sm:w-14"
+        }`}
+      >
         {!isOpen && (
-          <div className="flex h-full flex-col items-center overflow-y-auto">
-            <div className="h-14 w-full flex items-center justify-center border-b border-white/10"><Brand iconOnly /></div>
-            <div className="mt-4 flex flex-col gap-3">
-              <button onClick={onOpen} disabled={interactionBlocked} className="relative rounded-md p-2 text-gray-400 hover:bg-white/10 hover:text-white disabled:opacity-50">
+          <div className="app-sidebar-collapsed flex h-full flex-col items-center overflow-y-auto">
+            <div className="app-sidebar-collapsed-header flex h-12 w-full items-center justify-center border-b border-white/10 sm:h-14"><Brand iconOnly /></div>
+            <div className="mt-3 flex flex-col gap-2.5 sm:mt-4 sm:gap-3">
+              <button onClick={onOpen} disabled={interactionBlocked} className="relative rounded-md p-1.5 text-gray-400 hover:bg-white/10 hover:text-white disabled:opacity-50 sm:p-2">
                 <PanelLeftOpen size={18} />
                 {combinedUnread > 0 && (
                   <span className="absolute -right-1 -top-1 min-w-[16px] rounded-full bg-white px-1 text-center text-[10px] font-semibold text-black">
@@ -178,7 +184,7 @@ export default function Sidebar({
                 <button
                   type="button"
                   onClick={onProjectSetupClick}
-                  className={`relative rounded-md bg-white p-2 text-black transition hover:bg-gray-200 ${
+                  className={`relative rounded-md bg-white p-1.5 text-black transition hover:bg-gray-200 sm:p-2 ${
                     projectSetupActive ? "ring-1 ring-black/20" : ""
                   }`}
                   title="Project Setup & Assignment"
@@ -196,7 +202,7 @@ export default function Sidebar({
                 <button
                   type="button"
                   onClick={onTeamAiClick}
-                  className={`rounded-md p-2 transition ${
+                  className={`rounded-md p-1.5 transition sm:p-2 ${
                     teamAiAssistActive
                       ? "bg-white text-black"
                       : "bg-white text-black hover:bg-gray-200"
@@ -209,7 +215,7 @@ export default function Sidebar({
               )}
               {isChatMode && (
                 <>
-                  <button onClick={onNew} disabled={isTyping} className="rounded-md p-2 text-gray-400 hover:bg-white/10 hover:text-white disabled:opacity-50"><Plus size={18} /></button>
+                  <button onClick={onNew} disabled={isTyping} className="rounded-md p-1.5 text-gray-400 hover:bg-white/10 hover:text-white disabled:opacity-50 sm:p-2"><Plus size={18} /></button>
                   {showUpload && isAiMode && (
                     <PdfUploadButton
                       sessionId={sessionId}
@@ -222,7 +228,7 @@ export default function Sidebar({
                       onUploadProgress={onUploadProgress}
                     />
                   )}
-                  <button onClick={onOpen} disabled={isTyping} className="rounded-md p-2 text-gray-400 hover:bg-white/10 hover:text-white disabled:opacity-50"><Search size={18} /></button>
+                  <button onClick={onOpen} disabled={isTyping} className="rounded-md p-1.5 text-gray-400 hover:bg-white/10 hover:text-white disabled:opacity-50 sm:p-2"><Search size={18} /></button>
                 </>
               )}
               {isPmlMode && (
@@ -230,7 +236,7 @@ export default function Sidebar({
                   <button
                     type="button"
                     onClick={() => onPmlCenterTabChange?.("editor")}
-                    className={`rounded-md p-2 transition ${
+                    className={`rounded-md p-1.5 transition sm:p-2 ${
                       isPmlEditor ? "bg-white text-black" : "text-gray-400 hover:bg-white/10 hover:text-white"
                     }`}
                     title="PML Code Writer"
@@ -240,7 +246,7 @@ export default function Sidebar({
                   <button
                     type="button"
                     onClick={() => onPmlCenterTabChange?.("output")}
-                    className={`rounded-md p-2 transition ${
+                    className={`rounded-md p-1.5 transition sm:p-2 ${
                       isPmlOutput ? "bg-white text-black" : "text-gray-400 hover:bg-white/10 hover:text-white"
                     }`}
                     title="PML Output Panel"
@@ -254,14 +260,14 @@ export default function Sidebar({
         )}
 
         {isOpen && (
-          <div className="flex h-full min-h-0 flex-col overflow-hidden">
-            <div className="flex h-14 items-center justify-between border-b border-white/10 px-4">
+          <div className="app-sidebar-open flex h-full min-h-0 flex-col overflow-hidden">
+            <div className="app-sidebar-open-header flex h-12 items-center justify-between border-b border-white/10 px-3 sm:h-14 sm:px-4">
               <Brand iconOnly />
               <div className="flex items-center gap-1">
                 <button onClick={onClose} disabled={interactionBlocked} className="rounded-md p-1 text-gray-400 hover:bg-white/10 hover:text-white disabled:opacity-50"><PanelLeftClose size={16} /></button>
               </div>
             </div>
-            <div className="px-4 py-4 space-y-3">
+            <div className="app-sidebar-controls space-y-3 px-2.5 py-3 sm:px-4 sm:py-4">
               {isTeamMode && (
                 <button
                   type="button"
@@ -293,7 +299,7 @@ export default function Sidebar({
               )}
               {isChatMode && (
                 <>
-                  <button onClick={onNew} disabled={isTyping} className="w-full rounded-md bg-white px-3 py-2 text-sm font-medium text-black hover:bg-gray-200 disabled:opacity-50">+ New Chat</button>
+                  <button onClick={onNew} disabled={isTyping} className="w-full rounded-md bg-white px-3 py-2 text-xs font-medium text-black hover:bg-gray-200 disabled:opacity-50 sm:text-sm">+ New Chat</button>
                   {showUpload && isAiMode && (
                     <PdfUploadButton
                       sessionId={sessionId}
@@ -305,7 +311,7 @@ export default function Sidebar({
                       onUploadProgress={onUploadProgress}
                     />
                   )}
-                  <input ref={searchRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search chats" disabled={isTyping} className="w-full rounded-md border border-white/25 bg-transparent px-3 py-2 text-sm text-white outline-none disabled:opacity-50" />
+                  <input ref={searchRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search chats" disabled={isTyping} className="w-full rounded-md border border-white/25 bg-transparent px-3 py-2 text-xs text-white outline-none disabled:opacity-50 sm:text-sm" />
                 </>
               )}
               {isTeamMode && (
@@ -314,7 +320,7 @@ export default function Sidebar({
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Search projects"
-                  className="w-full rounded-md border border-white/25 bg-transparent px-3 py-2 text-sm text-white outline-none"
+                  className="w-full rounded-md border border-white/25 bg-transparent px-3 py-2 text-xs text-white outline-none sm:text-sm"
                 />
               )}
 
@@ -353,7 +359,7 @@ export default function Sidebar({
               )}
             </div>
             {isChatMode && (
-              <div className="px-4 pt-3 pb-3 text-xs text-gray-400 select-none flex items-center justify-between">
+              <div className="flex select-none items-center justify-between px-2.5 pb-2.5 pt-3 text-xs text-gray-400 sm:px-4 sm:pb-3">
                 <span>Chats</span>
                 {totalUnread > 0 && (
                   <span className="rounded-full border border-white/30 bg-white/10 px-2 py-0.5 text-[10px] font-semibold text-white">
@@ -363,14 +369,14 @@ export default function Sidebar({
               </div>
             )}
             {isTeamMode && (
-              <div className="px-4 pt-3 pb-3 text-xs text-gray-400 select-none flex items-center justify-between">
+              <div className="flex select-none items-center justify-between px-2.5 pb-2.5 pt-3 text-xs text-gray-400 sm:px-4 sm:pb-3">
                 <span>Projects</span>
                 <span className="rounded-full border border-white/30 bg-white/10 px-2 py-0.5 text-[10px] font-semibold text-white">
                   {filteredTeamProjects.length}
                 </span>
               </div>
             )}
-            <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+            <div className="app-sidebar-list min-h-0 flex-1 overflow-y-auto px-2.5 pb-3 sm:px-3 sm:pb-4">
               {isChatMode ? (
                 <div className="space-y-3">
                   {isAiMode && workspaceProjects.length > 0 && onProjectRevisionSelect && (
@@ -386,7 +392,13 @@ export default function Sidebar({
                     activeId={activeId}
                     unreadCounts={unreadCounts}
                     disabled={isTyping}
-                    onSelect={(id) => !isTyping && onSelect(id)}
+                    onSelect={(id) => {
+                      if (isTyping) return;
+                      onSelect(id);
+                      if (typeof window !== "undefined" && window.innerWidth < 768) {
+                        onClose();
+                      }
+                    }}
                     onRename={(id) => {
                       const title = prompt("Rename chat");
                       if (!title) return;
@@ -406,7 +418,12 @@ export default function Sidebar({
                       <button
                         key={project.id}
                         type="button"
-                        onClick={() => onSelectTeamProject?.(project.id)}
+                        onClick={() => {
+                          onSelectTeamProject?.(project.id);
+                          if (typeof window !== "undefined" && window.innerWidth < 768) {
+                            onClose();
+                          }
+                        }}
                         className={`w-full rounded-lg border px-3 py-2 text-left transition ${
                           isActive
                             ? "border-white/30 bg-white/10"
@@ -419,7 +436,7 @@ export default function Sidebar({
                           </span>
                           <span className="text-[10px] text-gray-500">{project.status.toUpperCase()}</span>
                         </div>
-                        <div className="truncate text-sm font-medium text-gray-100">{project.name}</div>
+                        <div className="truncate text-xs font-medium text-gray-100 sm:text-sm">{project.name}</div>
                         <div className="mt-1 text-[11px] text-gray-500">
                           {assigneeCount > 0
                             ? `${assigneeCount} assignee${assigneeCount > 1 ? "s" : ""}`
@@ -437,24 +454,24 @@ export default function Sidebar({
               )}
 
             </div>
-            <div className="border-t border-white/10 px-4 py-3">
-              <div className="flex items-center gap-3">
-                <div className="h-9 w-9 shrink-0 rounded-full bg-white/10 border border-white/10 flex items-center justify-center text-sm font-semibold text-white">
+            <div className="app-sidebar-footer border-t border-white/10 px-2.5 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-4 sm:pb-3">
+              <div className="flex items-center gap-2.5 sm:gap-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/10 text-xs font-semibold text-white sm:h-9 sm:w-9 sm:text-sm">
                   {userInitial}
                 </div>
 
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm text-gray-200 truncate">
+                  <div className="truncate text-xs text-gray-200 sm:text-sm">
                     {user?.username ?? "User"}
                   </div>
-                  <div className="text-[11px] text-gray-500 truncate">
+                  <div className="sidebar-user-email max-[430px]:hidden truncate text-[11px] text-gray-500">
                     {user?.email ?? ""}
                   </div>
                 </div>
               </div>
 
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                <div className="inline-flex items-center gap-1 text-xs text-gray-400">
+              <div className="mt-2.5 flex flex-col gap-2">
+                <div className="sidebar-alert-line inline-flex max-w-full items-center gap-1 truncate text-[11px] text-gray-400">
                   <BellRing size={12} />
                   {isTeamMode
                     ? teamUnreadTotal > 0
@@ -466,21 +483,22 @@ export default function Sidebar({
                         ? `${totalUnread} unread AI chats`
                         : "No new AI chat alerts"}
                 </div>
-                <a
-                  href="/dashboard"
-                  className="text-xs text-gray-400 hover:text-white hover:underline"
-                >
-                  Developer dashboard
-                </a>
-
-                <button
-                  type="button"
-                  onClick={onSignOut}
-                  disabled={interactionBlocked}
-                  className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-gray-200 hover:bg-white/10 disabled:opacity-50"
-                >
-                  Sign out
-                </button>
+                <div className="flex items-center justify-between gap-2">
+                  <a
+                    href="/dashboard"
+                    className="sidebar-dashboard-link truncate text-[11px] text-gray-400 hover:text-white hover:underline max-[360px]:hidden"
+                  >
+                    Developer dashboard
+                  </a>
+                  <button
+                    type="button"
+                    onClick={onSignOut}
+                    disabled={interactionBlocked}
+                    className="ml-auto shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-gray-200 hover:bg-white/10 disabled:opacity-50"
+                  >
+                    Sign out
+                  </button>
+                </div>
               </div>
             </div>
           </div>

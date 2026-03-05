@@ -65,7 +65,7 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
       <div
         aria-disabled={effectiveDisabled}
         className={`
-          flex items-end gap-3 rounded-xl px-3 py-3 border border-white/25 bg-[#1a1a1a] shadow-md transition
+          flex items-end gap-2.5 rounded-3xl border border-white/25 bg-[#1a1a1a] px-2.5 py-2.5 shadow-md transition sm:gap-3 sm:px-3 sm:py-3
           ${effectiveDisabled ? "opacity-60" : ""} focus-within:ring-1 focus-within:ring-white/20
         `}
       >
@@ -102,7 +102,7 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
               if (e.key === "ArrowUp" && text.trim() === "" && onArrowUp) { e.preventDefault(); onArrowUp(); return; }
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (canSend) onSend(text); }
             }}
-            className="w-full resize-none bg-transparent text-sm text-white outline-none placeholder:text-gray-500 disabled:cursor-not-allowed py-2"
+            className="w-full resize-none bg-transparent py-2 text-[13px] text-white outline-none placeholder:text-gray-500 disabled:cursor-not-allowed sm:text-sm"
           />
         </div>
 
@@ -116,7 +116,7 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
             }}
             disabled={!canSend && !isGenerating}
             className={`
-                flex h-9 w-9 items-center justify-center rounded-lg transition
+                flex h-8 w-8 items-center justify-center rounded-xl transition sm:h-9 sm:w-9 sm:rounded-2xl
                 ${isGenerating 
                     ? "bg-red-500/10 text-red-500 hover:bg-red-500/20" 
                     : canSend ? "bg-white text-black hover:bg-gray-200" : "bg-white/10 text-gray-500 cursor-not-allowed"}

@@ -142,3 +142,118 @@ button:active {
     transform: translateY(0) scale(1);
   }
 }
+
+/* ===============================
+   Landscape Phone Micro Pass
+=============================== */
+
+@media (orientation: landscape) and (max-height: 430px) {
+  .app-main-header,
+  .chat-top-header {
+    height: 2.5rem;
+  }
+
+  .app-main-header-inner {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+
+  .mode-switcher {
+    padding: 0.125rem;
+  }
+
+  .mode-switcher button {
+    padding-top: 0.2rem !important;
+    padding-bottom: 0.2rem !important;
+  }
+
+  .app-sidebar-collapsed-header,
+  .app-sidebar-open-header {
+    height: 2.5rem !important;
+  }
+
+  .app-sidebar-open-state {
+    width: min(66vw, 15.5rem) !important;
+    max-width: 15.5rem !important;
+  }
+
+  .app-sidebar-controls {
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.5rem !important;
+    gap: 0.5rem !important;
+  }
+
+  .app-sidebar-list {
+    padding-bottom: 0.4rem !important;
+  }
+
+  .app-sidebar-footer {
+    padding-top: 0.4rem !important;
+    padding-bottom: calc(0.4rem + env(safe-area-inset-bottom)) !important;
+  }
+
+  .sidebar-alert-line,
+  .sidebar-user-email,
+  .sidebar-dashboard-link {
+    display: none !important;
+  }
+
+  .chat-window-scroll {
+    padding-top: 0.5rem !important;
+  }
+
+  .chat-window-input-area {
+    padding-top: 0.25rem !important;
+    padding-bottom: calc(0.4rem + env(safe-area-inset-bottom)) !important;
+  }
+
+  .chat-window-disclaimer,
+  .empty-state-summary,
+  .empty-state-prompts,
+  .team-chat-hints {
+    display: none !important;
+  }
+
+  .empty-state-content {
+    transform: translateY(-0.35rem);
+  }
+
+  .empty-state-content h1 {
+    font-size: 1.05rem;
+    margin-top: 0.1rem;
+  }
+
+  .empty-state-content p {
+    margin-top: 0.2rem;
+    font-size: 0.72rem;
+  }
+
+  .empty-state-input {
+    margin-top: 0.9rem !important;
+  }
+
+  .team-workspace-top {
+    padding-top: 0.4rem !important;
+    padding-bottom: 0.4rem !important;
+  }
+
+  .team-workspace-search {
+    padding-top: 0.45rem !important;
+    padding-bottom: 0.45rem !important;
+  }
+
+  .team-chat-scroll {
+    padding-top: 0.4rem !important;
+    padding-bottom: 0.45rem !important;
+  }
+
+  .team-chat-input-area {
+    padding-top: 0.35rem !important;
+    padding-bottom: calc(0.45rem + env(safe-area-inset-bottom)) !important;
+  }
+
+  .team-mobile-sidepanel {
+    top: 2.5rem !important;
+    bottom: 0 !important;
+  }
+}

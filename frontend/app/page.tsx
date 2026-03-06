@@ -361,6 +361,8 @@ function AuthedHome({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [pmlChats, setPmlChats] = useState<ChatSession[]>([]);
   const [pmlActiveId, setPmlActiveId] = useState<string | null>(null);
+  const [aiChatsLoaded, setAiChatsLoaded] = useState(false);
+  const [pmlChatsLoaded, setPmlChatsLoaded] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("ai");
   const [teamWorkspace, setTeamWorkspace] = useState<TeamWorkspaceState | null>(null);
@@ -486,16 +488,20 @@ function AuthedHome({
   /* ================= LOAD / SAVE ================= */
 
   useEffect(() => {
+    setAiChatsLoaded(false);
     const loaded = loadChats();
     setChats(loaded);
     setActiveId(null);
+    setAiChatsLoaded(true);
   }, []);
 
   useEffect(() => {
+    if (!aiChatsLoaded) return;
     saveChats(chats);
-  }, [chats]);
+  }, [chats, aiChatsLoaded]);
 
   useEffect(() => {
+    setPmlChatsLoaded(false);
     const loaded = loadPmlChats();
     setPmlChats(loaded);
     pmlChatsRef.current = loaded;
@@ -504,12 +510,14 @@ function AuthedHome({
     } else {
       setPmlActiveId(null);
     }
+    setPmlChatsLoaded(true);
   }, []);
 
   useEffect(() => {
+    if (!pmlChatsLoaded) return;
     pmlChatsRef.current = pmlChats;
     savePmlChats(pmlChats);
-  }, [pmlChats]);
+  }, [pmlChats, pmlChatsLoaded]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -762,13 +770,14 @@ function AuthedHome({
   }, [workspaceMode]);
 
   useEffect(() => {
+    if (!aiChatsLoaded) return;
     if (workspaceMode !== "ai" || activeChat) return;
     if (chats.length > 0) {
       setActiveId(chats[0].id);
       return;
     }
     createNewChat();
-  }, [workspaceMode, activeChat, chats, createNewChat]);
+  }, [workspaceMode, activeChat, chats, createNewChat, aiChatsLoaded]);
 
   const handleTeamSelectConversation = useCallback(
     async (conversationId: string) => {
@@ -1935,6 +1944,7 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
   /* ================= RENDER ================= */
   
   useEffect(() => {
+    if (!pmlChatsLoaded) return;
     if (workspaceMode !== "pml") return;
 
     if (pmlChats.length === 0) {
@@ -1946,7 +1956,7 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
     if (!hasActive) {
       setPmlActiveId(pmlChats[0].id);
     }
-  }, [workspaceMode, pmlChats, pmlActiveId, handlePmlNewChat]);
+  }, [workspaceMode, pmlChats, pmlActiveId, handlePmlNewChat, pmlChatsLoaded]);
 
   useEffect(() => {
     if (workspaceMode !== "pml") return;

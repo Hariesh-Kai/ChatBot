@@ -263,6 +263,15 @@ export default function Sidebar({
                 </>
               )}
             </div>
+            <div className="mt-auto mb-3 flex w-full items-center justify-center pb-[env(safe-area-inset-bottom)]">
+              <div
+                className="flex h-7 w-7 items-center justify-center rounded-full border border-white/15 bg-white/10 text-[10px] font-semibold text-white sm:h-8 sm:w-8 sm:text-xs"
+                title={user?.username || user?.email || "User"}
+                aria-label="User avatar"
+              >
+                {userInitial}
+              </div>
+            </div>
         </div>
 
         <div

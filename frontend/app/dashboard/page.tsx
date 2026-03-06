@@ -353,9 +353,26 @@ export default function DashboardPage() {
       const data = await res.json();
       setModelsData(data);
       const reg = data?.model_registry || {};
-      setAssignLiteModel(reg?.lite?.default || "");
-      setAssignBaseModel(reg?.base?.default || "");
-      setAssignNetModel(reg?.net?.default || "");
+      const hfIds = Object.keys(data?.hf_models || {});
+      const ggufIds = Object.keys(data?.gguf_models || {});
+      const netProviders = Array.isArray(data?.net_providers) ? data.net_providers : [];
+
+      const nextBase =
+        reg?.base?.default && hfIds.includes(reg.base.default)
+          ? reg.base.default
+          : hfIds[0] || "";
+      const nextLite =
+        reg?.lite?.default && ggufIds.includes(reg.lite.default)
+          ? reg.lite.default
+          : ggufIds[0] || "";
+      const nextNet =
+        reg?.net?.default && netProviders.includes(reg.net.default)
+          ? reg.net.default
+          : netProviders[0] || "";
+
+      setAssignLiteModel(nextLite);
+      setAssignBaseModel(nextBase);
+      setAssignNetModel(nextNet);
       try {
         const activeRes = await fetch(`${API_BASE}/devtools/models/active`, {
           credentials: "include",
@@ -1609,8 +1626,11 @@ export default function DashboardPage() {
                     list="net-providers"
                   />
                   <datalist id="net-providers">
-                    <option value="groq" />
-                    <option value="xai" />
+                    {(Array.isArray(modelsData?.net_providers) ? modelsData.net_providers : ["groq", "xai"]).map(
+                      (provider: string) => (
+                        <option key={provider} value={provider} />
+                      )
+                    )}
                   </datalist>
                   <div className="mt-2 flex items-center justify-between">
                     {activeNetId ? (

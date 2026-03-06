@@ -71,7 +71,11 @@ from backend.llm.model_config_store import (
     delete_model,
     ensure_model_paths,
 )
-from backend.llm.net_models import get_active_net_provider, resolve_active_net_model
+from backend.llm.net_models import (
+    NET_MODELS,
+    get_active_net_provider,
+    resolve_active_net_model,
+)
 from backend.secrets.net_keys import has_net_api_key
 from backend.storage.minio_client import get_minio_client
 from backend.memory.redis_memory import r as redis_client
@@ -201,6 +205,67 @@ def _resolve_gguf_path(path_str: str) -> Path:
         p = Path(GGUF_DIR) / p
     return p
 
+
+def _installed_hf_models() -> Dict[str, str]:
+    """
+    Return only HF models that actually exist in local HF cache.
+    """
+    installed: Dict[str, str] = {}
+    for model_id, repo_id in dict(HF_MODELS).items():
+        cache_dir = _hf_repo_cache_dir(repo_id or "")
+        if cache_dir.exists():
+            installed[model_id] = repo_id
+    return installed
+
+
+def _installed_gguf_models() -> Dict[str, str]:
+    """
+    Return only GGUF models whose file path exists on disk.
+    """
+    installed: Dict[str, str] = {}
+    for model_id, path in dict(GGUF_MODELS).items():
+        resolved = _resolve_gguf_path(path or "")
+        if resolved.exists():
+            installed[model_id] = str(resolved)
+    return installed
+
+
+def _visible_model_registry(
+    installed_hf: Dict[str, str],
+    installed_gguf: Dict[str, str],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Dashboard-facing registry:
+    - keeps mode shape
+    - clears defaults/fallbacks that are not physically available.
+    """
+    visible = {
+        "base": dict(MODEL_REGISTRY.get("base", {})),
+        "lite": dict(MODEL_REGISTRY.get("lite", {})),
+        "net": dict(MODEL_REGISTRY.get("net", {})),
+    }
+
+    base_default = (visible["base"].get("default") or "").strip()
+    base_fallback = (visible["base"].get("cpu_fallback") or "").strip()
+    lite_default = (visible["lite"].get("default") or "").strip()
+    lite_fallback = (visible["lite"].get("fallback") or "").strip()
+    net_default = (visible["net"].get("default") or "").strip()
+
+    if base_default and base_default not in installed_hf:
+        visible["base"]["default"] = ""
+    if base_fallback and base_fallback not in installed_hf:
+        visible["base"]["cpu_fallback"] = ""
+
+    if lite_default and lite_default not in installed_gguf:
+        visible["lite"]["default"] = ""
+    if lite_fallback and lite_fallback not in installed_gguf:
+        visible["lite"]["fallback"] = ""
+
+    if net_default and net_default not in NET_MODELS:
+        visible["net"]["default"] = ""
+
+    return visible
+
 #-- Setup Vector Store for Retrieval Testing ---
 
 DB_CONNECTION = os.getenv(
@@ -214,17 +279,30 @@ CHAT_DB_URL = os.getenv(
 
 COLLECTION_NAME = "rag_documents"
 
-_embedding_model = HuggingFaceEmbeddings(
-    model_name=resolve_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3") or "BAAI/bge-m3",
-    model_kwargs={"device": "cpu", "local_files_only": True},
-    encode_kwargs={"normalize_embeddings": True},
-)
+_embedding_model: Optional[HuggingFaceEmbeddings] = None
+vector_store: Optional[PGVector] = None
+_DEVTOOLS_EMBEDDING_BOOT_ERROR: Optional[str] = None
 
-vector_store = PGVector.from_existing_index(
-    embedding=_embedding_model,
-    collection_name=COLLECTION_NAME,
-    connection=DB_CONNECTION,
-)
+try:
+    _embedding_model = HuggingFaceEmbeddings(
+        model_name=resolve_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3") or "BAAI/bge-m3",
+        model_kwargs={"device": "cpu", "local_files_only": True},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+
+    vector_store = PGVector.from_existing_index(
+        embedding=_embedding_model,
+        collection_name=COLLECTION_NAME,
+        connection=DB_CONNECTION,
+    )
+except Exception as e:
+    _DEVTOOLS_EMBEDDING_BOOT_ERROR = str(e)
+    vector_store = None
+    logger.warning(
+        "Devtools retrieval backend unavailable at startup; /devtools/retrieve will be disabled. "
+        "Reason: %s",
+        _DEVTOOLS_EMBEDDING_BOOT_ERROR,
+    )
 
 
 
@@ -1012,11 +1090,14 @@ def rag_enable(req: RagOverrideReq, _admin: User = Depends(require_admin)):
 
 @router.get("/models")
 def list_models(_admin: User = Depends(require_admin)):
-    """List available models + current mode registry (for the Developer Dashboard)."""
+    """List locally available models + current mode registry (for the Developer Dashboard)."""
+    installed_hf = _installed_hf_models()
+    installed_gguf = _installed_gguf_models()
     return {
-        "model_registry": MODEL_REGISTRY,
-        "hf_models": dict(HF_MODELS),
-        "gguf_models": dict(GGUF_MODELS),
+        "model_registry": _visible_model_registry(installed_hf, installed_gguf),
+        "hf_models": installed_hf,
+        "gguf_models": installed_gguf,
+        "net_providers": sorted(NET_MODELS.keys()),
         "model_config": load_model_config(),
     }
 
@@ -1024,10 +1105,13 @@ def list_models(_admin: User = Depends(require_admin)):
 @router.get("/models/active")
 def active_models(_admin: User = Depends(require_admin)):
     """Report active model per mode + readiness."""
+    installed_hf = _installed_hf_models()
+    installed_gguf = _installed_gguf_models()
+    visible_registry = _visible_model_registry(installed_hf, installed_gguf)
     modes: List[Dict[str, Any]] = []
 
     for mode in ("base", "lite"):
-        model_id = MODEL_REGISTRY.get(mode, {}).get("default")
+        model_id = visible_registry.get(mode, {}).get("default")
         status = _model_status(model_id)
         status["mode"] = mode
         modes.append(status)
@@ -1057,6 +1141,7 @@ def active_models(_admin: User = Depends(require_admin)):
     runtime = get_runtime_status()
     return {
         "modes": modes,
+        "model_registry": visible_registry,
         "system": runtime.get("gpu", {}),
         "rabbitmq": runtime.get("rabbitmq", {}),
         "workers": runtime.get("workers", {}),
@@ -1145,11 +1230,47 @@ def download_model(req: DownloadHFModelReq, _admin: User = Depends(require_admin
     model_id = _require_safe_model_id(model_id)
 
     cfg = load_model_config()
-    if model_id in cfg.get("hf_models", {}) or model_id in cfg.get("gguf_models", {}):
+    stale_cleanup: List[Dict[str, Any]] = []
+
+    # If model_id exists in config but points to missing local assets, treat it as stale
+    # and clean it up so re-download can proceed.
+    existing_hf_repo = cfg.get("hf_models", {}).get(model_id)
+    existing_gguf_path = cfg.get("gguf_models", {}).get(model_id)
+    model_id_is_stale = False
+    model_id_is_active = False
+
+    if existing_hf_repo:
+        if _hf_repo_cache_dir(existing_hf_repo).exists():
+            model_id_is_active = True
+        else:
+            model_id_is_stale = True
+
+    if existing_gguf_path:
+        if _resolve_gguf_path(existing_gguf_path).exists():
+            model_id_is_active = True
+        else:
+            model_id_is_stale = True
+
+    if model_id_is_active:
         raise HTTPException(status_code=409, detail="model_id already registered")
 
-    for mid, rid in cfg.get("hf_models", {}).items():
+    if model_id_is_stale:
+        _, info = delete_model(model_id)
+        reload_model_config()
+        reload_model_registry()
+        cfg = load_model_config()
+        stale_cleanup.append({"model_id": model_id, "info": info})
+
+    for mid, rid in list(cfg.get("hf_models", {}).items()):
         if rid == repo_id:
+            if not _hf_repo_cache_dir(rid).exists():
+                # stale HF registration for same repo -> remove and continue download path
+                _, info = delete_model(mid)
+                reload_model_config()
+                reload_model_registry()
+                cfg = load_model_config()
+                stale_cleanup.append({"model_id": mid, "info": info})
+                continue
             return {
                 "ok": True,
                 "already_registered": True,
@@ -1157,6 +1278,7 @@ def download_model(req: DownloadHFModelReq, _admin: User = Depends(require_admin
                 "mode": "base",
                 "model_id": mid,
                 "repo_id": repo_id,
+                "stale_cleanup": stale_cleanup,
             }
 
     try:
@@ -1203,6 +1325,7 @@ def download_model(req: DownloadHFModelReq, _admin: User = Depends(require_admin
             "repo_id": repo_id,
             "filename": filename,
             "path": path,
+            "stale_cleanup": stale_cleanup,
             "model_registry": MODEL_REGISTRY,
         }
 
@@ -1229,6 +1352,7 @@ def download_model(req: DownloadHFModelReq, _admin: User = Depends(require_admin
         "mode": "base",
         "model_id": model_id,
         "repo_id": repo_id,
+        "stale_cleanup": stale_cleanup,
         "model_registry": MODEL_REGISTRY,
     }
 
@@ -1460,13 +1584,16 @@ def delete_model_endpoint(model_id: str, _admin: User = Depends(require_admin)):
     except Exception as e:
         _raise_http(str(e), 500, e)
 
+    installed_hf = _installed_hf_models()
+    installed_gguf = _installed_gguf_models()
+
     return {
         "ok": True,
         "model_id": model_id,
         "info": info,
         "deleted": delete_report,
         "model_config": cfg,
-        "model_registry": MODEL_REGISTRY,
+        "model_registry": _visible_model_registry(installed_hf, installed_gguf),
     }
 
 
@@ -1736,6 +1863,12 @@ def reset_all(req: ResetRequest, _admin: User = Depends(require_admin)):
 @router.post("/retrieve")
 def debug_retrieval(req: RetrievalDebugReq):
     """Test the full RAG pipeline (Vector + Keyword + Rerank)"""
+
+    if vector_store is None:
+        detail = "Retrieval model cache is unavailable on this server."
+        if _DEVTOOLS_EMBEDDING_BOOT_ERROR:
+            detail = f"{detail} {_DEVTOOLS_EMBEDDING_BOOT_ERROR}"
+        raise HTTPException(status_code=503, detail=detail)
 
     if not req.company_document_id:
         raise HTTPException(400, "company_document_id required")

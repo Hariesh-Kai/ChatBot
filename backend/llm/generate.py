@@ -60,6 +60,17 @@ BASE_RANK_GPU = "base_qwen_7b"
 BASE_RANK_CPU = "base_qwen_3b"
 BASE_RANK = BASE_RANK_GPU if HAS_GPU else BASE_RANK_CPU
 
+# Markers that usually mean the model has started echoing the internal prompt.
+_PROMPT_ECHO_STOP_MARKERS = (
+    "<|eot_id|>",
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+    "OUTPUT STYLE:",
+    "\nCONTEXT:\n",
+    "\nQUESTION:\n",
+)
+_PROMPT_ECHO_TAIL = max(len(m) for m in _PROMPT_ECHO_STOP_MARKERS)
+
 
 # ============================================================
 # HELPERS
@@ -128,6 +139,15 @@ def _context_to_text(chunks: Optional[List[Dict[str, str]]]) -> str:
     if not chunks:
         return ""
     return "\n\n".join(c["content"] for c in chunks if c.get("content"))
+
+
+def _first_prompt_echo_index(text: str) -> int:
+    idx = -1
+    for marker in _PROMPT_ECHO_STOP_MARKERS:
+        i = text.find(marker)
+        if i >= 0 and (idx < 0 or i < idx):
+            idx = i
+    return idx
 
 
 def _resolve_model_family(model_id: str) -> str:
@@ -274,6 +294,8 @@ def generate_answer_stream(
                         return
 
                 else:
+                    stream_text = ""
+                    emitted_len = 0
                     for t in hf_stream_generate(
                         model_id=model_id,
                         prompt=prompt,
@@ -283,11 +305,39 @@ def generate_answer_stream(
                         if session_id and is_aborted(session_id):
                             yield ""  # allow UI to close stream cleanly
                             return
-                        if t:
-                            yielded_anything = True   # ✅ REQUIRED
-                            collected.append(t)      # ✅ REQUIRED
-                            yield t
+                        if not t:
+                            continue
 
+                        stream_text += t
+                        stop_idx = _first_prompt_echo_index(stream_text)
+                        if stop_idx >= 0:
+                            safe = stream_text[:stop_idx]
+                            delta = safe[emitted_len:]
+                            if delta:
+                                yielded_anything = True
+                                collected.append(delta)
+                                yield delta
+                            break
+
+                        # Hold back a small tail to avoid leaking partial markers.
+                        safe_end = max(0, len(stream_text) - (_PROMPT_ECHO_TAIL - 1))
+                        if safe_end > emitted_len:
+                            delta = stream_text[emitted_len:safe_end]
+                            if delta:
+                                yielded_anything = True
+                                collected.append(delta)
+                                yield delta
+                            emitted_len = safe_end
+
+                    if emitted_len < len(stream_text):
+                        tail = stream_text[emitted_len:]
+                        tail_stop_idx = _first_prompt_echo_index(tail)
+                        if tail_stop_idx >= 0:
+                            tail = tail[:tail_stop_idx]
+                        if tail:
+                            yielded_anything = True
+                            collected.append(tail)
+                            yield tail
 
 
             except Exception as e:
@@ -326,6 +376,8 @@ def generate_answer_stream(
 
     if _is_conversational(intent):
         max_tokens = min(max_tokens, 128)
+    if model == "base":
+        max_tokens = min(max_tokens, 512 if context_chunks else 256)
 
     # -------- Advanced reasoning (optional)
     if ADVANCED_REASONING and not _is_conversational(intent):
@@ -414,6 +466,8 @@ def generate_answer_stream(
 
 
         else:
+            stream_text = ""
+            emitted_len = 0
             for t in hf_stream_generate(
                 model_id=model_id,
                 prompt=prompt,
@@ -423,9 +477,35 @@ def generate_answer_stream(
                 if session_id and is_aborted(session_id):
                     yield ""  # allow UI to close stream cleanly
                     return
-                if t:
-                    collected.append(t)
-                    yield t
+                if not t:
+                    continue
+
+                stream_text += t
+                stop_idx = _first_prompt_echo_index(stream_text)
+                if stop_idx >= 0:
+                    safe = stream_text[:stop_idx]
+                    delta = safe[emitted_len:]
+                    if delta:
+                        collected.append(delta)
+                        yield delta
+                    break
+
+                safe_end = max(0, len(stream_text) - (_PROMPT_ECHO_TAIL - 1))
+                if safe_end > emitted_len:
+                    delta = stream_text[emitted_len:safe_end]
+                    if delta:
+                        collected.append(delta)
+                        yield delta
+                    emitted_len = safe_end
+
+            if emitted_len < len(stream_text):
+                tail = stream_text[emitted_len:]
+                tail_stop_idx = _first_prompt_echo_index(tail)
+                if tail_stop_idx >= 0:
+                    tail = tail[:tail_stop_idx]
+                if tail:
+                    collected.append(tail)
+                    yield tail
 
 
     except Exception:

@@ -4,7 +4,8 @@ import os
 
 import torch
 
-from backend.llm.loader import GGUF_MODELS, HF_MODELS
+from backend.llm.loader import GGUF_MODELS, HF_MODELS, HF_CACHE_DIR
+from backend.llm.hf_cache_utils import resolve_local_snapshot
 from backend.llm.model_registry import MODEL_REGISTRY, ChatMode
 
 
@@ -24,6 +25,19 @@ def _is_usable_gguf_model(model_id: str) -> bool:
     return os.path.exists(path)
 
 
+def _is_usable_hf_model(model_id: str) -> bool:
+    repo_or_path = (HF_MODELS.get(model_id) or "").strip()
+    if not repo_or_path:
+        return False
+
+    # Support direct local path registrations.
+    if os.path.exists(repo_or_path):
+        return True
+
+    # Repo-id registrations must resolve to an existing local HF snapshot.
+    return bool(resolve_local_snapshot(HF_CACHE_DIR, repo_or_path))
+
+
 def resolve_model_id(mode: ChatMode) -> str:
     if mode not in MODEL_REGISTRY:
         raise ValueError(f"Unknown chat mode: {mode}")
@@ -31,17 +45,32 @@ def resolve_model_id(mode: ChatMode) -> str:
     entry = MODEL_REGISTRY[mode]
 
     if mode == "base":
-        preferred = entry["default"] if torch.cuda.is_available() else entry["cpu_fallback"]
-        if preferred in HF_MODELS:
-            return preferred
+        default_id = str(entry.get("default") or "").strip()
+        cpu_fallback_id = str(entry.get("cpu_fallback") or "").strip()
 
-        fallback = entry.get("cpu_fallback")
-        if isinstance(fallback, str) and fallback in HF_MODELS:
-            return fallback
+        # On CPU, prefer cpu_fallback first, but fall back to default if that
+        # fallback is not actually present in local HF cache.
+        candidates = (
+            [default_id, cpu_fallback_id]
+            if torch.cuda.is_available()
+            else [cpu_fallback_id, default_id]
+        )
+        candidates.extend(list(HF_MODELS.keys()))
 
-        if HF_MODELS:
-            return next(iter(HF_MODELS.keys()))
-        return preferred
+        seen = set()
+        for model_id in candidates:
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+            if model_id in HF_MODELS and _is_usable_hf_model(model_id):
+                return model_id
+
+        # Last resort: keep legacy behavior and return any registered ID even
+        # if local files are missing (caller will emit user-facing error).
+        for model_id in candidates:
+            if model_id in HF_MODELS:
+                return model_id
+        return default_id or cpu_fallback_id
 
     if mode == "lite":
         candidates = []

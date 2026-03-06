@@ -5,6 +5,7 @@ import json
 import uuid
 import time
 import re
+import logging
 from typing import List, Literal, Generator, Dict, Optional, Any
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -119,6 +120,7 @@ SQL_BASE_SCORE = 0.35
 UI_EVENT_PREFIX = "__UI_EVENT__"
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
+logger = logging.getLogger("kavin.chat")
 
 
 # ================================
@@ -139,17 +141,30 @@ class TitleRequest(BaseModel):
 # VECTOR STORE
 # ================================
 
-embedding_model = HuggingFaceEmbeddings(
-    model_name=resolve_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3") or "BAAI/bge-m3",
-    model_kwargs={"device": "cpu", "local_files_only": True},
-    encode_kwargs={"normalize_embeddings": True},
-)
+embedding_model: Optional[HuggingFaceEmbeddings] = None
+vector_store: Optional[PGVector] = None
+_EMBEDDING_BOOT_ERROR: Optional[str] = None
 
-vector_store = PGVector.from_existing_index(
-    embedding=embedding_model,
-    collection_name=COLLECTION_NAME,
-    connection=DB_CONNECTION,
-)
+try:
+    embedding_model = HuggingFaceEmbeddings(
+        model_name=resolve_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3") or "BAAI/bge-m3",
+        model_kwargs={"device": "cpu", "local_files_only": True},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+
+    vector_store = PGVector.from_existing_index(
+        embedding=embedding_model,
+        collection_name=COLLECTION_NAME,
+        connection=DB_CONNECTION,
+    )
+except Exception as e:
+    _EMBEDDING_BOOT_ERROR = str(e)
+    vector_store = None
+    logger.warning(
+        "RAG embeddings unavailable at startup; backend will run without retrieval. "
+        "Reason: %s",
+        _EMBEDDING_BOOT_ERROR,
+    )
 
 
 # ================================
@@ -360,6 +375,14 @@ def safe_stream_response(
 
     collected: List[str] = []
     saw_error_event = False
+    user_persisted = False
+
+    # Persist user turn early so hard model/runtime crashes do not lose it.
+    try:
+        append_chat_message(session_id, "user", original_question)
+        user_persisted = True
+    except Exception:
+        pass
 
     try:
         for chunk in token_stream:
@@ -407,7 +430,8 @@ def safe_stream_response(
         return ""
 
     try:
-        append_chat_message(session_id, "user", original_question)
+        if not user_persisted:
+            append_chat_message(session_id, "user", original_question)
         append_chat_message(session_id, "assistant", final_answer)
     except Exception:
         pass
@@ -569,6 +593,10 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
             else:
                 yield emit_event(system_message_event("Thinking..."))
             model_id = resolve_model_id(req.mode)
+            print(
+                f"[MODEL] session={session_id} mode={req.mode} "
+                f"resolved_model={model_id} rag=disabled"
+            )
 
             if emit_model_stages:
                 yield emit_event(model_stage_event(
@@ -647,7 +675,12 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                 pass
 
             return StreamingResponse(static_stream(), media_type="text/plain")
-    rag_disabled = disable_rag_globally or is_rag_disabled(session_id, user.username)
+    embedding_unavailable = vector_store is None
+    rag_disabled = (
+        disable_rag_globally
+        or is_rag_disabled(session_id, user.username)
+        or embedding_unavailable
+    )
 
     previous_context_chunks = []
     if not rag_disabled and intent == "follow_up":
@@ -760,6 +793,16 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
 
     def stream():
         model_id = resolve_model_id(req.mode)
+        print(
+            f"[MODEL] session={session_id} mode={req.mode} "
+            f"resolved_model={model_id} rag={'enabled' if did_retrieve else 'no_chunks'}"
+        )
+        if embedding_unavailable:
+            yield emit_event(
+                system_message_event(
+                    "Retrieval model is not available locally; answering without document context."
+                )
+            )
         if emit_model_stages and not did_retrieve:
             yield emit_event(model_stage_event(
                 stage="generation",

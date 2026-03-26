@@ -33,7 +33,7 @@ def render_page_image(
         conf = _get_config()
         bucket = conf["bucket"]
     except Exception:
-        bucket = "kavin-documents" # Fallback if config fails
+        bucket = "chat-ui-documents" # Fallback if config fails
     
     # Accept both new and legacy query parameter names.
     resolved_company_document_id = (company_document_id or company_doc_id or "").strip()

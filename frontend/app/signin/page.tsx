@@ -91,9 +91,9 @@ export default function SignInPage() {
       <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0b0b0b] p-6 shadow-xl">
         <div className="mb-6">
           <div className="flex items-center gap-3">
-            <Image src="/kavin-logo.svg" alt="Kavin Engineering" width={32} height={32} />
+            <Image src="/chat-ui-logo.svg" alt="Chat UI Engineering" width={32} height={32} />
             <div>
-              <div className="text-xs text-gray-500 uppercase tracking-wider">Kavin Engineering</div>
+              <div className="text-xs text-gray-500 uppercase tracking-wider">Chat UI Engineering</div>
             </div>
           </div>
           <h1 className="text-2xl font-semibold">Sign in</h1>
@@ -116,7 +116,7 @@ export default function SignInPage() {
               onChange={(e) => setIdentifier(e.target.value)}
               autoComplete="username"
               className="w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none focus:border-white/30"
-              placeholder="e.g. hariesh-kavin"
+              placeholder="e.g. hariesh-chat_ui"
               disabled={busy}
             />
           </div>

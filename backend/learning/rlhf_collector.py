@@ -138,7 +138,7 @@ def _row_to_training_example(row: Dict[str, Any]) -> Optional[Dict]:
             {
                 "role": "system",
                 "content": (
-                    "You are KavinBase, a senior engineering assistant. "
+                    "You are Chat UI, a senior engineering assistant. "
                     "Answer using only the provided document context. "
                     "Cite page numbers. Copy numerical values and codes verbatim."
                 ),

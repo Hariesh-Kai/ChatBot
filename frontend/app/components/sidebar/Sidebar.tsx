@@ -119,7 +119,7 @@ export default function Sidebar({
   const isPmlOutput = pmlCenterTab === "output";
   const isChatMode = !isTeamMode;
   const uploadActive =
-    typeof window !== "undefined" && (window as any).__KAVIN_UPLOAD_ACTIVE__;
+    typeof window !== "undefined" && (window as any).__CHAT_UI_UPLOAD_ACTIVE__;
   const interactionBlocked = isChatMode && (isTyping || (isAiMode && uploadActive));
   const uploadDisabled = !isAiMode || !sessionId || isTyping || uploadActive;
   const combinedUnread = totalUnread + teamUnreadTotal;

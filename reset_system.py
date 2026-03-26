@@ -18,7 +18,7 @@ DB_PASS = "1"
 MINIO_ENDPOINT = "127.0.0.1:9000"
 MINIO_ACCESS_KEY = "minioadmin"
 MINIO_SECRET_KEY = "minioadmin"
-MINIO_BUCKET = "kavin-documents"
+MINIO_BUCKET = "chat-ui-documents"
 MINIO_SECURE = False
 
 # ============================================================

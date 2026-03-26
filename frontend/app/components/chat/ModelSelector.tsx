@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { KavinModelId, getVisibleModels, isNetEnabled } from "@/app/lib/kavin-models";
+import { ChatUIModelId, getVisibleModels, isNetEnabled } from "@/app/lib/chat-ui-models";
 import { getNetStatus } from "@/app/lib/netStatus";
 
 interface Props {
-  value: KavinModelId;
-  onChange: (model: KavinModelId) => void;
+  value: ChatUIModelId;
+  onChange: (model: ChatUIModelId) => void;
 }
 
 /**

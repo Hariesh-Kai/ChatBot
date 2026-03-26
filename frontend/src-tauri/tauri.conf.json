@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "KavinBase",
+  "productName": "Chat UI",
   "version": "0.1.0",
-  "identifier": "com.kavinbase.desktop",
+  "identifier": "com.chatui.desktop",
   "build": {
     "beforeDevCommand": "npm run build:backend-sidecar && npm run dev",
     "beforeBuildCommand": "npm run build:backend-sidecar && npm run build:tauri-web",
@@ -14,7 +14,7 @@
       {
         "label": "main",
         "url": "/",
-        "title": "KavinBase",
+        "title": "Chat UI",
         "width": 1280,
         "height": 820,
         "minWidth": 1024,
@@ -29,7 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "externalBin": ["binaries/kavin-backend"],
+    "externalBin": ["binaries/chat-ui-backend"],
     "resources": ["../../.env"],
     "icon": ["icons/icon.ico", "icons/icon.png"]
   }

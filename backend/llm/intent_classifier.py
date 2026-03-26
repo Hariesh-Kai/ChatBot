@@ -1,7 +1,7 @@
 # backend/llm/intent_classifier.py
 
 """
-Zero-shot Intent Classification for KavinBase
+Zero-shot Intent Classification for Chat UI
 
 Responsibilities:
 - Semantic intent detection

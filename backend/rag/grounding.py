@@ -1,7 +1,7 @@
 # backend/rag/grounding.py
 
 """
-Grounding / Hallucination Check for KavinBase RAG
+Grounding / Hallucination Check for Chat UI RAG
 
 Purpose:
 - After LLM generates an answer, verify that key factual tokens

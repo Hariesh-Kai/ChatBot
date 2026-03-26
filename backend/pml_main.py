@@ -2,7 +2,7 @@
 Dedicated backend app for AVEVA PML chat.
 
 Isolation goals:
-- No KavinBase chat/RAG routers are mounted here.
+- No Chat UI chat/RAG routers are mounted here.
 - Separate process/port from the main backend app.
 - Auth is reused for user/session security.
 """
@@ -24,7 +24,7 @@ app = FastAPI(
     title="PML Chat Backend API",
     description=(
         "Dedicated AVEVA PML assistant backend.\n\n"
-        "This service is isolated from the main KavinBase chat/RAG service."
+        "This service is isolated from the main Chat UI chat/RAG service."
     ),
     version="1.0.0",
 )

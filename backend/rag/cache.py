@@ -1,7 +1,7 @@
 # backend/rag/cache.py
 
 """
-Semantic Retrieval Cache for KavinBase
+Semantic Retrieval Cache for Chat UI
 
 Purpose:
 - Cache retrieved chunk IDs for repeated/similar questions

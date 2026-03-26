@@ -1,7 +1,7 @@
 /**
  * net-key-store.ts
  *
- * Frontend-only persistence for KavinBase Net API key.
+ * Frontend-only persistence for Chat UI Net API key.
  *
  * IMPORTANT RULES:
  * - This file ONLY stores the key
@@ -10,7 +10,7 @@
  * - UI must NOT assume Net works just because a key exists
  */
 
-const STORAGE_KEY = "kavinbase_net_api_key";
+const STORAGE_KEY = "chat_ui_base_net_api_key";
 
 /* =========================================================
    ENV GUARD

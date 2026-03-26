@@ -26,13 +26,13 @@ NetProvider = Literal["groq", "xai"]
 # ENV VAR (USED BY net_models.py)
 # ============================================================
 
-NET_PROVIDER_ENV = "KAVIN_NET_PROVIDER"
+NET_PROVIDER_ENV = "CHAT_UI_NET_PROVIDER"
 
 # ============================================================
 # STORAGE (LOCAL, BACKEND-ONLY)
 # ============================================================
 
-SECRET_DIR = Path.home() / ".kavinbase"
+SECRET_DIR = Path.home() / ".chat_ui_base"
 SECRET_FILE = SECRET_DIR / "net_keys.json"
 
 _SECRET_DIR_CREATED = False

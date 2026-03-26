@@ -18,7 +18,7 @@ import { loadChats } from "@/app/lib/chat-store";
 import { loadPmlChats } from "@/app/lib/pml-chat-store";
 import { getRoleLabel } from "@/app/lib/org-role-catalog";
 
-const CHAT_READ_KEY_PREFIX = "kavin-chat-read-at";
+const CHAT_READ_KEY_PREFIX = "chat-ui-chat-read-at";
 
 type UsageStats = {
   aiChats: number;
@@ -163,7 +163,7 @@ export default function UsagePage() {
       <div className="mx-auto w-full max-w-5xl px-6 py-8">
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Image src="/kavin-logo.svg" alt="Kavin" width={30} height={30} />
+            <Image src="/chat-ui-logo.svg" alt="Chat UI" width={30} height={30} />
             <div>
               <div className="text-[11px] uppercase tracking-[0.18em] text-emerald-300">
                 User Analytics
@@ -193,7 +193,7 @@ export default function UsagePage() {
               href="/"
               className="inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-gray-200"
             >
-              Open KavinBase
+              Open Chat UI
               <ArrowRight size={16} />
             </Link>
           </div>

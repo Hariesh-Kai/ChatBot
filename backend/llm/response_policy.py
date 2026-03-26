@@ -1,7 +1,7 @@
 """
 response_policy.py
 
-Final Response Controller for KavinBase
+Final Response Controller for Chat UI
 
 Responsibilities:
 - Enforce verbosity rules

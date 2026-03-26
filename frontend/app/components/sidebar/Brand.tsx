@@ -36,8 +36,8 @@ export default function Brand({ iconOnly = false }: BrandProps) {
 
         {/* Logo */}
         <Image
-          src="/kavin-logo.svg"
-          alt="KAVIN"
+          src="/chat-ui-logo.svg"
+          alt="CHAT UI"
           width={logoSize}
           height={logoSize}
           className={`
@@ -64,7 +64,7 @@ export default function Brand({ iconOnly = false }: BrandProps) {
               group-hover:text-white
             "
           >
-            KAVIN
+            CHAT UI
           </span>
           <span className="text-[11px] text-gray-400">
             AI Document Assistant

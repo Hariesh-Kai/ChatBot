@@ -1,4 +1,4 @@
-﻿// frontend/app/dashboard/page.tsx
+// frontend/app/dashboard/page.tsx
 
 "use client";
 
@@ -152,11 +152,11 @@ export default function DashboardPage() {
       : "";
   const suggestedDbName = (() => {
     const base = newUserUsername.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
-    return base ? `kavin_${base}` : "kavin_user";
+    return base ? `chat_ui_${base}` : "chat_ui_user";
   })();
   const suggestedBucketName = (() => {
     const base = newUserUsername.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
-    return base ? `kavin-${base}` : "kavin-user";
+    return base ? `chat-ui-${base}` : "chat-ui-user";
   })();
 
   // --- Database Viewer State ---
@@ -2179,7 +2179,7 @@ export default function DashboardPage() {
             <Card title="Confirm" className="h-auto">
               <div className="text-sm text-gray-300">
                 Destructive actions are disabled by default. Backend must have
-                <span className="font-mono text-red-300"> KAVIN_ENABLE_DESTRUCTIVE_DEVTOOLS=1</span>.
+                <span className="font-mono text-red-300"> CHAT_UI_ENABLE_DESTRUCTIVE_DEVTOOLS=1</span>.
               </div>
               <div className="mt-4">
                 <label className="block text-xs text-gray-400 mb-2">Type confirm phrase</label>
@@ -2196,7 +2196,7 @@ export default function DashboardPage() {
                   value={resetBucket}
                   onChange={(e) => setResetBucket(e.target.value)}
                   className="w-full bg-[#222] border border-white/10 rounded p-2 text-white"
-                  placeholder="kavin-documents"
+                  placeholder="chat-ui-documents"
                 />
               </div>
               {resetError && (

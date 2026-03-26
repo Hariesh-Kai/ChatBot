@@ -43,13 +43,13 @@ fn default_log_path(app: &AppHandle) -> PathBuf {
   if let Ok(dir) = app.path().app_local_data_dir() {
     return dir.join("desktop.log");
   }
-  std::env::temp_dir().join("kavinbase-desktop.log")
+  std::env::temp_dir().join("chat-ui-base-desktop.log")
 }
 
 fn find_env_file(app: &AppHandle) -> Option<PathBuf> {
   let mut candidates = Vec::new();
 
-  if let Ok(explicit) = std::env::var("KAVIN_ENV_FILE") {
+  if let Ok(explicit) = std::env::var("CHAT_UI_ENV_FILE") {
     candidates.push(PathBuf::from(explicit));
   }
 
@@ -87,21 +87,21 @@ fn sidecar_names() -> Vec<&'static str> {
   #[cfg(target_os = "windows")]
   {
     return vec![
-      "kavin-backend-x86_64-pc-windows-msvc.exe",
-      "kavin-backend-aarch64-pc-windows-msvc.exe",
-      "kavin-backend-i686-pc-windows-msvc.exe",
-      "kavin-backend.exe",
+      "chat-ui-backend-x86_64-pc-windows-msvc.exe",
+      "chat-ui-backend-aarch64-pc-windows-msvc.exe",
+      "chat-ui-backend-i686-pc-windows-msvc.exe",
+      "chat-ui-backend.exe",
     ];
   }
 
   #[cfg(not(target_os = "windows"))]
   {
     vec![
-      "kavin-backend-x86_64-unknown-linux-gnu",
-      "kavin-backend-aarch64-unknown-linux-gnu",
-      "kavin-backend-x86_64-apple-darwin",
-      "kavin-backend-aarch64-apple-darwin",
-      "kavin-backend",
+      "chat-ui-backend-x86_64-unknown-linux-gnu",
+      "chat-ui-backend-aarch64-unknown-linux-gnu",
+      "chat-ui-backend-x86_64-apple-darwin",
+      "chat-ui-backend-aarch64-apple-darwin",
+      "chat-ui-backend",
     ]
   }
 }
@@ -165,7 +165,7 @@ fn launch_backend(app: &AppHandle) {
   append_log(&log_path, "[desktop] launching backend sidecar");
 
   if backend_listening() {
-    append_log(&log_path, "[kavin-backend] backend already listening on 127.0.0.1:8000");
+    append_log(&log_path, "[chat-ui-backend] backend already listening on 127.0.0.1:8000");
     return;
   }
 
@@ -174,7 +174,7 @@ fn launch_backend(app: &AppHandle) {
     None => {
       append_log(
         &log_path,
-        "[kavin-backend] sidecar binary not found in resource/app directories",
+        "[chat-ui-backend] sidecar binary not found in resource/app directories",
       );
       return;
     }
@@ -199,15 +199,15 @@ fn launch_backend(app: &AppHandle) {
     if let Some(parent) = env_file.parent() {
       command.current_dir(parent);
     }
-    command.env("KAVIN_ENV_FILE", &env_file);
+    command.env("CHAT_UI_ENV_FILE", &env_file);
     append_log(
       &log_path,
-      &format!("[kavin-backend] using env file {}", env_file.to_string_lossy()),
+      &format!("[chat-ui-backend] using env file {}", env_file.to_string_lossy()),
     );
   } else {
     append_log(
       &log_path,
-      "[kavin-backend] no .env file found; set KAVIN_ENV_FILE or place .env near app/resources",
+      "[chat-ui-backend] no .env file found; set CHAT_UI_ENV_FILE or place .env near app/resources",
     );
   }
 
@@ -216,17 +216,17 @@ fn launch_backend(app: &AppHandle) {
       append_log(
         &log_path,
         &format!(
-          "[kavin-backend] started sidecar pid {} ({})",
+          "[chat-ui-backend] started sidecar pid {} ({})",
           child.id(),
           sidecar_path.to_string_lossy()
         ),
       );
 
       if let Some(stdout) = child.stdout.take() {
-        stream_to_log(stdout, log_path.clone(), "[kavin-backend][stdout] ");
+        stream_to_log(stdout, log_path.clone(), "[chat-ui-backend][stdout] ");
       }
       if let Some(stderr) = child.stderr.take() {
-        stream_to_log(stderr, log_path.clone(), "[kavin-backend][stderr] ");
+        stream_to_log(stderr, log_path.clone(), "[chat-ui-backend][stderr] ");
       }
 
       {
@@ -245,7 +245,7 @@ fn launch_backend(app: &AppHandle) {
     Err(err) => {
       append_log(
         &log_path,
-        &format!("[kavin-backend] failed to spawn sidecar: {err}"),
+        &format!("[chat-ui-backend] failed to spawn sidecar: {err}"),
       );
     }
   }

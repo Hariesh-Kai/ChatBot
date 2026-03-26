@@ -9,7 +9,7 @@ if celery_app is None:  # pragma: no cover
     raise RuntimeError("Celery is not available. Install celery before starting workers.")
 
 
-@celery_app.task(name="kavin.rag.commit")
+@celery_app.task(name="chatui.rag.commit")
 def rag_commit_task(
     *,
     job_id: str,
@@ -26,7 +26,7 @@ def rag_commit_task(
     return {"ok": True, "job_id": job_id}
 
 
-@celery_app.task(name="kavin.minio.outbox.tick")
+@celery_app.task(name="chatui.minio.outbox.tick")
 def minio_outbox_tick(limit: Optional[int] = None) -> Dict[str, Any]:
     from backend.storage.minio_outbox import process_due_uploads_once
 

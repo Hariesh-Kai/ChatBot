@@ -4,7 +4,7 @@
 import { Message, RagSource } from "@/app/lib/types";
 import Avatar from "../ui/Avatar";
 import { getModelAvatar } from "@/app/lib/model-avatars";
-import type { KavinModelId } from "@/app/lib/kavin-models";
+import type { ChatUIModelId } from "@/app/lib/chat-ui-models";
 import ReactMarkdown from "react-markdown";
 import CodeBlock from "./CodeBlock";
 import ThinkingDisclosure from "./ThinkingDisclosure";
@@ -24,7 +24,7 @@ interface Props {
   onDelete?: () => void;
   onViewSources?: (sources: RagSource[]) => void;
   userLabel?: string;
-  assistantModel?: KavinModelId;
+  assistantModel?: ChatUIModelId;
   showConfidence?: boolean;
 
   // 🔥 ADD THESE

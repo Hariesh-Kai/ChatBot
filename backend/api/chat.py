@@ -124,7 +124,7 @@ SQL_BASE_SCORE = 0.35
 UI_EVENT_PREFIX = "__UI_EVENT__"
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
-logger = logging.getLogger("kavin.chat")
+logger = logging.getLogger("chatui.chat")
 
 
 # ================================
@@ -179,8 +179,8 @@ def emit_event(event: dict) -> str:
     return UI_EVENT_PREFIX + json.dumps(event) + "\n"
 
 _SMALLTALK_MAP = {
-    "who are you": "I'm KavinBase, your AI document assistant.",
-    "what are you": "I'm KavinBase, your AI document assistant.",
+    "who are you": "I'm Chat UI, your AI document assistant.",
+    "what are you": "I'm Chat UI, your AI document assistant.",
     "what do you do": "I help answer questions about your documents.",
     "what can you do": "I can answer questions about your documents and help summarize them.",
     "how are you": "I'm doing well. How can I help?",

@@ -3,7 +3,7 @@
 """
 answer_policy.py
 
-Adaptive Answer Decision Engine for KavinBase
+Adaptive Answer Decision Engine for Chat UI
 
 PHASE 2 FIXES:
 - Greetings NEVER require clarification

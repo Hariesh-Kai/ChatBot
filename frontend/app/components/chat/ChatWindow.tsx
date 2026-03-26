@@ -11,7 +11,7 @@ import ProcessingBubble from "./ProcessingBubble";
 import Disclaimer from "../ui/Disclaimer"; //  Imported
 
 import { Message, RagSource } from "@/app/lib/types";
-import { KAVIN_MODELS, KavinModelId } from "@/app/lib/kavin-models";
+import { CHAT_UI_MODELS, ChatUIModelId } from "@/app/lib/chat-ui-models";
 import { LLMUIEvent, MetadataRequestField, UI_EVENT_PREFIX, parseLLMUIEvent } from "@/app/lib/llm-ui-events";
 import type { UploadStatus } from "@/app/hooks/useSmartUpload";
 import { StreamParser } from "@/app/lib/stream-parser";
@@ -36,9 +36,9 @@ function uuidv4() {
 /* ================= CONSTANTS ================= */
 
 const SAFE_MODELS = [
-  { id: KAVIN_MODELS.base.id, label: KAVIN_MODELS.base.label },
-  { id: KAVIN_MODELS.lite.id, label: KAVIN_MODELS.lite.label },
-  { id: KAVIN_MODELS.net.id, label: KAVIN_MODELS.net.label },
+  { id: CHAT_UI_MODELS.base.id, label: CHAT_UI_MODELS.base.label },
+  { id: CHAT_UI_MODELS.lite.id, label: CHAT_UI_MODELS.lite.label },
+  { id: CHAT_UI_MODELS.net.id, label: CHAT_UI_MODELS.net.label },
 ];
 
 const STAGE_UI: Record<string, { label: string; step: string }> = {
@@ -113,7 +113,7 @@ function resolveStageUI(stage?: string, message?: string, didUseDocs?: boolean) 
 interface ChatWindowProps {
   messages: Message[];
   onUpdateMessages: (updater: Message[] | ((prev: Message[]) => Message[])) => void;
-  model: KavinModelId;
+  model: ChatUIModelId;
   sessionId: string | null;
   userLabel?: string;
   userRole?: string;
@@ -124,7 +124,7 @@ interface ChatWindowProps {
   ingestionPollingActive?: boolean;
   ingestionPollingCount?: number;
   onRenameSession?: (title: string) => void;
-  onModelChange?: (model: KavinModelId) => void;
+  onModelChange?: (model: ChatUIModelId) => void;
   metadataActive?: boolean;
   uploadPipeline?: {
     percent: number;
@@ -146,7 +146,7 @@ interface ChatWindowProps {
   fields: MetadataRequestField[]
 ) => Promise<void> | void;
   streamChatOverride?: (
-    payload: { session_id: string; question: string; mode: KavinModelId },
+    payload: { session_id: string; question: string; mode: ChatUIModelId },
     signal?: AbortSignal
   ) => Promise<ReadableStream<Uint8Array>>;
   showUpload?: boolean;
@@ -206,7 +206,7 @@ export default function ChatWindow({
   disableMetadataWorkflow = false,
   emptyStateConfig,
   inputPlaceholderText,
-  disclaimerText = "KavinBase can make mistakes. Verify important information.",
+  disclaimerText = "Chat UI can make mistakes. Verify important information.",
   generateTitleOverride,
   onSaveLatestAssistant,
   saveLatestAssistantLabel = "Save as Template",
@@ -254,8 +254,8 @@ export default function ChatWindow({
   const lastAssistantIdRef = useRef<string | null>(null);
   const jobFinishedRef = useRef(false);
   const externalMetadataSeenJobIdRef = useRef<string | null>(null);
-  const lastModelRef = useRef<KavinModelId>(model);
-  const modelLabel = useMemo(() => SAFE_MODELS.find((m) => m.id === model)?.label ?? "KavinBase Base v1.0", [model]);
+  const lastModelRef = useRef<ChatUIModelId>(model);
+  const modelLabel = useMemo(() => SAFE_MODELS.find((m) => m.id === model)?.label ?? "Chat UI Base v1.0", [model]);
   const lastMessageContent = messages[messages.length - 1]?.content;
   const latestAssistantContent = useMemo(() => {
     for (let idx = messages.length - 1; idx >= 0; idx -= 1) {

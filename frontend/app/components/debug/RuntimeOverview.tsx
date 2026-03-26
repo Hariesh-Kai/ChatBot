@@ -188,7 +188,7 @@ export default function RuntimeOverview({
                 Outbox via Celery: {softwareQueue?.outbox_via_celery ? "yes" : "no"}
               </div>
               <div className="text-xs text-gray-500 font-mono">
-                Default queue: {String(softwareQueue?.default_queue || "kavin.default")}
+                Default queue: {String(softwareQueue?.default_queue || "chatui.default")}
               </div>
               <div className="text-xs text-gray-500">
                 Broker source: {String(softwareQueue?.broker_source || "not configured")}

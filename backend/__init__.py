@@ -1,1 +1,1 @@
-"""KavinBase backend package."""
+"""Chat UI backend package."""

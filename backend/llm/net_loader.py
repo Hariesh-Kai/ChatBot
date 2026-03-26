@@ -1,7 +1,7 @@
 """
 net_loader.py
 
-External LLM loader for KavinBase Net.
+External LLM loader for Chat UI Net.
 
 GUARANTEES:
 - Streaming-safe (FastAPI compatible)
@@ -71,7 +71,7 @@ def _acquire_stream_slot() -> None:
             _request_timestamps.pop(0)
 
         if len(_request_timestamps) >= NET_MAX_REQUESTS_PER_MIN:
-            raise NetRateLimitError("KavinBase Net RPM limit exceeded")
+            raise NetRateLimitError("Chat UI Net RPM limit exceeded")
 
         if _active_streams >= NET_MAX_CONCURRENT_STREAMS:
             raise NetRateLimitError("Too many concurrent Net streams")

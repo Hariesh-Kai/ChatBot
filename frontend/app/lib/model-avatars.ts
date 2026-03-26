@@ -1,11 +1,11 @@
-import type { KavinModelId } from "./kavin-models";
+import type { ChatUIModelId } from "./chat-ui-models";
 
 type AvatarConfig = {
   label: string;
   className: string;
 };
 
-export function getModelAvatar(model?: KavinModelId): AvatarConfig {
+export function getModelAvatar(model?: ChatUIModelId): AvatarConfig {
   switch (model) {
     case "lite":
       return { label: "L", className: "bg-sky-600 text-white" };

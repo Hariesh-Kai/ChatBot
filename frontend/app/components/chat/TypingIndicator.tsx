@@ -6,7 +6,7 @@ import Avatar from "../ui/Avatar";
 /* ================= PROPS ================= */
 
 interface TypingIndicatorProps {
-  /** "KavinBase", "System", etc. */
+  /** "Chat UI", "System", etc. */
   modelLabel?: string;
   
   /** "is thinking...", "Uploading...", "Searching..." */
@@ -22,7 +22,7 @@ interface TypingIndicatorProps {
 /* ================= COMPONENT ================= */
 
 export default function TypingIndicator({
-  modelLabel = "KAVIN",
+  modelLabel = "CHAT UI",
   label = "is thinking...",
   progress,
   type = "typing",

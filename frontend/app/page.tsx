@@ -13,7 +13,7 @@ import StartupSplash from "@/app/components/StartupSplash";
 import GettingStartedModal from "@/app/components/onboarding/GettingStartedModal";
 import ShortcutsModal from "@/app/components/onboarding/ShortcutsModal";
 import { ChatSession, Message } from "@/app/lib/types";
-import { KavinModelId } from "@/app/lib/kavin-models";
+import { ChatUIModelId } from "@/app/lib/chat-ui-models";
 import { loadChats, saveChats } from "@/app/lib/chat-store";
 import { loadPmlChats, savePmlChats } from "@/app/lib/pml-chat-store";
 import { authLogout, authMe, updateMetadata } from "@/app/lib/api";
@@ -73,10 +73,10 @@ const DOC_PROCESSING_BACKGROUND_TEXT =
 const DOC_READY_TEXT =
   "Document is ready. Answers now include this document automatically.";
 const DOC_ERROR_TEXT_PREFIX = "Document processing failed in background";
-const CHAT_READ_KEY_PREFIX = "kavin-chat-read-at";
-const WELCOME_SEEN_KEY_PREFIX = "kavin-welcome-seen";
-const WORKSPACE_MODE_KEY_PREFIX = "kavin-workspace-mode";
-const SIDEBAR_OPEN_KEY_PREFIX = "kavin-sidebar-open";
+const CHAT_READ_KEY_PREFIX = "chat-ui-chat-read-at";
+const WELCOME_SEEN_KEY_PREFIX = "chat-ui-welcome-seen";
+const WORKSPACE_MODE_KEY_PREFIX = "chat-ui-workspace-mode";
+const SIDEBAR_OPEN_KEY_PREFIX = "chat-ui-sidebar-open";
 
 function normalizeRevisionLabel(value?: string | number | null) {
   if (value === null || value === undefined) return "R-";
@@ -462,7 +462,7 @@ function AuthedHome({
   const closeGettingStarted = useCallback(() => {
     setShowGettingStarted(false);
     if (typeof window !== "undefined") {
-      window.localStorage.setItem("kavin_onboarding_seen", "1");
+      window.localStorage.setItem("chat_ui_onboarding_seen", "1");
     }
   }, []);
 
@@ -668,7 +668,7 @@ function AuthedHome({
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const seen = window.localStorage.getItem("kavin_onboarding_seen");
+    const seen = window.localStorage.getItem("chat_ui_onboarding_seen");
     if (!seen) setShowGettingStarted(true);
   }, []);
 
@@ -1245,7 +1245,7 @@ function AuthedHome({
   }, []);
 
   const handleModelChange = useCallback(
-    (id: string, model: KavinModelId) => {
+    (id: string, model: ChatUIModelId) => {
       setChats((prev) =>
         prev.map((c) => (c.id === id ? { ...c, model } : c))
       );
@@ -1963,7 +1963,7 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
     void loadPmlTemplateLibrary();
   }, [workspaceMode, loadPmlTemplateLibrary]);
 
-  const workspaceName = "KAVIN Workspace";
+  const workspaceName = "CHAT UI Workspace";
   const unassignedProjectCount = useMemo(() => {
     if (!teamWorkspace?.projects?.length) return 0;
     return teamWorkspace.projects.reduce((count, project) => {
@@ -2135,7 +2135,7 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
           <div className="app-main-header-inner flex h-full items-center px-2 sm:px-4 md:px-6">
             <div className="flex min-w-0 items-center gap-2 sm:gap-3">
               <span className="truncate text-sm font-semibold tracking-wide text-white">
-                <span className="max-[360px]:hidden sm:hidden">KAVIN</span>
+                <span className="max-[360px]:hidden sm:hidden">CHAT UI</span>
                 <span className="hidden sm:inline">{workspaceName}</span>
               </span>
               <WorkspaceModeSwitcher

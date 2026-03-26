@@ -60,7 +60,7 @@ def _beat_schedule() -> Dict[str, Dict[str, object]]:
     interval = max(1.0, float(os.getenv("MINIO_OUTBOX_POLL_SEC", "5")))
     return {
         "minio-outbox-tick": {
-            "task": "kavin.minio.outbox.tick",
+            "task": "chatui.minio.outbox.tick",
             "schedule": interval,
         }
     }
@@ -77,7 +77,7 @@ if Celery is not None:
         1 if is_windows else 4,
     )
 
-    celery_app = Celery("kavin")
+    celery_app = Celery("chat_ui")
     celery_app.conf.update(
         broker_url=_broker_url(),
         result_backend=(os.getenv("CELERY_RESULT_BACKEND") or "rpc://"),
@@ -91,7 +91,7 @@ if Celery is not None:
         task_acks_late=True,
         worker_pool=default_pool,
         worker_concurrency=default_concurrency,
-        task_default_queue=(os.getenv("CELERY_DEFAULT_QUEUE") or "kavin.default"),
+        task_default_queue=(os.getenv("CELERY_DEFAULT_QUEUE") or "chatui.default"),
         beat_schedule=_beat_schedule(),
     )
     celery_app.autodiscover_tasks(["backend.queue"])

@@ -1,6 +1,6 @@
 import { ChatSession, Message } from "./types";
 
-const KEY = "kavin-chats";
+const KEY = "chat-ui-chats";
 
 /* =========================================
    🔥 NORMALIZERS (CRITICAL)

@@ -14,7 +14,7 @@ CELERY_OUTBOX_ENABLED=1
 
 ```powershell
 venv\Scripts\activate
-celery -A backend.queue.celery_app:celery_app worker --loglevel=info -Q kavin.default --pool=solo --concurrency=1
+celery -A backend.queue.celery_app:celery_app worker --loglevel=info -Q chatui.default --pool=solo --concurrency=1
 celery -A backend.queue.celery_app:celery_app beat --loglevel=info
 ```
 
@@ -23,5 +23,5 @@ Notes:
 - On Linux, you can use the default prefork pool.
 
 ## What Runs on Celery
-- `kavin.rag.commit`: full commit pipeline (chunking, enrich, ingest, active-doc save).
-- `kavin.minio.outbox.tick`: scheduled MinIO outbox retry processing.
+- `chatui.rag.commit`: full commit pipeline (chunking, enrich, ingest, active-doc save).
+- `chatui.minio.outbox.tick`: scheduled MinIO outbox retry processing.

@@ -4,6 +4,7 @@ import json
 import sys
 import hashlib
 import tiktoken
+import logging
 import time
 import re  #  Added for Regex patterns
 from datetime import datetime
@@ -13,11 +14,41 @@ from typing import Dict, Any, List
 # TOKENIZER (STATS ONLY — NO MODEL USE)
 # ============================================================
 
-tokenizer = tiktoken.get_encoding("cl100k_base")
+_tokenizer = None
+_tokenizer_error = None
+_tokenizer_warned = False
+
+
+def _get_tokenizer():
+    global _tokenizer, _tokenizer_error
+    if _tokenizer is not None:
+        return _tokenizer
+    if _tokenizer_error is not None:
+        return None
+    try:
+        _tokenizer = tiktoken.get_encoding("cl100k_base")
+        return _tokenizer
+    except Exception as exc:  # Offline / proxy-safe fallback
+        _tokenizer_error = exc
+        return None
 
 
 def count_tokens(text: str) -> int:
-    return len(tokenizer.encode(text))
+    global _tokenizer_warned
+    tokenizer = _get_tokenizer()
+    if tokenizer is not None:
+        return len(tokenizer.encode(text))
+
+    # Fallback: approximate tokens to avoid hard failure in offline environments.
+    if not _tokenizer_warned:
+        _tokenizer_warned = True
+        logging.getLogger("chatui.rag.metadata").warning(
+            "tiktoken unavailable; using approximate token counts."
+        )
+    if not text:
+        return 0
+    # Rough heuristic: ~4 chars per token
+    return max(1, int(len(text) / 4))
 
 
 # ============================================================

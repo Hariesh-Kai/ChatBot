@@ -1,7 +1,7 @@
 """
 backend/api/net_key.py
 
-Net API Key verification and activation for KavinBase Net.
+Net API Key verification and activation for Chat UI Net.
 Supports Groq and xAI (Grok).
 
 Rules:
@@ -26,7 +26,7 @@ from backend.llm.net_models import (
 # ROUTER
 # ============================================================
 
-router = APIRouter(prefix="/net-key", tags=["KavinBase Net"])
+router = APIRouter(prefix="/net-key", tags=["Chat UI Net"])
 
 # ============================================================
 # PROVIDERS

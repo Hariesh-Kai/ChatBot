@@ -1,6 +1,6 @@
 // frontend/app/lib/types.ts
 
-import type { KavinModelId } from "./kavin-models";
+import type { ChatUIModelId } from "./chat-ui-models";
 
 /* ================= MESSAGE ROLES ================= */
 
@@ -54,7 +54,7 @@ export interface RagSource {
 export interface Message {
   id: string;
   role: Role;
-  model?: KavinModelId;
+  model?: ChatUIModelId;
 
   /**
    * Message text.
@@ -113,6 +113,6 @@ export interface ChatSession {
   id: string;
   title: string;
   messages: Message[];
-  model: KavinModelId;
+  model: ChatUIModelId;
   pinned?: boolean;
 }

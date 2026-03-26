@@ -11,11 +11,11 @@
       "updated_at": 1772441690,
       "resources": {
         "postgres": {
-          "database": "kavin_hariesh",
+          "database": "chat_ui_hariesh",
           "created": true
         },
         "minio": {
-          "bucket": "kavin-hariesh",
+          "bucket": "chat-ui-hariesh",
           "created": true
         },
         "redis": {

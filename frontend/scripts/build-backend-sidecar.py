@@ -58,7 +58,7 @@ def build_sidecar(repo_root: Path, target_triple: str) -> Path:
         if target_triple.endswith("windows-msvc") or target_triple.endswith("windows-gnu")
         else ""
     )
-    target_binary = binaries_dir / f"kavin-backend-{target_triple}{suffix}"
+    target_binary = binaries_dir / f"chat-ui-backend-{target_triple}{suffix}"
 
     temp_dir = tauri_dir / ".sidecar-build"
     dist_dir = temp_dir / "dist"
@@ -77,12 +77,12 @@ def build_sidecar(repo_root: Path, target_triple: str) -> Path:
                 "PyInstaller is required to build a fresh backend sidecar. "
                 "Install it with: "
                 f"{sys.executable} -m pip install pyinstaller "
-                "or pass an explicit binary path with KAVIN_SIDECAR_BIN."
+                "or pass an explicit binary path with CHAT_UI_SIDECAR_BIN."
             )
 
         shutil.copy2(prebuilt, target_binary)
         print(
-            "PyInstaller not found; using explicit KAVIN_SIDECAR_BIN binary: "
+            "PyInstaller not found; using explicit CHAT_UI_SIDECAR_BIN binary: "
             f"{prebuilt}"
         )
         print(f"Sidecar ready: {target_binary}")
@@ -118,7 +118,7 @@ def build_sidecar(repo_root: Path, target_triple: str) -> Path:
         "--collect-data",
         "backend",
         "--name",
-        "kavin-backend",
+        "chat-ui-backend",
         "--distpath",
         str(dist_dir),
         "--workpath",
@@ -132,7 +132,7 @@ def build_sidecar(repo_root: Path, target_triple: str) -> Path:
     subprocess.run(pyinstaller_cmd, check=True, cwd=str(repo_root))
 
     source_binary = dist_dir / (
-        "kavin-backend.exe" if sys.platform == "win32" else "kavin-backend"
+        "chat-ui-backend.exe" if sys.platform == "win32" else "chat-ui-backend"
     )
     if not source_binary.is_file():
         raise FileNotFoundError(f"PyInstaller output missing: {source_binary}")
@@ -143,7 +143,7 @@ def build_sidecar(repo_root: Path, target_triple: str) -> Path:
 
 
 def resolve_prebuilt_sidecar() -> Path | None:
-    explicit = os.environ.get("KAVIN_SIDECAR_BIN")
+    explicit = os.environ.get("CHAT_UI_SIDECAR_BIN")
     if not explicit:
         return None
 
@@ -151,7 +151,7 @@ def resolve_prebuilt_sidecar() -> Path | None:
     if candidate.is_file():
         return candidate
     raise RuntimeError(
-        "KAVIN_SIDECAR_BIN was set but file does not exist: "
+        "CHAT_UI_SIDECAR_BIN was set but file does not exist: "
         f"{candidate}"
     )
 

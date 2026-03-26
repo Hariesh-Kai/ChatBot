@@ -1,6 +1,6 @@
 # backend/llm/text_normalizer.py
 """
-Text Normalizer for KavinBase
+Text Normalizer for Chat UI
 
 Purpose:
 - Normalize raw user text BEFORE intent, rewrite, and generation

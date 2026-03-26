@@ -69,14 +69,14 @@ def role_level(role: Optional[str]) -> int:
 
 
 def get_configured_user() -> User:
-    username = os.getenv("KAVIN_ADMIN_USERNAME", "admin").strip() or "admin"
-    email = os.getenv("KAVIN_ADMIN_EMAIL", "admin@example.com").strip() or "admin@example.com"
+    username = os.getenv("CHAT_UI_ADMIN_USERNAME", "admin").strip() or "admin"
+    email = os.getenv("CHAT_UI_ADMIN_EMAIL", "admin@example.com").strip() or "admin@example.com"
     return User(username=username, email=email, role=ROLE_PIPING_ADMIN, disabled=False)
 
 
 def _get_configured_password() -> str:
     # For local/dev usage only (stored in .env). Prefer a secrets manager in production.
-    return os.getenv("KAVIN_ADMIN_PASSWORD", "")
+    return os.getenv("CHAT_UI_ADMIN_PASSWORD", "")
 
 
 def is_admin(user: User) -> bool:

@@ -5,7 +5,7 @@ interface DisclaimerProps {
 }
 
 export default function Disclaimer({
-  text = "KavinBase Base v1.0 may make mistakes. Please verify important information.",
+  text = "Chat UI Base v1.0 may make mistakes. Please verify important information.",
 }: DisclaimerProps) {
   return (
     <div className="px-4 py-2 text-center text-[11px] text-gray-500">

@@ -31,7 +31,7 @@ const tauriArgs = process.argv.slice(2);
 const env = { ...process.env };
 if (!env.CARGO_TARGET_DIR) {
   // Keep Rust build artifacts on project drive to avoid filling C:\\Temp.
-  env.CARGO_TARGET_DIR = path.resolve(process.cwd(), ".cargo-target", "kavinbase-tauri-target");
+  env.CARGO_TARGET_DIR = path.resolve(process.cwd(), ".cargo-target", "chat-ui-base-tauri-target");
 }
 fs.mkdirSync(env.CARGO_TARGET_DIR, { recursive: true });
 

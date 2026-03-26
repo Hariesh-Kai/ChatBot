@@ -24,8 +24,8 @@ Operational notes:
 - Add worker health and queue depth to Developer Dashboard.
 
 Implemented:
-- Celery task `kavin.rag.commit` executes full commit pipeline end-to-end.
-- Celery beat task `kavin.minio.outbox.tick` processes MinIO outbox retries.
+- Celery task `chatui.rag.commit` executes full commit pipeline end-to-end.
+- Celery beat task `chatui.minio.outbox.tick` processes MinIO outbox retries.
 - API now enqueues commit jobs to RabbitMQ when `CELERY_ENABLED=1`.
 - Job progress/status is persisted in DB (`rag_job_runs`) so frontend polling works across processes.
 - Developer dashboard/runtime now shows GPU status, RabbitMQ status, and worker mode/status.
@@ -72,7 +72,7 @@ Resume Checklist (Later):
    - `CELERY_ENABLED=1`
    - `CELERY_BROKER_URL=amqp://guest:guest@127.0.0.1:5672//`
 4. Start Celery worker with Windows-safe args:
-   - `celery -A backend.queue.celery_app:celery_app worker -l info -Q kavin.default --pool=solo --concurrency=1`
+   - `celery -A backend.queue.celery_app:celery_app worker -l info -Q chatui.default --pool=solo --concurrency=1`
 5. Start beat:
    - `celery -A backend.queue.celery_app:celery_app beat -l info`
 6. Verify:

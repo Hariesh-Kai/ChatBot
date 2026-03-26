@@ -29,7 +29,7 @@ def _get_config():
         "endpoint": os.getenv("MINIO_ENDPOINT"),
         "access_key": os.getenv("MINIO_ACCESS_KEY"),
         "secret_key": os.getenv("MINIO_SECRET_KEY"),
-        "bucket": os.getenv("MINIO_BUCKET", "kavin-documents"),
+        "bucket": os.getenv("MINIO_BUCKET", "chat-ui-documents"),
         "secure": os.getenv("MINIO_SECURE", "false").lower() in ("1", "true", "yes"),
     }
 

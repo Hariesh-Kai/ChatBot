@@ -1,7 +1,7 @@
 # backend/llm/pii.py
 
 """
-PII Detection & Masking for KavinBase
+PII Detection & Masking for Chat UI
 
 Purpose:
 - Detect personally identifiable information in questions before

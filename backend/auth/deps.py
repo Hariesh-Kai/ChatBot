@@ -10,19 +10,19 @@ from fastapi import HTTPException, Request
 from backend.auth.tokens import verify_token
 from backend.auth.user_store import User, get_user_for_token, is_admin
 
-AUTH_COOKIE_NAME = "kavin_auth"
+AUTH_COOKIE_NAME = "chat_ui_auth"
 
 
 def _get_auth_secret() -> str:
     # Local/dev only. In production, set a strong secret via your deployment environment.
-    return os.getenv("KAVIN_AUTH_SECRET", "").strip()
+    return os.getenv("CHAT_UI_AUTH_SECRET", "").strip()
 
 
 def get_current_user(request: Request) -> Optional[User]:
     secret = _get_auth_secret()
     if not secret:
         # Fail closed: if you turn on auth routes, you should configure the secret.
-        raise HTTPException(500, "Auth secret not configured (KAVIN_AUTH_SECRET)")
+        raise HTTPException(500, "Auth secret not configured (CHAT_UI_AUTH_SECRET)")
 
     token = request.cookies.get(AUTH_COOKIE_NAME)
     if not token:

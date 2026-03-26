@@ -24,7 +24,7 @@ _LOCK = threading.Lock()
 _ACTIVE_JOBS: Dict[str, threading.Thread] = {}
 _MAX_CONCURRENT_COMMITS = max(1, int(os.getenv("RAG_COMMIT_CONCURRENCY", "1")))
 _SEMAPHORE = threading.Semaphore(_MAX_CONCURRENT_COMMITS)
-_CELERY_TASK_NAME = os.getenv("CELERY_COMMIT_TASK_NAME", "kavin.rag.commit")
+_CELERY_TASK_NAME = os.getenv("CELERY_COMMIT_TASK_NAME", "chatui.rag.commit")
 
 
 def _required_keys() -> Tuple[str, ...]:

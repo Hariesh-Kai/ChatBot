@@ -1,7 +1,7 @@
 # backend/llm/net_models.py
 
 """
-Registry for KavinBase Net (External API-based LLMs).
+Registry for Chat UI Net (External API-based LLMs).
 
 Rules:
 - No API calls here
@@ -43,7 +43,7 @@ NET_MODELS: Dict[NetProvider, Dict[str, str]] = {
 # ENV VARS
 # ============================================================
 
-NET_PROVIDER_ENV = "KAVIN_NET_PROVIDER"
+NET_PROVIDER_ENV = "CHAT_UI_NET_PROVIDER"
 
 # ============================================================
 # HARD LIMITS

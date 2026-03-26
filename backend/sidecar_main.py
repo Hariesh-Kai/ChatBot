@@ -54,7 +54,7 @@ def install_onnxruntime_transformers_aliases() -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="KavinBase backend sidecar")
+    parser = argparse.ArgumentParser(description="Chat UI backend sidecar")
     parser.add_argument("--host", default="127.0.0.1", help="Host bind address")
     parser.add_argument(
         "--port",
@@ -80,7 +80,7 @@ def main() -> None:
     args = parse_args()
 
     if args.env_file:
-        os.environ.setdefault("KAVIN_ENV_FILE", args.env_file)
+        os.environ.setdefault("CHAT_UI_ENV_FILE", args.env_file)
 
     install_onnxruntime_transformers_aliases()
 

@@ -174,7 +174,7 @@ def get_software_status() -> Dict[str, Any]:
             "id": "rag_commit_pipeline",
             "name": "RAG Commit Pipeline",
             "software": "Celery worker" if celery_mode else "In-process worker thread",
-            "task_name": "kavin.rag.commit" if celery_mode else None,
+            "task_name": "chatui.rag.commit" if celery_mode else None,
             "description": "Chunking, metadata enrichment, embedding, indexing, active document update.",
         },
         {
@@ -185,7 +185,7 @@ def get_software_status() -> Dict[str, Any]:
                 if outbox_via_celery
                 else "In-process outbox worker"
             ),
-            "task_name": "kavin.minio.outbox.tick" if outbox_via_celery else None,
+            "task_name": "chatui.minio.outbox.tick" if outbox_via_celery else None,
             "description": "Retries failed/offline MinIO uploads from durable outbox.",
         },
         {
@@ -203,7 +203,7 @@ def get_software_status() -> Dict[str, Any]:
         "queue": {
             "celery_enabled": celery_mode,
             "outbox_via_celery": outbox_via_celery,
-            "default_queue": os.getenv("CELERY_DEFAULT_QUEUE", "kavin.default"),
+            "default_queue": os.getenv("CELERY_DEFAULT_QUEUE", "chatui.default"),
             "broker_source": (
                 "CELERY_BROKER_URL"
                 if (os.getenv("CELERY_BROKER_URL") or "").strip()

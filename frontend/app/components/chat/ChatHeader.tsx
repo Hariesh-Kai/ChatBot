@@ -12,7 +12,7 @@ import {
   LoaderCircle,
 } from "lucide-react";
 
-import { KAVIN_MODELS, KavinModelId } from "@/app/lib/kavin-models";
+import { CHAT_UI_MODELS, ChatUIModelId } from "@/app/lib/chat-ui-models";
 import NetKeyModal from "@/app/components/net/NetKeyModal";
 import { hasNetApiKey } from "@/app/lib/net-key-store";
 import Avatar from "../ui/Avatar";
@@ -24,8 +24,8 @@ interface Props {
   ingestionPollingActive?: boolean;
   ingestionPollingCount?: number;
 
-  activeModel: KavinModelId;
-  onModelChange: (model: KavinModelId) => void;
+  activeModel: ChatUIModelId;
+  onModelChange: (model: ChatUIModelId) => void;
   lockModelSelector?: boolean;
   lockedModelLabel?: string;
 
@@ -38,12 +38,12 @@ interface Props {
 ========================================================= */
 
 type ModelItem = {
-  id: KavinModelId;
+  id: ChatUIModelId;
   label: string;
 };
 
 // 🔥 FIX 1: Show ALL models. Do not filter out Net.
-const ALL_MODELS: ModelItem[] = Object.values(KAVIN_MODELS)
+const ALL_MODELS: ModelItem[] = Object.values(CHAT_UI_MODELS)
   .filter(
     (m): m is ModelItem =>
       !!m && typeof m.id === "string" && typeof m.label === "string"
@@ -282,7 +282,7 @@ export default function ChatHeader({
               <button
                 onClick={() => setNetModalOpen(true)}
                 disabled={isTyping}
-                title="Configure KavinBase Net v1.0"
+                title="Configure Chat UI Net v1.0"
                 className="
                   rounded-md p-1.5 text-cyan-300 sm:p-2
                   hover:bg-white/10 hover:text-cyan-200

@@ -1,12 +1,12 @@
-// frontend/app/lib/net.ts
+﻿// frontend/app/lib/net.ts
 
 /* =========================================================
-   KAVINBASE NET — FRONTEND API LAYER
+   CHAT UI NET â€” FRONTEND API LAYER
    ---------------------------------------------------------
-   • Talks ONLY to backend
-   • Never stores API keys directly
-   • Explicit success / failure
-   • No retries, no silent fallback
+   â€¢ Talks ONLY to backend
+   â€¢ Never stores API keys directly
+   â€¢ Explicit success / failure
+   â€¢ No retries, no silent fallback
 ========================================================= */
 
 import { API_BASE } from "./config";
@@ -96,3 +96,4 @@ export async function fetchNetStatus(): Promise<NetStatusResult> {
     };
   }
 }
+

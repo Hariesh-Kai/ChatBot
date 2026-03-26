@@ -202,6 +202,3 @@ coverage/
 # OS generated
 .fuse_hidden*
 .nfs*
-
-# Legacy local startup script (deprecated)
-start_kavin_ai.bat

@@ -33,7 +33,7 @@ def _normalize_username(value: Optional[str]) -> str:
 
 
 def _get_auth_secret() -> str:
-    return os.getenv("KAVIN_AUTH_SECRET", "").strip()
+    return os.getenv("CHAT_UI_AUTH_SECRET", "").strip()
 
 
 def _resolve_ws_user(websocket: WebSocket) -> Optional[User]:

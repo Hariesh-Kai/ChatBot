@@ -91,7 +91,7 @@ _MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,63}$")
 _PG_DB_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{2,62}$")
 _MINIO_BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 
-logger = logging.getLogger("kavin.devtools")
+logger = logging.getLogger("chatui.devtools")
 
 
 def _raise_http(detail: str, status_code: int = 500, exc: Optional[Exception] = None) -> None:
@@ -398,10 +398,10 @@ _RESET_CONFIRM_PHRASE = "DELETE_EVERYTHING"
 
 
 def _require_destructive_enabled() -> None:
-    if os.getenv("KAVIN_ENABLE_DESTRUCTIVE_DEVTOOLS", "0").strip().lower() not in ("1", "true", "yes"):
+    if os.getenv("CHAT_UI_ENABLE_DESTRUCTIVE_DEVTOOLS", "0").strip().lower() not in ("1", "true", "yes"):
         raise HTTPException(
             status_code=403,
-            detail="Destructive devtools disabled. Set KAVIN_ENABLE_DESTRUCTIVE_DEVTOOLS=1 to enable.",
+            detail="Destructive devtools disabled. Set CHAT_UI_ENABLE_DESTRUCTIVE_DEVTOOLS=1 to enable.",
         )
 
 
@@ -788,9 +788,9 @@ def _normalize_pg_db_name(username: str, requested: Optional[str]) -> str:
     base = re.sub(r"[^a-zA-Z0-9_]+", "_", (username or "user")).strip("_")
     if not base:
         base = "user"
-    db_name = f"kavin_{base.lower()}"[:63]
+    db_name = f"chat_ui_{base.lower()}"[:63]
     if len(db_name) < 3:
-        db_name = "kavin_user"
+        db_name = "chat_ui_user"
     if not _PG_DB_RE.match(db_name):
         raise ValueError("Generated Postgres database name is invalid")
     return db_name
@@ -806,9 +806,9 @@ def _normalize_bucket_name(username: str, requested: Optional[str]) -> str:
     base = re.sub(r"[^a-z0-9-]+", "-", (username or "user").lower()).strip("-")
     if not base:
         base = "user"
-    bucket = f"kavin-{base}"[:63].strip("-")
+    bucket = f"chat-ui-{base}"[:63].strip("-")
     if len(bucket) < 3:
-        bucket = "kavin-user"
+        bucket = "chat-ui-user"
     if not _MINIO_BUCKET_RE.match(bucket):
         raise ValueError("Generated MinIO bucket name is invalid")
     return bucket
@@ -1708,7 +1708,7 @@ def list_db_records(
         if not client:
             raise HTTPException(status_code=500, detail="MinIO not configured or unavailable")
 
-        bucket = os.getenv("MINIO_BUCKET", "kavin-documents")
+        bucket = os.getenv("MINIO_BUCKET", "chat-ui-documents")
         try:
             if not client.bucket_exists(bucket):
                 return {
@@ -1824,7 +1824,7 @@ def reset_minio(req: ResetRequest, _admin: User = Depends(require_admin)):
     if not client:
         raise HTTPException(status_code=500, detail="MinIO not configured or unavailable")
 
-    bucket = (req.minio_bucket or os.getenv("MINIO_BUCKET", "kavin-documents")).strip()
+    bucket = (req.minio_bucket or os.getenv("MINIO_BUCKET", "chat-ui-documents")).strip()
     if not bucket:
         raise HTTPException(status_code=400, detail="minio_bucket is required")
 

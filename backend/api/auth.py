@@ -27,7 +27,7 @@ class UserResponse(BaseModel):
 
 def _get_cookie_options() -> dict:
     # For local/dev over http://localhost
-    secure = os.getenv("KAVIN_AUTH_COOKIE_SECURE", "0").strip() in ("1", "true", "True")
+    secure = os.getenv("CHAT_UI_AUTH_COOKIE_SECURE", "0").strip() in ("1", "true", "True")
     return {
         "httponly": True,
         "secure": secure,
@@ -38,21 +38,21 @@ def _get_cookie_options() -> dict:
 
 @router.post("/login", response_model=UserResponse)
 def login(payload: LoginRequest, response: Response):
-    if not os.getenv("KAVIN_ADMIN_PASSWORD", "").strip():
+    if not os.getenv("CHAT_UI_ADMIN_PASSWORD", "").strip():
         raise HTTPException(
             status_code=500,
-            detail="Auth not configured (KAVIN_ADMIN_PASSWORD is missing)",
+            detail="Auth not configured (CHAT_UI_ADMIN_PASSWORD is missing)",
         )
 
     user = verify_credentials(payload.identifier, payload.password)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    secret = os.getenv("KAVIN_AUTH_SECRET", "").strip()
+    secret = os.getenv("CHAT_UI_AUTH_SECRET", "").strip()
     if not secret:
-        raise HTTPException(500, "Auth secret not configured (KAVIN_AUTH_SECRET)")
+        raise HTTPException(500, "Auth secret not configured (CHAT_UI_AUTH_SECRET)")
 
-    ttl_seconds = int(os.getenv("KAVIN_AUTH_TTL_SECONDS", str(60 * 60 * 24 * 7)))
+    ttl_seconds = int(os.getenv("CHAT_UI_AUTH_TTL_SECONDS", str(60 * 60 * 24 * 7)))
     token = create_token(
         {"sub": user.username, "email": user.email},
         secret=secret,

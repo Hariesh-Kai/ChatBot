@@ -1,7 +1,7 @@
 # backend/llm/generate.py
 
 """
-Unified text generation for KavinBase / KavinBase Lite / KavinBase Net.
+Unified text generation for Chat UI / Chat UI Lite / Chat UI Net.
 
 CRITICAL GUARANTEES:
 - ALWAYS yields at least one string
@@ -124,7 +124,7 @@ def _friendly_net_error(err: Exception) -> str:
     lower = msg.lower()
 
     if "not configured" in lower or "no api key" in lower or "api key missing" in lower:
-        return "KavinBase Net is not configured. Add and verify your API key."
+        return "Chat UI Net is not configured. Add and verify your API key."
     if "invalid" in lower and "key" in lower:
         return "Net API key is invalid. Please re-verify it."
     if "unsupported net provider" in lower or "invalid net provider" in lower:

@@ -1514,7 +1514,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kavinbase_desktop"
+name = "chat_ui_base_desktop"
 version = "0.1.0"
 dependencies = [
  "tauri",

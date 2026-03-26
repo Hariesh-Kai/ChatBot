@@ -1,6 +1,6 @@
-# 🚀 KavinBase - Enterprise RAG System
+# 🚀 Chat UI - Enterprise RAG System
 
-**KavinBase** is a robust Retrieval-Augmented Generation (RAG) system built to parse, index, and query complex technical documents. It is specifically optimized for engineering PDFs containing dense tables, specific identifiers, and structured metadata.
+**Chat UI** is a robust Retrieval-Augmented Generation (RAG) system built to parse, index, and query complex technical documents. It is specifically optimized for engineering PDFs containing dense tables, specific identifiers, and structured metadata.
 
 The system features a **Hybrid Search** engine (Vector + Keyword), a **Self-Healing Database**, and a modern **Next.js Frontend** that renders complex data tables directly in the chat.
 

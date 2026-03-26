@@ -53,7 +53,7 @@ export interface TeamWorkspaceState {
   projectCounter: number;
 }
 
-const STORAGE_PREFIX = "kavin-enterprise-messaging-v1";
+const STORAGE_PREFIX = "chat-ui-enterprise-messaging-v1";
 
 function uuidv4() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {

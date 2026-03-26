@@ -1,7 +1,7 @@
 # backend/llm/loader.py
 
 """
-LLM Loader for KavinBase / KavinBase Lite
+LLM Loader for Chat UI / Chat UI Lite
 
 PHASE 2 GUARANTEES:
 - GGUF wrapper ALWAYS yields normalized dicts

@@ -1,6 +1,6 @@
 # backend/llm/intent_rules.py
 """
-Rule-based Intent Detection for KavinBase
+Rule-based Intent Detection for Chat UI
 
 Purpose:
 - Catch ultra-simple linguistic cases

@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { pmlAuthMe } from "@/app/lib/pml-auth-api";
 
-const WORKSPACE_MODE_KEY_PREFIX = "kavin-workspace-mode";
+const WORKSPACE_MODE_KEY_PREFIX = "chat-ui-workspace-mode";
 
 export default function PmlEntryRedirectPage() {
   const router = useRouter();

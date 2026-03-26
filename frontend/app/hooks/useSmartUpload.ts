@@ -90,7 +90,7 @@ export function useSmartUpload() {
         if (uploadId !== activeUploadId.current) return;
 
         stopSimulation();
-        (window as any).__KAVIN_UPLOAD_ACTIVE__ = false;
+        (window as any).__CHAT_UI_UPLOAD_ACTIVE__ = false;
         onProgress("error", 0, "Failed");
         onError(err?.message || "Upload failed");
       }

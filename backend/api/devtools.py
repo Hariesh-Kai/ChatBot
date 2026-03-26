@@ -15,6 +15,10 @@ from backend.llm.intent_classifier import classify_intent
 from backend.llm.query_rewriter import rewrite_question
 from backend.llm.text_normalizer import normalize_text
 from backend.rag.keyword_search import extract_keywords
+from backend.rag.mode_profiles import (
+    normalize_retrieval_mode_setting,
+    resolve_effective_retrieval_mode,
+)
 
 #  NEW: Import retrieval logic for testing
 from backend.rag.retrieve import retrieve_rag_context
@@ -1877,17 +1881,29 @@ def debug_retrieval(req: RetrievalDebugReq):
         raise HTTPException(400, "revision_number required")
 
     settings = get_dev_settings()
+    intent = classify_intent(normalize_text(req.question))
+    rag_retrieval_mode_setting = normalize_retrieval_mode_setting(
+        settings.get("rag_retrieval_mode", settings.get("rag_mode"))
+    )
+    effective_rag_mode = resolve_effective_retrieval_mode(
+        rag_retrieval_mode_setting,
+        intent,
+    )
 
     chunks = retrieve_rag_context(
         question=req.question,
         vector_store=vector_store,
         company_document_id=req.company_document_id,
         revision_number=str(req.revision_number),
+        rag_mode=effective_rag_mode,
         force_detailed=bool(settings.get("force_detailed_retrieval"))
     )
 
     return {
         "count": len(chunks),
+        "intent": intent,
+        "rag_retrieval_mode_setting": rag_retrieval_mode_setting,
+        "effective_rag_mode": effective_rag_mode,
         "chunk_ids": [c["id"] for c in chunks],
         "chunks": chunks[:3],
         "preview": chunks[:3],  # 🔥 DO NOT dump everything

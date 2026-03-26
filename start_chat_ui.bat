@@ -1,5 +1,5 @@
 @echo off
-TITLE Kavin AI Controller
+TITLE Chat UI Controller
 COLOR 0A
 
 :: ====================================================
@@ -33,6 +33,7 @@ IF "%CELERY_BROKER_URL%"=="" SET "CELERY_BROKER_URL=amqp://guest:guest@127.0.0.1
 IF "%RABBITMQ_URL%"=="" SET "RABBITMQ_URL=%CELERY_BROKER_URL%"
 IF "%CELERY_RESULT_BACKEND%"=="" SET "CELERY_RESULT_BACKEND=rpc://"
 IF "%CELERY_OUTBOX_ENABLED%"=="" SET "CELERY_OUTBOX_ENABLED=1"
+IF "%CELERY_DEFAULT_QUEUE%"=="" SET "CELERY_DEFAULT_QUEUE=default"
 
 :: ====================================================
 :: 2. STARTUP SEQUENCE
@@ -42,24 +43,24 @@ echo.
 echo [1/5] Launching Minio Server...
 IF EXIST "%MINIO_EXE%" (
   IF NOT EXIST "%MINIO_DATA%" mkdir "%MINIO_DATA%"
-  start "Kavin Minio" cmd /k "%MINIO_EXE% server %MINIO_DATA% --console-address :9001"
+  start "Chat UI Minio" cmd /k "%MINIO_EXE% server %MINIO_DATA% --console-address :9001"
 ) ELSE (
   echo [WARN] MinIO executable not found. Checked: D:\minio\minio.exe, D:\minio.exe\minio.exe, %PROJECT_ROOT%\minio-run\minio.exe, %PROJECT_ROOT%\minio.exe, PATH
 )
 
 echo [2/5] Launching Backend (Uvicorn)...
 :: Goes to project root, activates python, runs your specific uvicorn command
-start "Kavin Backend" cmd /k "cd /d %PROJECT_ROOT% && %VENV_NAME%\Scripts\activate && uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000"
+start "Chat UI Backend" cmd /k "cd /d %PROJECT_ROOT% && %VENV_NAME%\Scripts\activate && uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000"
 
 echo [3/5] Launching Celery Worker...
-start "Kavin Celery Worker" cmd /k "cd /d %PROJECT_ROOT% && %VENV_NAME%\Scripts\activate && celery -A backend.queue.celery_app:celery_app worker --loglevel=info -Q kavin.default --pool=solo --concurrency=1"
+start "Chat UI Celery Worker" cmd /k "cd /d %PROJECT_ROOT% && %VENV_NAME%\Scripts\activate && celery -A backend.queue.celery_app:celery_app worker --loglevel=info -Q %CELERY_DEFAULT_QUEUE% --pool=solo --concurrency=1"
 
 echo [4/5] Launching Celery Beat...
-start "Kavin Celery Beat" cmd /k "cd /d %PROJECT_ROOT% && %VENV_NAME%\Scripts\activate && celery -A backend.queue.celery_app:celery_app beat --loglevel=info"
+start "Chat UI Celery Beat" cmd /k "cd /d %PROJECT_ROOT% && %VENV_NAME%\Scripts\activate && celery -A backend.queue.celery_app:celery_app beat --loglevel=info"
 
 echo [5/5] Launching Frontend (Next.js)...
 :: Goes to project root, then into 'frontend' folder, then runs npm
-start "Kavin Frontend" cmd /k "cd /d %PROJECT_ROOT%\frontend && npm run dev"
+start "Chat UI Frontend" cmd /k "cd /d %PROJECT_ROOT%\frontend && npm run dev"
 
 echo.
 echo Waiting for servers to initialize...
@@ -80,7 +81,7 @@ start http://localhost:8000/docs
 
 CLS
 echo ========================================================
-echo   KAVIN AI IS RUNNING
+echo   CHAT UI IS RUNNING
 echo ========================================================
 echo.
 echo   [Status]
@@ -99,11 +100,11 @@ echo.
 echo Shutting down...
 
 :: Force kills the windows by their specific titles
-taskkill /FI "WINDOWTITLE eq Kavin Minio*" /F /T
-taskkill /FI "WINDOWTITLE eq Kavin Backend*" /F /T
-taskkill /FI "WINDOWTITLE eq Kavin Celery Worker*" /F /T
-taskkill /FI "WINDOWTITLE eq Kavin Celery Beat*" /F /T
-taskkill /FI "WINDOWTITLE eq Kavin Frontend*" /F /T
+taskkill /FI "WINDOWTITLE eq Chat UI Minio*" /F /T
+taskkill /FI "WINDOWTITLE eq Chat UI Backend*" /F /T
+taskkill /FI "WINDOWTITLE eq Chat UI Celery Worker*" /F /T
+taskkill /FI "WINDOWTITLE eq Chat UI Celery Beat*" /F /T
+taskkill /FI "WINDOWTITLE eq Chat UI Frontend*" /F /T
 
 :: Cleanup specific executables to ensure ports are freed
 taskkill /F /IM minio.exe >nul 2>&1

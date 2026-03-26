@@ -8,6 +8,7 @@ from langchain_postgres import PGVector
 
 from backend.rag.keyword_search import keyword_search
 from backend.rag.rerank import rerank_documents
+from backend.rag.mode_profiles import normalize_rag_mode, get_retrieval_profile
 
 # ============================================================
 # CONFIG
@@ -16,7 +17,7 @@ from backend.rag.rerank import rerank_documents
 RAG_MAX_K = 8
 RAG_CANDIDATE_K = 25
 
-# Reciprocal Rank Fusion constant — higher k = less aggressive fusion
+# Reciprocal Rank Fusion constant - higher k = less aggressive fusion
 RRF_K = 60
 
 
@@ -27,6 +28,8 @@ RRF_K = 60
 def _reciprocal_rank_fusion(
     vector_docs: List[Document],
     keyword_results: List[tuple],  # List of (Document, score)
+    *,
+    rrf_k: int = RRF_K,
 ) -> List[Document]:
     """
     Fuses vector search results and keyword search results using RRF.
@@ -46,7 +49,7 @@ def _reciprocal_rank_fusion(
         if not cid:
             continue
         doc_map[cid] = doc
-        fused_scores[cid] = fused_scores.get(cid, 0.0) + 1.0 / (RRF_K + rank + 1)
+        fused_scores[cid] = fused_scores.get(cid, 0.0) + 1.0 / (rrf_k + rank + 1)
 
     # Score from keyword results (ranked by ts_rank score then position)
     # Sort keyword results by their ts_rank score descending first
@@ -59,7 +62,7 @@ def _reciprocal_rank_fusion(
             doc_map[cid] = doc
         # Add RRF component + small bonus from ts_rank score
         fused_scores[cid] = fused_scores.get(cid, 0.0) + (
-            1.0 / (RRF_K + rank + 1) + 0.01 * kw_score
+            1.0 / (rrf_k + rank + 1) + 0.01 * kw_score
         )
 
     # Sort by fused score descending
@@ -133,6 +136,7 @@ def retrieve_rag_context(
     vector_store: PGVector,
     company_document_id: str,
     revision_number: str,
+    rag_mode: str = "balanced",
     force_detailed: bool = False,
     extra_context_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
@@ -142,7 +146,7 @@ def retrieve_rag_context(
     Steps:
     1. Vector Search (high recall)
     2. BM25-style Keyword Search (ts_rank scored)
-    3. Reciprocal Rank Fusion (RRF) — merges and scores both
+    3. Reciprocal Rank Fusion (RRF) - merges and scores both
     4. Reranking (FlashRank cross-encoder)
     5. Parent Document Resolution
     6. Formatting & BBox Parsing
@@ -154,8 +158,14 @@ def retrieve_rag_context(
         "revision_number": str(revision_number),
     }
 
+    resolved_rag_mode = normalize_rag_mode(rag_mode)
+    profile = get_retrieval_profile(
+        resolved_rag_mode,
+        force_detailed=force_detailed,
+    )
+
     # 2. Vector Search (High Recall)
-    search_k = RAG_CANDIDATE_K + 10 if force_detailed else RAG_CANDIDATE_K
+    search_k = int(profile.get("candidate_k", RAG_CANDIDATE_K))
 
     vector_docs = vector_store.similarity_search(
         question,
@@ -164,29 +174,47 @@ def retrieve_rag_context(
     )
 
     # 3. BM25-style Keyword Search (scored tuples)
-    keyword_results = keyword_search(
-        question=question,
-        vector_store=vector_store,
-        metadata_filter=metadata_filter,
-        limit=12,
-    )
+    keyword_results = []
+    if bool(profile.get("use_keyword", True)):
+        keyword_results = keyword_search(
+            question=question,
+            vector_store=vector_store,
+            metadata_filter=metadata_filter,
+            limit=int(profile.get("keyword_limit", 12)),
+        )
 
-    # 4. RRF Fusion — replaces naive union deduplication
-    candidates = _reciprocal_rank_fusion(vector_docs, keyword_results)
+    # 4. RRF Fusion - replaces naive union deduplication
+    if keyword_results:
+        candidates = _reciprocal_rank_fusion(
+            vector_docs,
+            keyword_results,
+            rrf_k=int(profile.get("rrf_k", RRF_K)),
+        )
+    else:
+        candidates = list(vector_docs)
+        rrf_k = int(profile.get("rrf_k", RRF_K))
+        for rank, doc in enumerate(candidates):
+            doc.metadata["rrf_score"] = round(1.0 / (rrf_k + rank + 1), 4)
 
     # 5. Reranking (FlashRank cross-encoder re-scores top candidates)
     if candidates:
-        final_k = RAG_MAX_K + 2 if force_detailed else RAG_MAX_K
-        reranked_docs = rerank_documents(question, candidates, top_k=final_k)
+        final_k = int(profile.get("final_k", RAG_MAX_K))
+        if bool(profile.get("use_rerank", True)):
+            reranked_docs = rerank_documents(question, candidates, top_k=final_k)
+        else:
+            reranked_docs = candidates[:final_k]
     else:
         reranked_docs = []
 
     # 6. Parent Resolution (Context Expansion for table rows)
-    final_docs = resolve_parent_chunks(
-        reranked_docs,
-        vector_store,
-        vector_store.collection_name
-    )
+    if bool(profile.get("use_parent_resolution", True)):
+        final_docs = resolve_parent_chunks(
+            reranked_docs,
+            vector_store,
+            vector_store.collection_name
+        )
+    else:
+        final_docs = reranked_docs
 
     # 7. Format Output for LLM & Frontend
     rag_chunks = []
@@ -272,7 +300,7 @@ def augment_query_with_context(
 
         q_tokens = question.strip().split()
         if len(q_tokens) >= 8:
-            # Question is specific enough — no augmentation needed
+            # Question is specific enough - no augmentation needed
             return question
 
         ctx_keywords = _extract_context_keywords(recent_messages)
@@ -286,4 +314,3 @@ def augment_query_with_context(
     except Exception as e:
         print(f"[CONV-AWARE] augment_query_with_context failed (non-fatal): {e}")
         return question
-

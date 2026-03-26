@@ -58,6 +58,10 @@ from backend.rag.cache import get_cached_chunks, set_cached_chunks
 from backend.llm.few_shot import get_few_shot_examples, format_few_shot_block
 from backend.learning.adaptive_retrieval import get_adaptive_config
 from backend.rag.retrieve import augment_query_with_context
+from backend.rag.mode_profiles import (
+    normalize_retrieval_mode_setting,
+    resolve_effective_retrieval_mode,
+)
 
 # ================================
 # MEMORY
@@ -465,6 +469,9 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     force_detailed_retrieval = bool(settings.get("force_detailed_retrieval", False))
     disable_retrieval_policy = bool(settings.get("disable_retrieval_policy", False))
     disable_rag_globally = bool(settings.get("disable_rag_globally", False))
+    rag_retrieval_mode_setting = normalize_retrieval_mode_setting(
+        settings.get("rag_retrieval_mode", settings.get("rag_mode"))
+    )
 
     # =====================================================
     # 🔥 METADATA GATE (OPTION A)
@@ -701,6 +708,10 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     # QUERY ROUTING (Phase 3)
     # =====================================================
     route_config = _route_query(intent, force_detailed_retrieval)
+    effective_rag_mode = resolve_effective_retrieval_mode(
+        rag_retrieval_mode_setting,
+        intent,
+    )
 
     # =====================================================
     # ADAPTIVE RETRIEVAL CONFIG (Phase 4)
@@ -725,9 +736,10 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     # Conversation-aware query augmentation (Phase 4) - only for cache key + retrieval
     conv_history = get_recent_user_messages(session_id)
     augmented_query = augment_query_with_context(rewritten, conv_history)
+    retrieval_cache_key = f"[rag_mode:{effective_rag_mode}] {augmented_query}"
 
     if not rag_disabled:
-        cached = get_cached_chunks(company_document_id, str(revision_number), augmented_query)
+        cached = get_cached_chunks(company_document_id, str(revision_number), retrieval_cache_key)
         if cached is not None:
             new_rag_chunks = cached
             cache_hit = True
@@ -737,10 +749,14 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                 vector_store=vector_store,
                 company_document_id=company_document_id,
                 revision_number=str(revision_number),
+                rag_mode=effective_rag_mode,
                 force_detailed=route_config["force_detailed"],
             )
             set_cached_chunks(
-                company_document_id, str(revision_number), augmented_query, new_rag_chunks
+                company_document_id,
+                str(revision_number),
+                retrieval_cache_key,
+                new_rag_chunks,
             )
 
 
@@ -795,7 +811,9 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
         model_id = resolve_model_id(req.mode)
         print(
             f"[MODEL] session={session_id} mode={req.mode} "
-            f"resolved_model={model_id} rag={'enabled' if did_retrieve else 'no_chunks'}"
+            f"resolved_model={model_id} rag={'enabled' if did_retrieve else 'no_chunks'} "
+            f"rag_retrieval_mode_setting={rag_retrieval_mode_setting} "
+            f"effective_rag_mode={effective_rag_mode}"
         )
         if embedding_unavailable:
             yield emit_event(

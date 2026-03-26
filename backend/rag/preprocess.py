@@ -13,8 +13,15 @@ from unstructured.partition.pdf import partition_pdf
 # Resource Planner (The Traffic Cop)
 # Ensure you created backend/rag/resource_planner.py as discussed!
 from backend.rag.resource_planner import get_optimal_strategy, limit_cpu_usage
+from backend.rag.mode_profiles import normalize_rag_mode, get_preprocess_profile
 
-def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[dict], None, None]:
+def stream_pdf_to_elements(
+    pdf_path: str,
+    output_json: str,
+    *,
+    rag_mode: str = "balanced",
+    pipeline_mode: str = "commit",
+) -> Generator[List[dict], None, None]:
     """
     Generator that processes a PDF page-by-page to save RAM.
     
@@ -32,6 +39,11 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
 
     pdf_path = Path(pdf_path)
     output_json = Path(output_json)
+    resolved_rag_mode = normalize_rag_mode(rag_mode)
+    profile = get_preprocess_profile(
+        resolved_rag_mode,
+        pipeline_mode=str(pipeline_mode or "commit"),
+    )
     
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
@@ -45,17 +57,22 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
     strategy, cores, batch_size = get_optimal_strategy(file_size_mb)
     
     print(f"[PREPROCESS] Strategy: {strategy} | Cores: {cores} | Processing {file_size_mb:.2f} MB")
+    print(
+        "[PREPROCESS] RAG profile: "
+        f"mode={resolved_rag_mode} pipeline_mode={pipeline_mode} "
+        f"ocr_strategy={profile.get('strategy')}"
+    )
     
     # 3. Pin CPU Cores (Prevents Windows Freeze)
     limit_cpu_usage(cores)
 
     # 4. Check Hardware Acceleration
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and not profile.get("prefer_quantized_hi_res", False):
         model_name = "yolox"
         print(f"[PREPROCESS] GPU detected. Using model: '{model_name}'")
     else:
         model_name = "yolox_quantized"
-        print(f"[PREPROCESS] No GPU found. Using model: '{model_name}'")
+        print(f"[PREPROCESS] No GPU/high-speed mode. Using model: '{model_name}'")
 
     # 5. Open PDF Stream
     try:
@@ -83,21 +100,27 @@ def stream_pdf_to_elements(pdf_path: str, output_json: str) -> Generator[List[di
             
             # B. Process ONLY this small file (Low RAM usage)
             # This is the heavy lifting step.
-            page_elements = partition_pdf(
-                filename=str(temp_filename),
-                
-                # Accuracy Settings
-                strategy="hi_res",
-                infer_table_structure=True,
-                hi_res_model_name=model_name,
-                languages=["eng"],
-                
-                # Image Extraction (Direct to main folder)
-                extract_images_in_pdf=True,
-                extract_image_block_types=["Image", "Table"],
-                extract_image_block_output_dir=str(image_output_dir),
-                extract_image_block_to_payload=False, 
-            )
+            partition_kwargs = {
+                "filename": str(temp_filename),
+                "strategy": profile.get("strategy", "hi_res"),
+                "languages": ["eng"],
+            }
+
+            if partition_kwargs["strategy"] == "hi_res":
+                partition_kwargs["infer_table_structure"] = bool(
+                    profile.get("infer_table_structure", True)
+                )
+                partition_kwargs["hi_res_model_name"] = model_name
+
+                if profile.get("extract_images_in_pdf", False):
+                    partition_kwargs["extract_images_in_pdf"] = True
+                    partition_kwargs["extract_image_block_types"] = (
+                        profile.get("extract_image_block_types") or []
+                    )
+                    partition_kwargs["extract_image_block_output_dir"] = str(image_output_dir)
+                    partition_kwargs["extract_image_block_to_payload"] = False
+
+            page_elements = partition_pdf(**partition_kwargs)
             
             # C. Enrich Metadata (Add correct page number)
             # Since we split the PDF, 'page_number' will always be 1. We must fix it.

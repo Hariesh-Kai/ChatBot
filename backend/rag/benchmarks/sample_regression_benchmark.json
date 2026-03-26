@@ -1,0 +1,27 @@
+{
+  "name": "sample_engineering_regression",
+  "defaults": {
+    "company_document_id": "replace-with-your-document-id",
+    "revision_number": "1"
+  },
+  "cases": [
+    {
+      "id": "q001",
+      "question": "What is the design pressure?",
+      "expected_pages": [12],
+      "expected_answer_keywords": ["design pressure", "bar"]
+    },
+    {
+      "id": "q002",
+      "question": "List the operating temperature range.",
+      "expected_pages": [14, 15],
+      "expected_answer_keywords": ["temperature", "operating", "range"]
+    },
+    {
+      "id": "q003",
+      "question": "Summarize the main safety requirements.",
+      "expected_pages": [22],
+      "expected_answer_keywords": ["safety", "requirement", "shall"]
+    }
+  ]
+}

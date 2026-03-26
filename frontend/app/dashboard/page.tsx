@@ -911,7 +911,7 @@ export default function DashboardPage() {
     }
   }
 
-  async function patchSettings(patch: Record<string, boolean>) {
+  async function patchSettings(patch: Record<string, boolean | string>) {
     setSettingsError(null);
     setSettingsBusy(true);
     try {
@@ -1093,6 +1093,39 @@ export default function DashboardPage() {
                   <div className="text-xs text-gray-400 mb-3">
                     Runtime flags that control chat behavior and retrieval.
                   </div>
+                  <div className="mb-3 rounded border border-white/10 bg-black/30 px-3 py-3">
+                    <label className="block text-xs text-gray-400 mb-2">RAG Ingest Mode</label>
+                    <select
+                      value={String(settings.rag_ingest_mode || settings.rag_mode || "balanced")}
+                      disabled={settingsBusy}
+                      onChange={(e) => patchSettings({ rag_ingest_mode: e.target.value })}
+                      className="w-full bg-[#222] border border-white/10 rounded p-2 text-white"
+                    >
+                      <option value="fast">Fast</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="high_fidelity">High Fidelity</option>
+                    </select>
+                    <div className="mt-2 text-xs text-gray-500">
+                      Controls upload parsing/indexing quality. High Fidelity extracts richer structure.
+                    </div>
+                  </div>
+                  <div className="mb-3 rounded border border-white/10 bg-black/30 px-3 py-3">
+                    <label className="block text-xs text-gray-400 mb-2">RAG Retrieval Mode</label>
+                    <select
+                      value={String(settings.rag_retrieval_mode || "auto")}
+                      disabled={settingsBusy}
+                      onChange={(e) => patchSettings({ rag_retrieval_mode: e.target.value })}
+                      className="w-full bg-[#222] border border-white/10 rounded p-2 text-white"
+                    >
+                      <option value="auto">Auto (intent-based)</option>
+                      <option value="fast">Fast</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="high_fidelity">High Fidelity</option>
+                    </select>
+                    <div className="mt-2 text-xs text-gray-500">
+                      Auto routing: factual/definition to Fast, summary/compare to High Fidelity, others to Balanced.
+                    </div>
+                  </div>
                   <div className="grid grid-cols-1 gap-3">
                     <Toggle
                       label="RAG visualization"
@@ -1194,6 +1227,8 @@ export default function DashboardPage() {
           <div className="lg:col-span-2 space-y-6">
             <Card title="What These Affect">
               <div className="text-gray-300 space-y-3 text-sm leading-relaxed">
+                <div><span className="text-white font-medium">RAG ingest mode</span> controls upload parsing/indexing quality and speed.</div>
+                <div><span className="text-white font-medium">RAG retrieval mode</span> controls live query retrieval depth. Auto applies intent-based routing with manual override.</div>
                 <div><span className="text-white font-medium">RAG visualization</span> shows high-level retrieval stages during responses.</div>
                 <div><span className="text-white font-medium">Confidence score</span> controls the confidence badge in chat.</div>
                 <div><span className="text-white font-medium">Sources</span> controls the citations button and source viewer.</div>

@@ -10,6 +10,7 @@ from langchain_core.documents import Document
 from backend.memory.redis_memory import clear_used_chunk_ids
 #  Import the streaming preprocessor
 from backend.rag.preprocess import stream_pdf_to_elements
+from backend.rag.mode_profiles import normalize_rag_mode
 from backend.rag.chunk import ContextAwareChunker
 from backend.rag.metadata import (
     extract_document_metadata,
@@ -20,6 +21,7 @@ from backend.rag.ingest import (
     load_documents,
 )
 from backend.contracts.ui_events import progress_event
+from backend.state.dev_settings import get_dev_settings
 
 
 # ============================================================
@@ -41,6 +43,7 @@ def run_pipeline(
     extra_metadata: Dict[str, Any],
     db_connection: Optional[str] = None,
     mode: PipelineMode = "commit",
+    rag_mode: Optional[str] = None,
 ) -> Generator[dict, None, None]:
     """
     Enterprise RAG ingestion pipeline (OPTIMIZED).
@@ -61,6 +64,18 @@ def run_pipeline(
     print(f"[PIPELINE] run_pipeline called | mode={mode}")
     print(f"[PIPELINE] pdf_path={pdf_path}")
     print(f"[PIPELINE] job_dir={job_dir}")
+    try:
+        settings = get_dev_settings()
+    except Exception:
+        settings = {}
+    resolved_rag_mode = normalize_rag_mode(
+        rag_mode
+        or extra_metadata.get("rag_ingest_mode")
+        or extra_metadata.get("rag_mode")
+        or settings.get("rag_ingest_mode")
+        or settings.get("rag_mode")
+    )
+    print(f"[PIPELINE] rag_ingest_mode={resolved_rag_mode}")
 
 
     job_dir = Path(job_dir)
@@ -101,7 +116,12 @@ def run_pipeline(
         
         # Consume the generator page-by-page
         print("[PIPELINE] About to call stream_pdf_to_elements()")
-        for batch in stream_pdf_to_elements(pdf_path, str(elements_path)):
+        for batch in stream_pdf_to_elements(
+            pdf_path,
+            str(elements_path),
+            rag_mode=resolved_rag_mode,
+            pipeline_mode=mode,
+        ):
             print(f"[PIPELINE] Preprocess batch received | elements={len(batch)}")
             all_elements.extend(batch)
             

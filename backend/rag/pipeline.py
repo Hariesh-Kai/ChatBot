@@ -11,6 +11,11 @@ from backend.memory.redis_memory import clear_used_chunk_ids
 #  Import the streaming preprocessor
 from backend.rag.preprocess import stream_pdf_to_elements
 from backend.rag.mode_profiles import normalize_rag_mode
+from backend.rag.collections import (
+    DEFAULT_RAG_COLLECTION_NAME,
+    normalize_collection_name,
+)
+from backend.rag.preprocessor_registry import normalize_rag_preprocessor
 from backend.rag.chunk import ContextAwareChunker
 from backend.rag.metadata import (
     extract_document_metadata,
@@ -44,6 +49,8 @@ def run_pipeline(
     db_connection: Optional[str] = None,
     mode: PipelineMode = "commit",
     rag_mode: Optional[str] = None,
+    preprocessor: Optional[str] = None,
+    collection_name: Optional[str] = None,
 ) -> Generator[dict, None, None]:
     """
     Enterprise RAG ingestion pipeline (OPTIMIZED).
@@ -75,7 +82,20 @@ def run_pipeline(
         or settings.get("rag_ingest_mode")
         or settings.get("rag_mode")
     )
+    resolved_preprocessor = normalize_rag_preprocessor(
+        preprocessor
+        or extra_metadata.get("rag_preprocessor")
+        or settings.get("rag_preprocessor")
+    )
+    resolved_collection_name = normalize_collection_name(
+        collection_name
+        or extra_metadata.get("rag_collection_name")
+        or settings.get("rag_collection_name")
+        or DEFAULT_RAG_COLLECTION_NAME
+    )
     print(f"[PIPELINE] rag_ingest_mode={resolved_rag_mode}")
+    print(f"[PIPELINE] rag_preprocessor={resolved_preprocessor}")
+    print(f"[PIPELINE] rag_collection_name={resolved_collection_name}")
 
 
     job_dir = Path(job_dir)
@@ -121,6 +141,7 @@ def run_pipeline(
             str(elements_path),
             rag_mode=resolved_rag_mode,
             pipeline_mode=mode,
+            preprocessor=resolved_preprocessor,
         ):
             print(f"[PIPELINE] Preprocess batch received | elements={len(batch)}")
             all_elements.extend(batch)
@@ -256,6 +277,8 @@ def run_pipeline(
         connection_string=db_connection,
         company_document_id=company_document_id,
         revision_number=revision_number,
+        collection_name=resolved_collection_name,
+        replace_existing=bool(extra_metadata.get("replace_existing", False)),
     )
     
 

@@ -1963,7 +1963,7 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
     void loadPmlTemplateLibrary();
   }, [workspaceMode, loadPmlTemplateLibrary]);
 
-  const workspaceName = "CHAT UI Workspace";
+  const workspaceName = "Kavin Workspace";
   const unassignedProjectCount = useMemo(() => {
     if (!teamWorkspace?.projects?.length) return 0;
     return teamWorkspace.projects.reduce((count, project) => {
@@ -2135,7 +2135,7 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
           <div className="app-main-header-inner flex h-full items-center px-2 sm:px-4 md:px-6">
             <div className="flex min-w-0 items-center gap-2 sm:gap-3">
               <span className="truncate text-sm font-semibold tracking-wide text-white">
-                <span className="max-[360px]:hidden sm:hidden">CHAT UI</span>
+                <span className="max-[360px]:hidden sm:hidden">KAVIN</span>
                 <span className="hidden sm:inline">{workspaceName}</span>
               </span>
               <WorkspaceModeSwitcher

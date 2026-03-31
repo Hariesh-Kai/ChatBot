@@ -8,6 +8,10 @@ from langchain_postgres import PGVector
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from backend.llm.hf_cache_utils import resolve_local_snapshot
+from backend.rag.collections import (
+    DEFAULT_RAG_COLLECTION_NAME,
+    normalize_collection_name,
+)
 
 import psycopg2
 import os
@@ -22,7 +26,7 @@ DEFAULT_DB = os.getenv(
     "postgresql+psycopg2://postgres:1@localhost:5432/rag_db",
 )
 
-COLLECTION_NAME = "rag_documents"
+COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
@@ -59,7 +63,7 @@ def _normalize_conn(conn: str) -> str:
     return conn.replace("postgresql+psycopg2://", "postgresql://")
 
 
-def _get_vector_store(conn: str) -> PGVector:
+def _get_vector_store(conn: str, *, collection_name: str = COLLECTION_NAME) -> PGVector:
     embeddings = HuggingFaceEmbeddings(
         model_name=resolve_local_snapshot(HF_CACHE_DIR, HF_MODEL) or HF_MODEL,
         model_kwargs={"device": "cpu", "local_files_only": True},
@@ -68,7 +72,7 @@ def _get_vector_store(conn: str) -> PGVector:
 
     return PGVector.from_existing_index(
         embedding=embeddings,
-        collection_name=COLLECTION_NAME,
+        collection_name=normalize_collection_name(collection_name),
         connection=conn,
     )
 
@@ -121,6 +125,7 @@ def retrieve_chunks(
     company_document_id: Optional[str] = Query(None),
     top_k: int = Query(5, ge=1, le=20),
     db_connection: str = DEFAULT_DB,
+    collection_name: str = Query(COLLECTION_NAME),
 ):
     """
     Enterprise retrieval API.
@@ -134,7 +139,10 @@ def retrieve_chunks(
     - Never mutates DB
     """
 
-    vector_store = _get_vector_store(db_connection)
+    vector_store = _get_vector_store(
+        db_connection,
+        collection_name=collection_name,
+    )
 
     filter_dict = None
     revision_number = None

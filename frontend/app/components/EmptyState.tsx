@@ -102,7 +102,7 @@ export default function EmptyState({
               <div>
                 <div className="text-[11px] uppercase tracking-[0.18em] text-cyan-300">User Dashboard</div>
                 <h2 className="mt-1 text-lg font-semibold text-white">
-                  {dashboardTitle || `Welcome to Chat UI, ${userLabel || "User"}`}
+                  {dashboardTitle || `Welcome to Kavin, ${userLabel || "User"}`}
                 </h2>
                 <p className="mt-1 text-xs text-gray-300">
                   {dashboardSubtitle ||

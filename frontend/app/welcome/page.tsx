@@ -139,9 +139,9 @@ export default function WelcomePage() {
       <div className="mx-auto w-full max-w-5xl px-6 py-8">
         <div className="mb-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Image src="/chat-ui-logo.svg" alt="Chat UI" width={30} height={30} />
+            <Image src="/kavinbase-logo.svg" alt="Kavin" width={30} height={30} />
             <div>
-              <div className="text-[11px] uppercase tracking-[0.18em] text-sky-300">Chat UI Base</div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-sky-300">Kavin Base</div>
               <h1 className="text-xl font-semibold">Launch Workspace</h1>
             </div>
           </div>
@@ -164,12 +164,12 @@ export default function WelcomePage() {
               </p>
             </div>
             <Link
-              href="/"
-              className="inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-gray-200"
-            >
-              Open Chat UI
-              <ArrowRight size={16} />
-            </Link>
+            href="/"
+            className="inline-flex items-center gap-2 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-gray-200"
+          >
+            Open Kavin
+            <ArrowRight size={16} />
+          </Link>
           </div>
 
           <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -185,7 +185,7 @@ export default function WelcomePage() {
             href="/"
             className="rounded-xl border border-white/10 bg-[#111] p-4 hover:border-white/20 hover:bg-[#151515]"
           >
-            <div className="text-sm font-semibold">Go To Chat Workspace</div>
+            <div className="text-sm font-semibold">Go To Kavin Workspace</div>
             <div className="mt-1 text-xs text-gray-400">Start a new session or continue existing chats.</div>
           </Link>
           <Link

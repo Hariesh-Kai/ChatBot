@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from backend.auth.deps import AUTH_COOKIE_NAME, require_user
 from backend.auth.tokens import create_token
-from backend.auth.user_store import User, verify_credentials
+from backend.auth.user_store import User, get_configured_user, verify_credentials
 import os
 
 
@@ -38,7 +38,10 @@ def _get_cookie_options() -> dict:
 
 @router.post("/login", response_model=UserResponse)
 def login(payload: LoginRequest, response: Response):
-    if not os.getenv("CHAT_UI_ADMIN_PASSWORD", "").strip():
+    admin = get_configured_user()
+    identifier = (payload.identifier or "").strip().lower()
+    admin_password = os.getenv("CHAT_UI_ADMIN_PASSWORD", "").strip()
+    if identifier in {admin.username.lower(), admin.email.lower()} and not admin_password:
         raise HTTPException(
             status_code=500,
             detail="Auth not configured (CHAT_UI_ADMIN_PASSWORD is missing)",

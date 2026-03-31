@@ -11,6 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 from langchain_postgres import PGVector
 from langchain_huggingface import HuggingFaceEmbeddings
 from backend.rag.retrieve import retrieve_rag_context
+from backend.rag.collections import DEFAULT_RAG_COLLECTION_NAME, normalize_collection_name
 from backend.llm.hf_cache_utils import resolve_local_snapshot
 
 # ============================================================
@@ -23,7 +24,7 @@ DB_CONNECTION = os.getenv(
     "postgresql://postgres:1@localhost:5432/rag_db"
 ).replace("postgresql+psycopg2://", "postgresql://")
 
-COLLECTION_NAME = "rag_documents"
+COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
@@ -31,7 +32,7 @@ HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 # SETUP
 # ============================================================
 
-def setup_store():
+def setup_store(collection_name: str = COLLECTION_NAME):
     print("Connecting to Vector DB...")
     # Matches the embedding model used in ingest.py and chat.py
     embedding_model = HuggingFaceEmbeddings(
@@ -42,7 +43,7 @@ def setup_store():
 
     return PGVector.from_existing_index(
         embedding=embedding_model,
-        collection_name=COLLECTION_NAME,
+        collection_name=normalize_collection_name(collection_name),
         connection=DB_CONNECTION,
     )
 
@@ -50,8 +51,8 @@ def setup_store():
 # BASELINE RUNNER
 # ============================================================
 
-def run_baseline(question, doc_id, rev_num):
-    store = setup_store()
+def run_baseline(question, doc_id, rev_num, collection_name: str = COLLECTION_NAME):
+    store = setup_store(collection_name=collection_name)
     
     print(f"\n🧪 TEST QUESTION: '{question}'")
     print(f"📄 DOC ID: {doc_id} (v{rev_num})")
@@ -89,15 +90,17 @@ def run_baseline(question, doc_id, rev_num):
     print(f"Found {len(chunks)} chunks in {duration:.2f}s")
 
 if __name__ == "__main__":
-    # Usage: python backend/rag/retrieval_baseline.py <question> <doc_id> <revision>
+    # Usage:
+    # python backend/rag/retrieval_baseline.py <question> <doc_id> <revision> [collection_name]
     
     if len(sys.argv) < 4:
-        print(" Usage: python backend/rag/retrieval_baseline.py <question> <doc_id> <revision>")
-        print('   Example: python backend/rag/retrieval_baseline.py "What is the design pressure?" "a1b2-c3d4" "1"')
+        print(" Usage: python backend/rag/retrieval_baseline.py <question> <doc_id> <revision> [collection_name]")
+        print('   Example: python backend/rag/retrieval_baseline.py "What is the design pressure?" "a1b2-c3d4" "1" "rag_documents__docling"')
         sys.exit(1)
         
     q = sys.argv[1]
     did = sys.argv[2]
     rev = sys.argv[3]
+    collection = sys.argv[4] if len(sys.argv) > 4 else COLLECTION_NAME
     
-    run_baseline(q, did, rev)
+    run_baseline(q, did, rev, collection_name=collection)

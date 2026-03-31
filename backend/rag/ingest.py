@@ -10,6 +10,10 @@ from langchain_postgres import PGVector
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from backend.llm.hf_cache_utils import resolve_local_snapshot
+from backend.rag.collections import (
+    DEFAULT_RAG_COLLECTION_NAME,
+    normalize_collection_name,
+)
 
 # ============================================================
 # GLOBAL CONFIG
@@ -21,7 +25,7 @@ PROJECT_ROOT = os.path.abspath(
 
 HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
-COLLECTION_NAME = "rag_documents"
+COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
 
 # ============================================================
 # INTERNAL HELPERS
@@ -42,12 +46,50 @@ def _get_embeddings() -> HuggingFaceEmbeddings:
     )
 
 
-def _get_vector_store(connection_string: str) -> PGVector:
+def _get_vector_store(connection_string: str, *, collection_name: str = COLLECTION_NAME) -> PGVector:
     return PGVector.from_existing_index(
         embedding=_get_embeddings(),
-        collection_name=COLLECTION_NAME,
+        collection_name=normalize_collection_name(collection_name),
         connection=connection_string,
     )
+
+
+def delete_document_revision(
+    *,
+    connection_string: str,
+    company_document_id: str,
+    revision_number: str,
+    collection_name: str = COLLECTION_NAME,
+) -> int:
+    """
+    Delete one document revision from a specific PGVector collection.
+
+    This is mainly used by benchmark runs so repeated indexing does not create
+    duplicate chunks inside the same isolated test collection.
+    """
+    conn = psycopg2.connect(_normalize_conn(connection_string))
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        DELETE FROM langchain_pg_embedding AS e
+        USING langchain_pg_collection AS c
+        WHERE e.collection_id = c.uuid
+          AND c.name = %s
+          AND e.cmetadata->>'company_document_id' = %s
+          AND e.cmetadata->>'revision_number' = %s
+        """,
+        (
+            normalize_collection_name(collection_name),
+            company_document_id,
+            str(revision_number),
+        ),
+    )
+    deleted_rows = int(cur.rowcount or 0)
+    conn.commit()
+    cur.close()
+    conn.close()
+    return deleted_rows
 
 # ============================================================
 # LOAD DOCUMENTS (FIXED: CAPTURE CHUNK ID)
@@ -180,6 +222,8 @@ def ingest_to_pgvector(
     connection_string: str,
     company_document_id: str,
     revision_number: str, #  FIX: Changed to str for enterprise support
+    collection_name: str = COLLECTION_NAME,
+    replace_existing: bool = False,
 ) -> None:
     """
     Ingest a document revision into PGVector.
@@ -188,7 +232,11 @@ def ingest_to_pgvector(
     if not documents:
         raise RuntimeError("No documents provided for ingestion")
 
-    vector_store = _get_vector_store(connection_string)
+    resolved_collection_name = normalize_collection_name(collection_name)
+    vector_store = _get_vector_store(
+        connection_string,
+        collection_name=resolved_collection_name,
+    )
 
     # --------------------------------------------------------
     # 🔒 DEFENSIVE IDENTITY CHECK (FIXED)
@@ -213,6 +261,18 @@ def ingest_to_pgvector(
     # --------------------------------------------------------
     # INGEST
     # --------------------------------------------------------
+
+    if replace_existing:
+        deleted_rows = delete_document_revision(
+            connection_string=connection_string,
+            company_document_id=company_document_id,
+            revision_number=revision_number,
+            collection_name=resolved_collection_name,
+        )
+        print(
+            "[INGEST] Cleared existing chunks before re-index | "
+            f"collection={resolved_collection_name} deleted_rows={deleted_rows}"
+        )
 
     vector_store.add_documents(documents)
 

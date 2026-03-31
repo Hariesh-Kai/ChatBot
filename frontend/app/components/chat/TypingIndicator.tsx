@@ -22,7 +22,7 @@ interface TypingIndicatorProps {
 /* ================= COMPONENT ================= */
 
 export default function TypingIndicator({
-  modelLabel = "CHAT UI",
+  modelLabel = "KAVIN",
   label = "is thinking...",
   progress,
   type = "typing",

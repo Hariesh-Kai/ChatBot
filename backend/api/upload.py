@@ -9,12 +9,21 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
 from pydantic import BaseModel
 
 from backend.rag.pipeline import run_pipeline
+from backend.rag.collections import (
+    DEFAULT_RAG_COLLECTION_NAME,
+    normalize_collection_name,
+)
+from backend.rag.preprocessor_registry import (
+    DEFAULT_RAG_PREPROCESSOR,
+    normalize_rag_preprocessor,
+)
 from backend.state.job_state import (
     create_job,
     get_job_state,
     get_active_document,
     set_job_progress,
 )
+from backend.state.dev_settings import get_dev_settings
 from backend.state.job_persistence import (
     get_job_run,
     get_latest_job_run_for_session,
@@ -125,6 +134,8 @@ def upload_pdf(
     file: UploadFile = File(...),
     session_id: str = Form(...),
     db_connection: Optional[str] = Form(DEFAULT_DB),
+    rag_preprocessor: Optional[str] = Form(default=None),
+    rag_collection_name: Optional[str] = Form(default=None),
 ):
     # --- LOG START ---
     print(f"\n------------------------------------------------")
@@ -136,6 +147,17 @@ def upload_pdf(
 
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Only PDF files are supported")
+
+    try:
+        settings = get_dev_settings()
+    except Exception:
+        settings = {}
+    resolved_rag_preprocessor = normalize_rag_preprocessor(
+        rag_preprocessor or settings.get("rag_preprocessor") or DEFAULT_RAG_PREPROCESSOR
+    )
+    resolved_rag_collection_name = normalize_collection_name(
+        rag_collection_name or settings.get("rag_collection_name") or DEFAULT_RAG_COLLECTION_NAME
+    )
 
     job_id = str(uuid.uuid4())
     company_document_id = generate_company_document_id(file.filename)
@@ -179,6 +201,8 @@ def upload_pdf(
                 "company_document_id": company_document_id,
                 "revision_number": str(revision_number),
                 "source_file": file.filename,
+                "rag_preprocessor": resolved_rag_preprocessor,
+                "rag_collection_name": resolved_rag_collection_name,
             },
             mode="metadata",
         ):
@@ -233,6 +257,8 @@ def upload_pdf(
             "source_file": file.filename,
             "pdf_path": str(pdf_path),
             "db_connection": db_connection,
+            "rag_preprocessor": resolved_rag_preprocessor,
+            "rag_collection_name": resolved_rag_collection_name,
         },
         missing_fields=missing,
     )

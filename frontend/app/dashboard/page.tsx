@@ -12,6 +12,29 @@ import DeleteConfirmModal from "@/app/components/ui/DeleteConfirmModal";
 import StartupLoader from "@/app/components/ui/StartupLoader";
 import RuntimeOverview from "@/app/components/debug/RuntimeOverview";
 
+const RAG_PREPROCESSOR_OPTIONS = [
+  {
+    value: "unstructured",
+    label: "Unstructured",
+    description: "Current production parser with adaptive fast and hi_res modes.",
+  },
+  {
+    value: "pypdf_text",
+    label: "PyPDF Text",
+    description: "Lightweight text-only baseline for quick retrieval tests.",
+  },
+  {
+    value: "pymupdf4llm",
+    label: "PyMuPDF4LLM",
+    description: "Layout-aware markdown extraction. Requires optional install in the venv.",
+  },
+  {
+    value: "docling",
+    label: "Docling",
+    description: "Structured PDF conversion with markdown export. Requires optional install in the venv.",
+  },
+] as const;
+
 type DevtoolsHealthStatus = "ok" | "fail" | "skipped";
 
 interface DevtoolsHealthEntry {
@@ -69,12 +92,15 @@ export default function DashboardPage() {
   // --- Retrieval State ---
   const [retrievalQuery, setRetrievalQuery] = useState("");
   const [retrievalDocId, setRetrievalDocId] = useState("");
+  const [retrievalRevision, setRetrievalRevision] = useState("1");
+  const [retrievalCollectionName, setRetrievalCollectionName] = useState("");
   const [retrievalResult, setRetrievalResult] = useState<any>(null);
 
   // --- Settings State ---
   const [settings, setSettings] = useState<any>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [settingsBusy, setSettingsBusy] = useState(false);
+  const [ragCollectionDraft, setRagCollectionDraft] = useState("");
 
   // --- Models State ---
   const [modelsData, setModelsData] = useState<any>(null);
@@ -262,6 +288,12 @@ export default function DashboardPage() {
     if (!backendReady) return;
     loadSettings();
   }, [backendReady]);
+
+  useEffect(() => {
+    const nextCollection = String(settings?.rag_collection_name || "rag_documents");
+    setRagCollectionDraft(nextCollection);
+    setRetrievalCollectionName((prev) => (prev.trim() ? prev : nextCollection));
+  }, [settings]);
 
   useEffect(() => {
     if (!backendReady) return;
@@ -935,6 +967,12 @@ export default function DashboardPage() {
     }
   }
 
+  async function saveRagCollectionName() {
+    const trimmed = ragCollectionDraft.trim() || "rag_documents";
+    setRagCollectionDraft(trimmed);
+    await patchSettings({ rag_collection_name: trimmed });
+  }
+
   async function testIntent() {
     const res = await fetch(`${API_BASE}/devtools/intent`, {
       method: "POST",
@@ -964,7 +1002,8 @@ export default function DashboardPage() {
         body: JSON.stringify({ 
             question: retrievalQuery,
             company_document_id: retrievalDocId || "Agogo-1ST1", // Default for testing
-            revision_number: "1"
+            revision_number: retrievalRevision || "1",
+            collection_name: retrievalCollectionName || settings?.rag_collection_name || "rag_documents",
         }),
     });
     setRetrievalResult(await res.json());
@@ -1110,6 +1149,57 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <div className="mb-3 rounded border border-white/10 bg-black/30 px-3 py-3">
+                    <label className="block text-xs text-gray-400 mb-2">RAG Preprocessor</label>
+                    <select
+                      value={String(settings.rag_preprocessor || "unstructured")}
+                      disabled={settingsBusy}
+                      onChange={(e) => patchSettings({ rag_preprocessor: e.target.value })}
+                      className="w-full bg-[#222] border border-white/10 rounded p-2 text-white"
+                    >
+                      {RAG_PREPROCESSOR_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="mt-2 text-xs text-gray-500">
+                      {
+                        RAG_PREPROCESSOR_OPTIONS.find(
+                          (option) => option.value === String(settings.rag_preprocessor || "unstructured")
+                        )?.description
+                      }
+                    </div>
+                  </div>
+                  <div className="mb-3 rounded border border-white/10 bg-black/30 px-3 py-3">
+                    <label className="block text-xs text-gray-400 mb-2">RAG Collection Name</label>
+                    <div className="flex gap-2">
+                      <input
+                        value={ragCollectionDraft}
+                        disabled={settingsBusy}
+                        onChange={(e) => setRagCollectionDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void saveRagCollectionName();
+                          }
+                        }}
+                        className="w-full bg-[#222] border border-white/10 rounded p-2 text-white"
+                        placeholder="rag_documents"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void saveRagCollectionName()}
+                        disabled={settingsBusy}
+                        className="shrink-0 rounded bg-gray-800 px-3 py-2 text-sm text-white hover:bg-gray-700 disabled:opacity-50"
+                      >
+                        Save
+                      </button>
+                    </div>
+                    <div className="mt-2 text-xs text-gray-500">
+                      Uploads and chat retrieval will use this collection. Use different names to isolate parser tests.
+                    </div>
+                  </div>
+                  <div className="mb-3 rounded border border-white/10 bg-black/30 px-3 py-3">
                     <label className="block text-xs text-gray-400 mb-2">RAG Retrieval Mode</label>
                     <select
                       value={String(settings.rag_retrieval_mode || "auto")}
@@ -1124,6 +1214,15 @@ export default function DashboardPage() {
                     </select>
                     <div className="mt-2 text-xs text-gray-500">
                       Auto routing: factual/definition to Fast, summary/compare to High Fidelity, others to Balanced.
+                    </div>
+                  </div>
+                  <div className="mb-3 rounded border border-emerald-500/20 bg-emerald-500/5 px-3 py-3">
+                    <div className="text-[11px] uppercase tracking-wide text-emerald-300">Active Test Profile</div>
+                    <div className="mt-2 text-sm text-white">
+                      {String(settings.rag_preprocessor || "unstructured")} into{" "}
+                      <span className="font-mono text-emerald-200">
+                        {String(settings.rag_collection_name || "rag_documents")}
+                      </span>
                     </div>
                   </div>
                   <div className="grid grid-cols-1 gap-3">
@@ -1228,6 +1327,8 @@ export default function DashboardPage() {
             <Card title="What These Affect">
               <div className="text-gray-300 space-y-3 text-sm leading-relaxed">
                 <div><span className="text-white font-medium">RAG ingest mode</span> controls upload parsing/indexing quality and speed.</div>
+                <div><span className="text-white font-medium">RAG preprocessor</span> switches which PDF parser runs during upload and indexing.</div>
+                <div><span className="text-white font-medium">RAG collection name</span> decides which PGVector collection both upload indexing and chat retrieval use.</div>
                 <div><span className="text-white font-medium">RAG retrieval mode</span> controls live query retrieval depth. Auto applies intent-based routing with manual override.</div>
                 <div><span className="text-white font-medium">RAG visualization</span> shows high-level retrieval stages during responses.</div>
                 <div><span className="text-white font-medium">Confidence score</span> controls the confidence badge in chat.</div>
@@ -1361,6 +1462,23 @@ export default function DashboardPage() {
                         className="w-full bg-[#222] border border-white/10 rounded p-2 text-white"
                         placeholder="e.g. Agogo-1ST1"
                     />
+                    <label className="block text-sm text-gray-400 mb-2 mt-4">Revision</label>
+                    <input
+                        value={retrievalRevision}
+                        onChange={(e) => setRetrievalRevision(e.target.value)}
+                        className="w-full bg-[#222] border border-white/10 rounded p-2 text-white"
+                        placeholder="e.g. 1"
+                    />
+                    <label className="block text-sm text-gray-400 mb-2 mt-4">Collection Name</label>
+                    <input
+                        value={retrievalCollectionName}
+                        onChange={(e) => setRetrievalCollectionName(e.target.value)}
+                        className="w-full bg-[#222] border border-white/10 rounded p-2 text-white"
+                        placeholder="rag_documents"
+                    />
+                    <div className="mt-2 text-xs text-gray-500">
+                        Leave this synced with Settings to test the active parser collection, or point it at another benchmark collection.
+                    </div>
                     <button onClick={testRetrieval} className="mt-4 w-full bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded flex items-center justify-center gap-2">
                         <Search size={16} /> Run Retrieval
                     </button>
@@ -1371,7 +1489,12 @@ export default function DashboardPage() {
                  <Card title="Retrieved Chunks">
                     {retrievalResult ? (
                         <div className="space-y-4">
-                            <div className="text-xs text-gray-500 mb-2">Found {retrievalResult.count} chunks</div>
+                            <div className="text-xs text-gray-500 mb-2">
+                              Found {retrievalResult.count} chunks from{" "}
+                              <span className="font-mono text-gray-300">
+                                {retrievalResult.collection_name || retrievalCollectionName || "rag_documents"}
+                              </span>
+                            </div>
                             {(retrievalResult.chunks ?? retrievalResult.preview ?? []).map((chunk: any, i: number) => (
                                 <div key={i} className="bg-[#1a1a1a] border border-white/5 rounded p-3">
                                     <div className="flex justify-between items-start mb-2">

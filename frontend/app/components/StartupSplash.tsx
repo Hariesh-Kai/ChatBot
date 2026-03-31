@@ -35,7 +35,7 @@ export default function StartupSplash({
         </div>
 
         <div className="text-xs uppercase tracking-[0.35em] text-gray-400">
-          Chat UI
+          Kavin
         </div>
 
         <div className="flex items-center gap-1 text-xs text-gray-500">

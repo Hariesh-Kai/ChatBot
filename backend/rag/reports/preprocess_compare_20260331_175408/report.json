@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-03-31T12:24:08.236700+00:00",
+  "pdf_path": "D:\\KavinBase\\backend\\tmp\\preprocess_compare_test.pdf",
+  "rag_mode": "balanced",
+  "available_preprocessors": {
+    "unstructured": "Unstructured PDF parsing with adaptive fast/hi_res modes.",
+    "pypdf_text": "Lightweight text-only extraction using pypdf.",
+    "pymupdf4llm": "PyMuPDF4LLM markdown extraction with layout-aware OCR support.",
+    "docling": "Docling document conversion with page-wise markdown export."
+  },
+  "results": [
+    {
+      "preprocessor": "pypdf_text",
+      "elapsed_seconds": 0.005,
+      "element_summary": {
+        "element_count": 2,
+        "page_count": 1,
+        "type_counts": {
+          "Title": 1,
+          "NarrativeText": 1
+        },
+        "title_count": 1,
+        "table_count": 0,
+        "narrative_count": 1,
+        "total_text_chars": 38
+      },
+      "chunk_summary": {
+        "chunk_count": 1,
+        "chunk_type_counts": {
+          "text": 1
+        },
+        "avg_chunk_chars": 69,
+        "max_chunk_chars": 69,
+        "min_chunk_chars": 69
+      },
+      "elements_path": "D:\\KavinBase\\backend\\rag\\reports\\preprocess_compare_20260331_175408\\pypdf_text\\elements.json",
+      "chunks_path": "D:\\KavinBase\\backend\\rag\\reports\\preprocess_compare_20260331_175408\\pypdf_text\\chunks.json"
+    }
+  ]
+}

@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from backend.auth.tokens import create_token
 from backend.pml_auth.deps import AUTH_COOKIE_NAME, require_user
-from backend.pml_auth.user_store import User, verify_credentials
+from backend.pml_auth.user_store import User, get_configured_user, verify_credentials
 
 
 router = APIRouter(prefix="/auth", tags=["PML Auth"])
@@ -36,7 +36,10 @@ def _get_cookie_options() -> dict:
 
 @router.post("/login", response_model=UserResponse)
 def login(payload: LoginRequest, response: Response):
-    if not os.getenv("PML_ADMIN_PASSWORD", "").strip():
+    admin = get_configured_user()
+    identifier = (payload.identifier or "").strip().lower()
+    admin_password = os.getenv("PML_ADMIN_PASSWORD", "").strip()
+    if identifier in {admin.username.lower(), admin.email.lower()} and not admin_password:
         raise HTTPException(
             status_code=500,
             detail="PML auth not configured (PML_ADMIN_PASSWORD is missing)",

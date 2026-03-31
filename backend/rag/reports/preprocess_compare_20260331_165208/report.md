@@ -1,0 +1,10 @@
+# Preprocess Comparison Report
+
+- Generated At (UTC): `2026-03-31T11:23:11.882310+00:00`
+- PDF: `D:\KavinBase\backend\tmp\preprocess_compare_test.pdf`
+- RAG Mode: `balanced`
+
+| Preprocessor | Seconds | Elements | Pages | Titles | Tables | Chunks | Avg Chunk Chars |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| unstructured | 63.78 | None | None | None | None | None | None |
+| pypdf_text | 0.006 | 2 | 1 | 1 | 0 | 1 | 69 |

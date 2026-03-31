@@ -30,20 +30,20 @@ export interface ChatUIModel {
 const _CHAT_UI_MODELS: Record<ChatUIModelId, ChatUIModel> = {
   lite: {
     id: "lite",
-    label: "Chat UI Lite v1.0",
+    label: "Kavin Lite v1.0",
     description: "Fast local model (CPU / GGUF)",
   },
 
   base: {
     id: "base",
-    label: "Chat UI Base v1.0",
+    label: "Kavin Base v1.0",
     description: "Higher-quality local base model (GPU preferred)",
     requiresGpu: true,
   },
 
   net: {
     id: "net",
-    label: "Chat UI Net v1.0",
+    label: "Kavin Net v1.0",
     description: "External LLM (Groq / xAI)",
     requiresNet: true,
   },

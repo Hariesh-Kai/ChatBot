@@ -124,7 +124,7 @@ def _friendly_net_error(err: Exception) -> str:
     lower = msg.lower()
 
     if "not configured" in lower or "no api key" in lower or "api key missing" in lower:
-        return "Chat UI Net is not configured. Add and verify your API key."
+        return "Kavin Net is not configured. Add and verify your API key."
     if "invalid" in lower and "key" in lower:
         return "Net API key is invalid. Please re-verify it."
     if "unsupported net provider" in lower or "invalid net provider" in lower:

@@ -11,6 +11,14 @@ from backend.rag.mode_profiles import (
     normalize_rag_mode,
     normalize_retrieval_mode_setting,
 )
+from backend.rag.preprocessor_registry import (
+    DEFAULT_RAG_PREPROCESSOR,
+    normalize_rag_preprocessor,
+)
+from backend.rag.collections import (
+    DEFAULT_RAG_COLLECTION_NAME,
+    normalize_collection_name,
+)
 
 """
 In-memory developer settings (feature flags).
@@ -37,6 +45,8 @@ _SETTINGS: Dict[str, Any] = {
     # RAG operating profiles
     "rag_ingest_mode": DEFAULT_RAG_MODE,  # fast | balanced | high_fidelity
     "rag_retrieval_mode": DEFAULT_RETRIEVAL_MODE_SETTING,  # auto | fast | balanced | high_fidelity
+    "rag_preprocessor": DEFAULT_RAG_PREPROCESSOR,  # unstructured | pypdf_text | pymupdf4llm | docling
+    "rag_collection_name": DEFAULT_RAG_COLLECTION_NAME,
     # Legacy key retained for backward compatibility with older UI builds.
     "rag_mode": DEFAULT_RAG_MODE,  # deprecated
 }
@@ -65,6 +75,10 @@ def update_dev_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
                     _SETTINGS[key] = normalize_rag_mode(value)
                 elif key == "rag_retrieval_mode":
                     _SETTINGS[key] = normalize_retrieval_mode_setting(value)
+                elif key == "rag_preprocessor":
+                    _SETTINGS[key] = normalize_rag_preprocessor(value)
+                elif key == "rag_collection_name":
+                    _SETTINGS[key] = normalize_collection_name(value)
                 elif key == "rag_mode":
                     # Legacy compatibility path:
                     # update both new keys when old key is patched.

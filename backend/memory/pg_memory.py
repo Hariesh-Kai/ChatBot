@@ -93,6 +93,7 @@ def _init_db():
             session_id TEXT PRIMARY KEY,
             company_document_id TEXT NOT NULL,
             revision_number TEXT NOT NULL,
+            collection_name TEXT,
             filename TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -104,6 +105,12 @@ def _init_db():
             with conn.cursor() as cur:
                 for q in queries:
                     cur.execute(q)
+                cur.execute(
+                    """
+                    ALTER TABLE session_active_documents
+                    ADD COLUMN IF NOT EXISTS collection_name TEXT;
+                    """
+                )
         print("Chat Database initialized (Tables verified/created).")
     except Exception as e:
         print(f"Database initialization warning: {e}")
@@ -248,6 +255,7 @@ def save_active_document(
     session_id: str,
     company_document_id: str,
     revision_number: str,
+    collection_name: Optional[str] = None,
     filename: Optional[str] = None,   # ✅ ADD THIS
 ):
     """
@@ -272,16 +280,17 @@ def save_active_document(
                 cur.execute(
                     """
                     INSERT INTO session_active_documents
-                        (session_id, company_document_id, revision_number, filename)
-                    VALUES (%s, %s, %s, %s)
+                        (session_id, company_document_id, revision_number, collection_name, filename)
+                    VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (session_id)
                     DO UPDATE SET
                         company_document_id = EXCLUDED.company_document_id,
                         revision_number = EXCLUDED.revision_number,
+                        collection_name = EXCLUDED.collection_name,
                         filename = EXCLUDED.filename,
                         updated_at = NOW()
                     """,
-                    (session_id, company_document_id, rev_str, filename),
+                    (session_id, company_document_id, rev_str, collection_name, filename),
                 )
 
     try:
@@ -310,7 +319,7 @@ def get_active_document(session_id: str) -> Optional[Dict[str, object]]:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
                     """
-                    SELECT company_document_id, revision_number, filename
+                    SELECT company_document_id, revision_number, collection_name, filename
                     FROM session_active_documents
                     WHERE session_id = %s
                     """,

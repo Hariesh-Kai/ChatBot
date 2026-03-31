@@ -32,7 +32,7 @@ const STEPS = [
     icon: <MessageSquare size={28} className="text-emerald-400" />,
     title: "Ask Questions",
     description:
-      "Type any question about your document. Chat UI retrieves the exact passages and cites the page number for every fact.",
+      "Type any question about your document. Kavin retrieves the exact passages and cites the page number for every fact.",
     tip: "Tip: Press Ctrl/Cmd + K to jump to the message box instantly.",
     color: "text-emerald-400",
     bg: "bg-emerald-400/10",
@@ -106,7 +106,7 @@ export default function GettingStartedModal({
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/10">
           <div className="flex items-center gap-2 text-sm font-semibold text-white">
             <Sparkles size={15} className="text-yellow-400" />
-            Welcome to Chat UI
+            Welcome to Kavin
           </div>
           <button
             onClick={onClose}

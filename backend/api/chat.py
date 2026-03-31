@@ -6,6 +6,7 @@ import uuid
 import time
 import re
 import logging
+from threading import Lock
 from typing import List, Literal, Generator, Dict, Optional, Any
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -55,6 +56,10 @@ from backend.llm.pii import detect_pii
 from backend.rag.evaluator import evaluate_answer
 from backend.rag.audit import log_rag_turn
 from backend.rag.cache import get_cached_chunks, set_cached_chunks
+from backend.rag.collections import (
+    DEFAULT_RAG_COLLECTION_NAME,
+    normalize_collection_name,
+)
 from backend.llm.few_shot import get_few_shot_examples, format_few_shot_block
 from backend.learning.adaptive_retrieval import get_adaptive_config
 from backend.rag.retrieve import augment_query_with_context
@@ -119,7 +124,7 @@ DB_CONNECTION = os.getenv(
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
-COLLECTION_NAME = "rag_documents"
+COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
 SQL_BASE_SCORE = 0.35
 UI_EVENT_PREFIX = "__UI_EVENT__"
 
@@ -147,6 +152,8 @@ class TitleRequest(BaseModel):
 
 embedding_model: Optional[HuggingFaceEmbeddings] = None
 vector_store: Optional[PGVector] = None
+_VECTOR_STORE_CACHE: Dict[str, PGVector] = {}
+_VECTOR_STORE_LOCK = Lock()
 _EMBEDDING_BOOT_ERROR: Optional[str] = None
 
 try:
@@ -161,6 +168,7 @@ try:
         collection_name=COLLECTION_NAME,
         connection=DB_CONNECTION,
     )
+    _VECTOR_STORE_CACHE[COLLECTION_NAME] = vector_store
 except Exception as e:
     _EMBEDDING_BOOT_ERROR = str(e)
     vector_store = None
@@ -178,9 +186,57 @@ except Exception as e:
 def emit_event(event: dict) -> str:
     return UI_EVENT_PREFIX + json.dumps(event) + "\n"
 
+
+def _resolve_rag_collection_name(
+    *,
+    settings: Dict[str, Any],
+    job_metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    return normalize_collection_name(
+        (job_metadata or {}).get("rag_collection_name")
+        or settings.get("rag_collection_name")
+        or COLLECTION_NAME
+    )
+
+
+def _get_vector_store_for_collection(collection_name: str) -> Optional[PGVector]:
+    global vector_store
+
+    resolved_collection_name = normalize_collection_name(collection_name)
+    if embedding_model is None:
+        return None
+
+    cached = _VECTOR_STORE_CACHE.get(resolved_collection_name)
+    if cached is not None:
+        return cached
+
+    with _VECTOR_STORE_LOCK:
+        cached = _VECTOR_STORE_CACHE.get(resolved_collection_name)
+        if cached is not None:
+            return cached
+
+        try:
+            store = PGVector.from_existing_index(
+                embedding=embedding_model,
+                collection_name=resolved_collection_name,
+                connection=DB_CONNECTION,
+            )
+        except Exception as exc:
+            logger.warning(
+                "RAG collection unavailable; backend will skip retrieval for collection=%s. Reason: %s",
+                resolved_collection_name,
+                exc,
+            )
+            return None
+
+        _VECTOR_STORE_CACHE[resolved_collection_name] = store
+        if resolved_collection_name == COLLECTION_NAME:
+            vector_store = store
+        return store
+
 _SMALLTALK_MAP = {
-    "who are you": "I'm Chat UI, your AI document assistant.",
-    "what are you": "I'm Chat UI, your AI document assistant.",
+    "who are you": "I'm Kavin, your AI document assistant.",
+    "what are you": "I'm Kavin, your AI document assistant.",
     "what do you do": "I help answer questions about your documents.",
     "what can you do": "I can answer questions about your documents and help summarize them.",
     "how are you": "I'm doing well. How can I help?",
@@ -645,6 +701,10 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
         raise HTTPException(400, "Document not ready for querying")
     company_document_id = job_state.metadata.get("company_document_id")
     revision_number = job_state.metadata.get("revision_number")
+    rag_collection_name = _resolve_rag_collection_name(
+        settings=settings,
+        job_metadata=job_state.metadata if isinstance(job_state.metadata, dict) else {},
+    )
 
     if not company_document_id or revision_number is None:
         raise HTTPException(500, "Invalid document metadata")
@@ -682,7 +742,8 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                 pass
 
             return StreamingResponse(static_stream(), media_type="text/plain")
-    embedding_unavailable = vector_store is None
+    rag_vector_store = _get_vector_store_for_collection(rag_collection_name)
+    embedding_unavailable = rag_vector_store is None
     rag_disabled = (
         disable_rag_globally
         or is_rag_disabled(session_id, user.username)
@@ -746,7 +807,7 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
         else:
             new_rag_chunks = retrieve_rag_context(
                 question=augmented_query,
-                vector_store=vector_store,
+                vector_store=rag_vector_store,
                 company_document_id=company_document_id,
                 revision_number=str(revision_number),
                 rag_mode=effective_rag_mode,

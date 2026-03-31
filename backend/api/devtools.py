@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import logging
 import re
+from threading import Lock
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
@@ -18,6 +19,10 @@ from backend.rag.keyword_search import extract_keywords
 from backend.rag.mode_profiles import (
     normalize_retrieval_mode_setting,
     resolve_effective_retrieval_mode,
+)
+from backend.rag.collections import (
+    DEFAULT_RAG_COLLECTION_NAME,
+    normalize_collection_name,
 )
 
 #  NEW: Import retrieval logic for testing
@@ -281,10 +286,12 @@ CHAT_DB_URL = os.getenv(
     "postgresql://postgres:1@localhost:5432/chat_memory_db",
 )
 
-COLLECTION_NAME = "rag_documents"
+COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
 
 _embedding_model: Optional[HuggingFaceEmbeddings] = None
 vector_store: Optional[PGVector] = None
+_VECTOR_STORE_CACHE: Dict[str, PGVector] = {}
+_VECTOR_STORE_LOCK = Lock()
 _DEVTOOLS_EMBEDDING_BOOT_ERROR: Optional[str] = None
 
 try:
@@ -299,6 +306,7 @@ try:
         collection_name=COLLECTION_NAME,
         connection=DB_CONNECTION,
     )
+    _VECTOR_STORE_CACHE[COLLECTION_NAME] = vector_store
 except Exception as e:
     _DEVTOOLS_EMBEDDING_BOOT_ERROR = str(e)
     vector_store = None
@@ -307,6 +315,42 @@ except Exception as e:
         "Reason: %s",
         _DEVTOOLS_EMBEDDING_BOOT_ERROR,
     )
+
+
+def _get_vector_store_for_collection(collection_name: str) -> Optional[PGVector]:
+    global vector_store
+
+    resolved_collection_name = normalize_collection_name(collection_name)
+    if _embedding_model is None:
+        return None
+
+    cached = _VECTOR_STORE_CACHE.get(resolved_collection_name)
+    if cached is not None:
+        return cached
+
+    with _VECTOR_STORE_LOCK:
+        cached = _VECTOR_STORE_CACHE.get(resolved_collection_name)
+        if cached is not None:
+            return cached
+
+        try:
+            store = PGVector.from_existing_index(
+                embedding=_embedding_model,
+                collection_name=resolved_collection_name,
+                connection=DB_CONNECTION,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Devtools retrieval collection unavailable; collection=%s reason=%s",
+                resolved_collection_name,
+                exc,
+            )
+            return None
+
+        _VECTOR_STORE_CACHE[resolved_collection_name] = store
+        if resolved_collection_name == COLLECTION_NAME:
+            vector_store = store
+        return store
 
 
 
@@ -324,6 +368,7 @@ class RetrievalDebugReq(BaseModel):
     question: str
     company_document_id: str
     revision_number: str = "1"
+    collection_name: Optional[str] = None
 
 
 class InstallHFModelReq(BaseModel):
@@ -1868,7 +1913,13 @@ def reset_all(req: ResetRequest, _admin: User = Depends(require_admin)):
 def debug_retrieval(req: RetrievalDebugReq):
     """Test the full RAG pipeline (Vector + Keyword + Rerank)"""
 
-    if vector_store is None:
+    settings = get_dev_settings()
+    collection_name = normalize_collection_name(
+        req.collection_name or settings.get("rag_collection_name") or COLLECTION_NAME
+    )
+    target_vector_store = _get_vector_store_for_collection(collection_name)
+
+    if target_vector_store is None:
         detail = "Retrieval model cache is unavailable on this server."
         if _DEVTOOLS_EMBEDDING_BOOT_ERROR:
             detail = f"{detail} {_DEVTOOLS_EMBEDDING_BOOT_ERROR}"
@@ -1880,7 +1931,6 @@ def debug_retrieval(req: RetrievalDebugReq):
     if not req.revision_number:
         raise HTTPException(400, "revision_number required")
 
-    settings = get_dev_settings()
     intent = classify_intent(normalize_text(req.question))
     rag_retrieval_mode_setting = normalize_retrieval_mode_setting(
         settings.get("rag_retrieval_mode", settings.get("rag_mode"))
@@ -1892,7 +1942,7 @@ def debug_retrieval(req: RetrievalDebugReq):
 
     chunks = retrieve_rag_context(
         question=req.question,
-        vector_store=vector_store,
+        vector_store=target_vector_store,
         company_document_id=req.company_document_id,
         revision_number=str(req.revision_number),
         rag_mode=effective_rag_mode,
@@ -1902,6 +1952,7 @@ def debug_retrieval(req: RetrievalDebugReq):
     return {
         "count": len(chunks),
         "intent": intent,
+        "collection_name": collection_name,
         "rag_retrieval_mode_setting": rag_retrieval_mode_setting,
         "effective_rag_mode": effective_rag_mode,
         "chunk_ids": [c["id"] for c in chunks],

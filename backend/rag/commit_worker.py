@@ -8,6 +8,11 @@ from typing import Any, Dict, Optional, Tuple
 from backend.memory.pg_memory import save_active_document
 from backend.queue.celery_app import celery_app, is_celery_enabled
 from backend.rag.pipeline import run_pipeline
+from backend.rag.collections import (
+    DEFAULT_RAG_COLLECTION_NAME,
+    normalize_collection_name,
+)
+from backend.state.dev_settings import get_dev_settings
 from backend.state.job_persistence import get_job_run
 from backend.state.job_state import (
     get_job_state,
@@ -178,12 +183,22 @@ def run_commit_payload(
 
     rev_text = str(final_metadata["revision_number"])
     rev_number = int(rev_text) if rev_text.isdigit() else rev_text
+    try:
+        settings = get_dev_settings()
+    except Exception:
+        settings = {}
+    resolved_collection_name = normalize_collection_name(
+        final_metadata.get("rag_collection_name")
+        or settings.get("rag_collection_name")
+        or DEFAULT_RAG_COLLECTION_NAME
+    )
 
     if session_id:
         save_active_document(
             session_id=session_id,
             company_document_id=final_metadata["company_document_id"],
             revision_number=rev_number,
+            collection_name=resolved_collection_name,
             filename=final_metadata["source_file"],
         )
 

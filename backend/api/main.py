@@ -74,9 +74,9 @@ from backend.runtime_status import get_rabbitmq_status
 # ============================================================
 
 app = FastAPI(
-    title="CHAT UI Backend API",
+    title="Kavin Backend API",
     description=(
-        "RAG + Multi-LLM Backend for Chat UI\n\n"
+        "RAG + Multi-LLM Backend for Kavin\n\n"
         "Modes:\n"
         "- Lite  (GGUF / CPU)\n"
         "- Base  (HF / GPU-aware)\n"
@@ -191,12 +191,12 @@ app.include_router(devtools_router, dependencies=_auth)             # POST /devt
 def root_info():
     return {
         "status": "ok",
-        "service": "CHAT UI Backend",
+        "service": "Kavin Backend",
         "features": [
             "RAG (Postgres + pgvector)",
-            "Chat UI Lite (GGUF / CPU)",
-            "Chat UI Base (HF Transformers)",
-            "Chat UI Net (Groq / xAI)",
+            "Kavin Lite (GGUF / CPU)",
+            "Kavin Base (HF Transformers)",
+            "Kavin Net (Groq / xAI)",
             "Agent-aware metadata workflow",
             "RAG Debug Observability",
             "Answer Confidence Scoring",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Chat UI",
+  "productName": "Kavin",
   "version": "0.1.0",
   "identifier": "com.chatui.desktop",
   "build": {
@@ -14,7 +14,7 @@
       {
         "label": "main",
         "url": "/",
-        "title": "Chat UI",
+        "title": "Kavin",
         "width": 1280,
         "height": 820,
         "minWidth": 1024,

@@ -49,7 +49,7 @@ def clean_model_output(text: str) -> str:
 # ============================================================
 
 CORE_SYSTEM_PROMPT = """
-You are Chat UI, a senior engineering assistant.
+You are Kavin, a senior engineering assistant.
 
 CITATION RULES (MANDATORY):
 - Answer the question using ONLY the provided document context.
@@ -114,7 +114,7 @@ OUTPUT STYLE:
 # ============================================================
 
 COT_SYSTEM_PROMPT = """
-You are Chat UI, an expert engineering assistant.
+You are Kavin, an expert engineering assistant.
 
 INSTRUCTIONS:
 1. You will be provided with a document context and a question.
@@ -191,7 +191,7 @@ def _build_generic_prompt(question, context_chunks, history, answer_style, is_co
     else:
         # Fallback for "Hi" messages with no docs
         context_text = "No document context available."
-        system_instruction = "You are Chat UI, a helpful assistant. Answer politely. Do not hallucinate."
+        system_instruction = "You are Kavin, a helpful assistant. Answer politely. Do not hallucinate."
 
     # Style
     style_key = getattr(answer_style, "verbosity", "short")

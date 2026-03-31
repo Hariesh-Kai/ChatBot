@@ -282,7 +282,7 @@ export default function ChatHeader({
               <button
                 onClick={() => setNetModalOpen(true)}
                 disabled={isTyping}
-                title="Configure Chat UI Net v1.0"
+                title="Configure Kavin Net v1.0"
                 className="
                   rounded-md p-1.5 text-cyan-300 sm:p-2
                   hover:bg-white/10 hover:text-cyan-200

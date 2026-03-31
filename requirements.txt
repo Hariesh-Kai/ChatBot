@@ -68,6 +68,10 @@ pdf2image>=1.16.3
 Pillow>=10.2.0
 pypdf>=4.0.0
 
+# Optional alternative preprocessing backends for RAG benchmarking
+docling>=2.20.0
+pymupdf4llm>=0.0.16
+
 # ================================
 # Token counting (RAG metadata)
 # ================================

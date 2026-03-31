@@ -26,7 +26,7 @@ from backend.llm.net_models import (
 # ROUTER
 # ============================================================
 
-router = APIRouter(prefix="/net-key", tags=["Chat UI Net"])
+router = APIRouter(prefix="/net-key", tags=["Kavin Net"])
 
 # ============================================================
 # PROVIDERS

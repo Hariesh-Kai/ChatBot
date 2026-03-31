@@ -18,12 +18,16 @@ from backend.llm.generate import generate_answer_stream
 from backend.llm.hf_cache_utils import resolve_local_snapshot
 from backend.llm.model_selector import resolve_model_id
 from backend.llm.prompts import clean_model_output
+from backend.rag.collections import (
+    DEFAULT_RAG_COLLECTION_NAME,
+    normalize_collection_name,
+)
 from backend.rag.evaluator import evaluate_answer
 from backend.rag.mode_profiles import normalize_rag_mode
 from backend.rag.retrieve import retrieve_rag_context
 
 UI_EVENT_PREFIX = "__UI_EVENT__"
-COLLECTION_NAME = "rag_documents"
+COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
 DEFAULT_DB = os.getenv(
     "DB_CONNECTION",
     "postgresql+psycopg2://postgres:1@localhost:5432/rag_db",
@@ -194,7 +198,12 @@ def _load_cases(benchmark_file: Path) -> Tuple[str, List[BenchmarkCase]]:
     return benchmark_name, out
 
 
-def _get_vector_store(connection_string: str, embedding_model: str) -> PGVector:
+def _get_vector_store(
+    connection_string: str,
+    embedding_model: str,
+    *,
+    collection_name: str = COLLECTION_NAME,
+) -> PGVector:
     resolved_model = resolve_local_snapshot(HF_CACHE_DIR, embedding_model) or embedding_model
     try:
         embeddings = HuggingFaceEmbeddings(
@@ -212,13 +221,13 @@ def _get_vector_store(connection_string: str, embedding_model: str) -> PGVector:
     try:
         return PGVector.from_existing_index(
             embedding=embeddings,
-            collection_name=COLLECTION_NAME,
+            collection_name=normalize_collection_name(collection_name),
             connection=connection_string,
         )
     except Exception as e:
         raise RuntimeError(
             "Failed to connect to PGVector index. "
-            "Check DB_CONNECTION and ensure rag_documents index exists."
+            "Check DB_CONNECTION and ensure the requested collection exists."
         ) from e
 
 
@@ -447,6 +456,7 @@ def _render_markdown(report: Dict[str, Any]) -> str:
     lines.append(f"- Cases: `{report['case_count']}`")
     lines.append(f"- Generation Enabled: `{report['generate_answers']}`")
     lines.append(f"- Model: `{report.get('model_id') or 'N/A'}`")
+    lines.append(f"- Collection: `{report.get('collection_name') or COLLECTION_NAME}`")
     lines.append("")
     lines.append("## Mode Summary")
     lines.append("")
@@ -508,6 +518,11 @@ def parse_args() -> argparse.Namespace:
         help="Embedding model ID or local model path for retrieval.",
     )
     parser.add_argument(
+        "--collection-name",
+        default=COLLECTION_NAME,
+        help="PGVector collection name to benchmark.",
+    )
+    parser.add_argument(
         "--modes",
         default="fast,balanced,high_fidelity",
         help="Comma-separated retrieval modes.",
@@ -543,34 +558,46 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-
-    benchmark_file = Path(args.benchmark_file).resolve()
+def run_regression_benchmark(
+    *,
+    benchmark_file: Path,
+    output_dir: Path,
+    db_connection: str,
+    embedding_model: str,
+    modes: List[str],
+    generate_answers: bool,
+    model_id: Optional[str],
+    max_new_tokens: int,
+    force_detailed: bool,
+    max_cases: int = 0,
+    collection_name: str = COLLECTION_NAME,
+) -> Dict[str, Any]:
+    benchmark_file = Path(benchmark_file).resolve()
     if not benchmark_file.exists():
         raise SystemExit(f"Benchmark file not found: {benchmark_file}")
 
     benchmark_name, cases = _load_cases(benchmark_file)
-    if args.max_cases and args.max_cases > 0:
-        cases = cases[: args.max_cases]
+    if max_cases and max_cases > 0:
+        cases = cases[:max_cases]
 
-    raw_modes = [m.strip() for m in str(args.modes or "").split(",") if m.strip()]
-    if not raw_modes:
-        raw_modes = ["fast", "balanced", "high_fidelity"]
-    modes = [normalize_rag_mode(m) for m in raw_modes]
+    resolved_modes = [normalize_rag_mode(m) for m in (modes or []) if str(m).strip()]
+    if not resolved_modes:
+        resolved_modes = ["fast", "balanced", "high_fidelity"]
 
-    generate_answers = not bool(args.no_generate)
-    model_id: Optional[str] = None
-    if generate_answers:
-        model_id = resolve_model_id(args.chat_mode)
+    resolved_collection_name = normalize_collection_name(collection_name)
 
     print(f"[REGRESSION] Benchmark: {benchmark_name}")
     print(f"[REGRESSION] Cases: {len(cases)}")
-    print(f"[REGRESSION] Modes: {modes}")
+    print(f"[REGRESSION] Modes: {resolved_modes}")
     print(f"[REGRESSION] Generate answers: {generate_answers} | model={model_id or 'N/A'}")
+    print(f"[REGRESSION] Collection: {resolved_collection_name}")
 
     try:
-        vector_store = _get_vector_store(args.db_connection, args.embedding_model)
+        vector_store = _get_vector_store(
+            db_connection,
+            embedding_model,
+            collection_name=resolved_collection_name,
+        )
     except Exception as e:
         raise SystemExit(f"[REGRESSION] Setup failed: {e}")
 
@@ -578,7 +605,7 @@ def main() -> None:
     all_rows: List[Dict[str, Any]] = []
 
     started = time.time()
-    for mode in modes:
+    for mode in resolved_modes:
         print(f"[REGRESSION] Running mode: {mode}")
         block = _run_mode(
             mode=mode,
@@ -586,8 +613,8 @@ def main() -> None:
             vector_store=vector_store,
             generate_answers=generate_answers,
             model_id=model_id,
-            max_new_tokens=max(16, int(args.max_new_tokens)),
-            force_detailed=bool(args.force_detailed),
+            max_new_tokens=max(16, int(max_new_tokens)),
+            force_detailed=bool(force_detailed),
         )
         mode_blocks.append(block)
         all_rows.extend(block["results"])
@@ -608,17 +635,18 @@ def main() -> None:
         "benchmark_name": benchmark_name,
         "benchmark_file": str(benchmark_file),
         "case_count": len(cases),
-        "modes": modes,
+        "modes": resolved_modes,
         "generate_answers": generate_answers,
         "model_id": model_id,
-        "force_detailed": bool(args.force_detailed),
+        "force_detailed": bool(force_detailed),
+        "collection_name": resolved_collection_name,
         "elapsed_seconds": round(finished - started, 3),
         "best_mode_by_score": best_mode,
         "mode_summaries": mode_summaries,
         "results": all_rows,
     }
 
-    output_dir = Path(args.output_dir).resolve()
+    output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", benchmark_name).strip("_") or "benchmark"
@@ -626,6 +654,8 @@ def main() -> None:
     json_path = output_dir / f"{safe_name}_{stamp}.json"
     md_path = output_dir / f"{safe_name}_{stamp}.md"
 
+    report["json_report_path"] = str(json_path)
+    report["markdown_report_path"] = str(md_path)
     json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     md_path.write_text(_render_markdown(report), encoding="utf-8")
 
@@ -633,6 +663,34 @@ def main() -> None:
     print(f"[REGRESSION] JSON report: {json_path}")
     print(f"[REGRESSION] Markdown report: {md_path}")
     print(f"[REGRESSION] Best mode by average score: {best_mode}")
+    return report
+
+
+def main() -> None:
+    args = parse_args()
+
+    raw_modes = [m.strip() for m in str(args.modes or "").split(",") if m.strip()]
+    if not raw_modes:
+        raw_modes = ["fast", "balanced", "high_fidelity"]
+
+    generate_answers = not bool(args.no_generate)
+    model_id: Optional[str] = None
+    if generate_answers:
+        model_id = resolve_model_id(args.chat_mode)
+
+    run_regression_benchmark(
+        benchmark_file=Path(args.benchmark_file),
+        output_dir=Path(args.output_dir),
+        db_connection=args.db_connection,
+        embedding_model=args.embedding_model,
+        modes=raw_modes,
+        generate_answers=generate_answers,
+        model_id=model_id,
+        max_new_tokens=int(args.max_new_tokens),
+        force_detailed=bool(args.force_detailed),
+        max_cases=int(args.max_cases or 0),
+        collection_name=args.collection_name,
+    )
 
 
 if __name__ == "__main__":

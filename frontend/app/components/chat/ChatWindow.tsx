@@ -206,7 +206,7 @@ export default function ChatWindow({
   disableMetadataWorkflow = false,
   emptyStateConfig,
   inputPlaceholderText,
-  disclaimerText = "Chat UI can make mistakes. Verify important information.",
+  disclaimerText = "Kavin can make mistakes. Verify important information.",
   generateTitleOverride,
   onSaveLatestAssistant,
   saveLatestAssistantLabel = "Save as Template",
@@ -255,7 +255,7 @@ export default function ChatWindow({
   const jobFinishedRef = useRef(false);
   const externalMetadataSeenJobIdRef = useRef<string | null>(null);
   const lastModelRef = useRef<ChatUIModelId>(model);
-  const modelLabel = useMemo(() => SAFE_MODELS.find((m) => m.id === model)?.label ?? "Chat UI Base v1.0", [model]);
+  const modelLabel = useMemo(() => SAFE_MODELS.find((m) => m.id === model)?.label ?? "Kavin Base v1.0", [model]);
   const lastMessageContent = messages[messages.length - 1]?.content;
   const latestAssistantContent = useMemo(() => {
     for (let idx = messages.length - 1; idx >= 0; idx -= 1) {

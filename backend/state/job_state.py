@@ -115,6 +115,7 @@ def save_active_document(
     session_id: str,
     company_document_id: str,
     revision_number: int,
+    collection_name: Optional[str] = None,
     filename: Optional[str] = None,
 ) -> None:
     """
@@ -125,6 +126,7 @@ def save_active_document(
         session_id=session_id,
         company_document_id=company_document_id,
         revision_number=str(revision_number),
+        collection_name=collection_name,
         filename=filename,
     )
 

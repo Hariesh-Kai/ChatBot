@@ -58,7 +58,7 @@ const ChatInput = forwardRef<HTMLTextAreaElement, Props>(
       ? "Net model rate-limited. Try again soon."
       : effectiveDisabled
         ? "AI is responding..."
-        : "Message CHAT UI...";
+        : "Message Kavin...";
     const placeholder = placeholderText || fallbackPlaceholder;
 
     return (

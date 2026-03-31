@@ -1,8 +1,8 @@
 [package]
 name = "chat_ui_base_desktop"
 version = "0.1.0"
-description = "Chat UI desktop app"
-authors = ["Chat UI"]
+description = "Kavin desktop app"
+authors = ["Kavin"]
 edition = "2021"
 
 [build-dependencies]

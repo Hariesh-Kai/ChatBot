@@ -101,7 +101,7 @@ export default function NetKeyModal({
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
           <div className="flex items-center gap-2 text-sm font-medium text-white">
             <Key size={16} />
-            Chat UI Net v1.0 — API Key
+            Kavin Net v1.0 — API Key
           </div>
 
           <button
@@ -119,7 +119,7 @@ export default function NetKeyModal({
           <div className="flex gap-2 rounded-md border border-yellow-500/20 bg-yellow-500/10 p-3 text-xs text-yellow-300">
             <AlertTriangle size={14} className="mt-[1px]" />
             <p>
-              Chat UI Net uses <b>external LLM APIs</b>.<br />
+              Kavin Net uses <b>external LLM APIs</b>.<br />
               Billing, rate limits, and usage are controlled by your provider.<br />
               <b>No automatic safeguards are applied.</b>
             </p>

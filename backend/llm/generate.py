@@ -193,6 +193,12 @@ def _lite_fallback_model_id(current_model_id: str) -> Optional[str]:
     return fallback_id
 
 
+def _finalize_fact_answer(parts: List[str], *, verbosity: str) -> str:
+    raw = clean_model_output("".join(parts or []))
+    compact = apply_response_policy(raw, verbosity=verbosity)
+    return (compact or raw or "").strip()
+
+
 # ============================================================
 # MAIN STREAM GENERATOR
 # ============================================================
@@ -238,6 +244,28 @@ def generate_answer_stream(
     policy = infer_answer_policy(question)
     style = decide_answer_style(question, context_chunks)
     context_text = _context_to_text(context_chunks)
+    enforce_compact_fact_answer = bool(policy.strict_factual and context_chunks)
+
+    if enforce_compact_fact_answer:
+        max_tokens = min(max_tokens, 96)
+
+    if model in ("lite", "base"):
+        try:
+            from backend.llm.orchestrator import run_agentic_review_pipeline
+
+            reviewed = run_agentic_review_pipeline(
+                question=question,
+                requested_model_id=model_id,
+                context_chunks=context_chunks,
+                chat_history=chat_history,
+                verbosity=style.verbosity,
+                session_id=session_id,
+            )
+            if reviewed and reviewed.get("final_answer"):
+                yield str(reviewed["final_answer"])
+                return
+        except Exception as exc:
+            print(f"[ORCH] Agentic review fallback: {exc}")
 
     # ========================================================
     # BASE / NET (DOCUMENT-AWARE)
@@ -253,7 +281,16 @@ def generate_answer_stream(
                 # Last-resort fallback when registry is unavailable.
                 model_id = "lite_llama_8b"
         else:
-            prompt = build_prompt_cot(question, context_chunks, chat_history)
+            prompt = (
+                build_prompt_hf(
+                    question,
+                    context_chunks,
+                    chat_history,
+                    answer_style=style,
+                )
+                if enforce_compact_fact_answer
+                else build_prompt_cot(question, context_chunks, chat_history)
+            )
 
             try:
                 if model == "net":
@@ -264,6 +301,7 @@ def generate_answer_stream(
                         return
                     try:
                         provider = get_active_net_provider()
+                        buffered_parts: List[str] = []
 
                         for token in generate_net_answer_stream(
                             prompt=prompt,
@@ -274,9 +312,22 @@ def generate_answer_stream(
                             if is_aborted(session_id):
                                 break
                             if token:
+                                if enforce_compact_fact_answer:
+                                    buffered_parts.append(token)
+                                else:
+                                    yielded_anything = True
+                                    collected.append(token)
+                                    yield token
+
+                        if enforce_compact_fact_answer:
+                            final = _finalize_fact_answer(
+                                buffered_parts,
+                                verbosity=style.verbosity,
+                            )
+                            if final:
                                 yielded_anything = True
-                                collected.append(token)
-                                yield token
+                                collected.append(final)
+                                yield final
                     except NetRateLimitError as e:
                         msg = str(e)
                         provider = None
@@ -296,6 +347,7 @@ def generate_answer_stream(
                 else:
                     stream_text = ""
                     emitted_len = 0
+                    buffered_parts: List[str] = []
                     for t in hf_stream_generate(
                         model_id=model_id,
                         prompt=prompt,
@@ -314,9 +366,12 @@ def generate_answer_stream(
                             safe = stream_text[:stop_idx]
                             delta = safe[emitted_len:]
                             if delta:
-                                yielded_anything = True
-                                collected.append(delta)
-                                yield delta
+                                if enforce_compact_fact_answer:
+                                    buffered_parts.append(delta)
+                                else:
+                                    yielded_anything = True
+                                    collected.append(delta)
+                                    yield delta
                             break
 
                         # Hold back a small tail to avoid leaking partial markers.
@@ -324,9 +379,12 @@ def generate_answer_stream(
                         if safe_end > emitted_len:
                             delta = stream_text[emitted_len:safe_end]
                             if delta:
-                                yielded_anything = True
-                                collected.append(delta)
-                                yield delta
+                                if enforce_compact_fact_answer:
+                                    buffered_parts.append(delta)
+                                else:
+                                    yielded_anything = True
+                                    collected.append(delta)
+                                    yield delta
                             emitted_len = safe_end
 
                     if emitted_len < len(stream_text):
@@ -335,9 +393,22 @@ def generate_answer_stream(
                         if tail_stop_idx >= 0:
                             tail = tail[:tail_stop_idx]
                         if tail:
+                            if enforce_compact_fact_answer:
+                                buffered_parts.append(tail)
+                            else:
+                                yielded_anything = True
+                                collected.append(tail)
+                                yield tail
+
+                    if enforce_compact_fact_answer:
+                        final = _finalize_fact_answer(
+                            buffered_parts,
+                            verbosity=style.verbosity,
+                        )
+                        if final:
                             yielded_anything = True
-                            collected.append(tail)
-                            yield tail
+                            collected.append(final)
+                            yield final
 
 
             except Exception as e:
@@ -449,6 +520,7 @@ def generate_answer_stream(
 
     try:
         if llm["type"] == "gguf":
+            buffered_parts: List[str] = []
             for chunk in llm["llm"](prompt, max_tokens=max_tokens):
                 if session_id and is_aborted(session_id):
                     yield ""
@@ -461,13 +533,24 @@ def generate_answer_stream(
 
                 if text:
                     print("TOKEN:", repr(text))  # ✅ NOW SAFE
-                    collected.append(text)
-                    yield text
-
+                    if enforce_compact_fact_answer:
+                        buffered_parts.append(text)
+                    else:
+                        collected.append(text)
+                        yield text
+            if enforce_compact_fact_answer:
+                final = _finalize_fact_answer(
+                    buffered_parts,
+                    verbosity=style.verbosity,
+                )
+                if final:
+                    collected.append(final)
+                    yield final
 
         else:
             stream_text = ""
             emitted_len = 0
+            buffered_parts: List[str] = []
             for t in hf_stream_generate(
                 model_id=model_id,
                 prompt=prompt,
@@ -486,16 +569,22 @@ def generate_answer_stream(
                     safe = stream_text[:stop_idx]
                     delta = safe[emitted_len:]
                     if delta:
-                        collected.append(delta)
-                        yield delta
+                        if enforce_compact_fact_answer:
+                            buffered_parts.append(delta)
+                        else:
+                            collected.append(delta)
+                            yield delta
                     break
 
                 safe_end = max(0, len(stream_text) - (_PROMPT_ECHO_TAIL - 1))
                 if safe_end > emitted_len:
                     delta = stream_text[emitted_len:safe_end]
                     if delta:
-                        collected.append(delta)
-                        yield delta
+                        if enforce_compact_fact_answer:
+                            buffered_parts.append(delta)
+                        else:
+                            collected.append(delta)
+                            yield delta
                     emitted_len = safe_end
 
             if emitted_len < len(stream_text):
@@ -504,8 +593,20 @@ def generate_answer_stream(
                 if tail_stop_idx >= 0:
                     tail = tail[:tail_stop_idx]
                 if tail:
-                    collected.append(tail)
-                    yield tail
+                    if enforce_compact_fact_answer:
+                        buffered_parts.append(tail)
+                    else:
+                        collected.append(tail)
+                        yield tail
+
+            if enforce_compact_fact_answer:
+                final = _finalize_fact_answer(
+                    buffered_parts,
+                    verbosity=style.verbosity,
+                )
+                if final:
+                    collected.append(final)
+                    yield final
 
 
     except Exception:

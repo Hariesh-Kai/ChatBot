@@ -182,7 +182,6 @@ def run_commit_payload(
             )
 
     rev_text = str(final_metadata["revision_number"])
-    rev_number = int(rev_text) if rev_text.isdigit() else rev_text
     try:
         settings = get_dev_settings()
     except Exception:
@@ -197,7 +196,7 @@ def run_commit_payload(
         save_active_document(
             session_id=session_id,
             company_document_id=final_metadata["company_document_id"],
-            revision_number=rev_number,
+            revision_number=rev_text,
             collection_name=resolved_collection_name,
             filename=final_metadata["source_file"],
         )

@@ -37,3 +37,19 @@ def resolve_local_snapshot(cache_dir: PathLike, repo_id: str) -> Optional[str]:
 
     return None
 
+
+def require_local_snapshot(cache_dir: PathLike, repo_id: str) -> str:
+    """
+    Resolve a Hugging Face repo_id to a local snapshot path or raise.
+
+    This keeps runtime components fully offline: if the model is not already
+    cached under `models/hf_cache`, callers can fail fast instead of silently
+    falling back to an online download attempt.
+    """
+    snapshot = resolve_local_snapshot(cache_dir, repo_id)
+    if snapshot:
+        return snapshot
+    raise FileNotFoundError(
+        f"Local Hugging Face snapshot not found for '{repo_id}' under '{Path(cache_dir)}'"
+    )
+

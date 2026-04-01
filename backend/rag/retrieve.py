@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 
 from langchain_core.documents import Document
 from langchain_postgres import PGVector
+from sqlalchemy import text
 
 from backend.rag.keyword_search import keyword_search
 from backend.rag.rerank import rerank_documents
@@ -19,6 +20,15 @@ RAG_CANDIDATE_K = 25
 
 # Reciprocal Rank Fusion constant - higher k = less aggressive fusion
 RRF_K = 60
+
+_METADATA_LOOKUP_TERMS = (
+    "company document id",
+    "document id",
+    "document number",
+    "revision number",
+    "current revision",
+    "basis of design",
+)
 
 
 # ============================================================
@@ -127,6 +137,71 @@ def resolve_parent_chunks(
     return list(final_docs_map.values())
 
 
+def _is_metadata_lookup(question: str) -> bool:
+    q = str(question or "").strip().lower()
+    return any(term in q for term in _METADATA_LOOKUP_TERMS)
+
+
+def _fetch_metadata_anchor_docs(
+    *,
+    vector_store: PGVector,
+    metadata_filter: Dict[str, str],
+    limit: int = 6,
+) -> List[Document]:
+    try:
+        engine = vector_store._engine
+        sql = text(
+            """
+            SELECT document, cmetadata
+            FROM langchain_pg_embedding
+            WHERE cmetadata->>'company_document_id' = :company_document_id
+              AND cmetadata->>'revision_number' = :revision_number
+              AND (
+                    cmetadata->>'page_number' IN ('1', '2')
+                 OR document ILIKE '%Company Document ID%'
+              )
+              AND (
+                    document ILIKE '%Company Document ID%'
+                 OR document ILIKE '%Revision%'
+                 OR document ILIKE '%Validity%'
+                 OR document ILIKE '%CD-FE%'
+                 OR document ILIKE '%File Name:%'
+              )
+            ORDER BY
+                CASE WHEN cmetadata->>'page_number' = '1' THEN 0 ELSE 1 END,
+                CASE WHEN COALESCE(cmetadata->>'chunk_type', cmetadata->>'type', '') = 'parent' THEN 0 ELSE 1 END,
+                LENGTH(document) DESC
+            LIMIT :limit
+            """
+        )
+        params = {
+            "company_document_id": str(metadata_filter.get("company_document_id") or ""),
+            "revision_number": str(metadata_filter.get("revision_number") or ""),
+            "limit": int(limit),
+        }
+        with engine.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+    except Exception as e:
+        print(f"[RETRIEVE] metadata anchor fetch failed: {e}")
+        return []
+
+    docs: List[Document] = []
+    seen: set[str] = set()
+    for row in rows or []:
+        try:
+            page_content = row[0]
+            metadata = row[1] or {}
+            chunk_id = str(metadata.get("chunk_id") or "").strip()
+            if not page_content or (chunk_id and chunk_id in seen):
+                continue
+            if chunk_id:
+                seen.add(chunk_id)
+            docs.append(Document(page_content=page_content, metadata=metadata))
+        except Exception:
+            continue
+    return docs
+
+
 # ============================================================
 # MAIN RETRIEVAL FUNCTION
 # ============================================================
@@ -205,6 +280,24 @@ def retrieve_rag_context(
             reranked_docs = candidates[:final_k]
     else:
         reranked_docs = []
+
+    if _is_metadata_lookup(question):
+        anchor_docs = _fetch_metadata_anchor_docs(
+            vector_store=vector_store,
+            metadata_filter=metadata_filter,
+            limit=6,
+        )
+        if anchor_docs:
+            merged_docs: List[Document] = []
+            seen_chunk_ids: set[str] = set()
+            for doc in anchor_docs + reranked_docs:
+                chunk_id = str((doc.metadata or {}).get("chunk_id") or "").strip()
+                if chunk_id and chunk_id in seen_chunk_ids:
+                    continue
+                if chunk_id:
+                    seen_chunk_ids.add(chunk_id)
+                merged_docs.append(doc)
+            reranked_docs = merged_docs[: max(final_k, min(len(merged_docs), final_k + len(anchor_docs)))]
 
     # 6. Parent Resolution (Context Expansion for table rows)
     if bool(profile.get("use_parent_resolution", True)):

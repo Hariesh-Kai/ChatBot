@@ -16,6 +16,7 @@ from langchain_postgres import PGVector
 
 from backend.llm.generate import generate_answer_stream
 from backend.llm.hf_cache_utils import resolve_local_snapshot
+from backend.llm.model_config_store import HF_CACHE_DIR
 from backend.llm.model_selector import resolve_model_id
 from backend.llm.prompts import clean_model_output
 from backend.rag.collections import (
@@ -32,8 +33,6 @@ DEFAULT_DB = os.getenv(
     "DB_CONNECTION",
     "postgresql+psycopg2://postgres:1@localhost:5432/rag_db",
 )
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
 
 @dataclass

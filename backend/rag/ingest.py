@@ -9,21 +9,12 @@ import psycopg2
 from langchain_postgres import PGVector
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
-from backend.llm.hf_cache_utils import resolve_local_snapshot
+from backend.llm.hf_cache_utils import require_local_snapshot
+from backend.llm.model_config_store import HF_CACHE_DIR
 from backend.rag.collections import (
     DEFAULT_RAG_COLLECTION_NAME,
     normalize_collection_name,
 )
-
-# ============================================================
-# GLOBAL CONFIG
-# ============================================================
-
-PROJECT_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../..")
-)
-
-HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
 COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
 
@@ -39,8 +30,8 @@ def _normalize_conn(conn: str) -> str:
 def _get_embeddings() -> HuggingFaceEmbeddings:
     # Matches backend/api/chat.py and forces local cache usage.
     return HuggingFaceEmbeddings(
-        model_name=resolve_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3") or "BAAI/bge-m3",
-        cache_folder=HF_CACHE_DIR,
+        model_name=require_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3"),
+        cache_folder=str(HF_CACHE_DIR),
         model_kwargs={"device": "cpu", "local_files_only": True},
         encode_kwargs={"normalize_embeddings": True},
     )

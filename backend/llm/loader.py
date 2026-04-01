@@ -18,7 +18,11 @@ from typing import Dict, Any, Generator, Tuple, Optional, Iterable
 import torch
 
 # Developer-managed model config (persisted under models/model_config.json)
-from backend.llm.model_config_store import load_model_config
+from backend.llm.model_config_store import (
+    GGUF_DIR as CONFIG_GGUF_DIR,
+    HF_CACHE_DIR as CONFIG_HF_CACHE_DIR,
+    load_model_config,
+)
 
 # Optional imports (guarded)
 try:
@@ -68,18 +72,70 @@ print(f"LLM device detected: {DEVICE}")
 # ============================================================
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
-HF_CACHE_DIR = os.path.join(MODELS_DIR, "hf_cache")
-GGUF_DIR = os.path.join(MODELS_DIR, "gguf")
+HF_CACHE_DIR = str(CONFIG_HF_CACHE_DIR)
+GGUF_DIR = str(CONFIG_GGUF_DIR)
+MODELS_DIR = os.path.dirname(HF_CACHE_DIR)
 
 
 # ============================================================
 # MODEL REGISTRY
 # ============================================================
 
+_BUILTIN_GGUF_FILE_CANDIDATES: Dict[str, tuple[str, ...]] = {
+    "agent_qwen_0_5b_q4": (
+        "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+    ),
+    "lite_llama_8b": (
+        "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        "meta-llama-3.1-8b-instruct-q4_k_m.gguf",
+    ),
+    "lite_qwen_1_5b_q4": (
+        "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+    ),
+    "lite_qwen_q4": (
+        "qwen2.5-7b-instruct-q4_k_m.gguf",
+        "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+    ),
+}
+
+
+def _default_builtin_gguf_path(model_id: str) -> str:
+    filenames = _BUILTIN_GGUF_FILE_CANDIDATES.get(model_id, ())
+    if not filenames:
+        return ""
+    return os.path.join(GGUF_DIR, filenames[0])
+
+
+def resolve_gguf_model_path(model_id: str) -> str:
+    """
+    Resolve the current GGUF path for a model id.
+
+    Built-in models accept multiple filename variants so users can download
+    the official Hugging Face GGUF file names without manual renaming.
+    """
+    configured_path = (GGUF_MODELS.get(model_id) or "").strip()
+
+    filenames = _BUILTIN_GGUF_FILE_CANDIDATES.get(model_id)
+    if filenames:
+        for filename in filenames:
+            candidate = os.path.join(GGUF_DIR, filename)
+            if os.path.exists(candidate):
+                GGUF_MODELS[model_id] = candidate
+                return candidate
+
+        fallback = configured_path or _default_builtin_gguf_path(model_id)
+        if fallback:
+            GGUF_MODELS[model_id] = fallback
+        return fallback
+
+    return configured_path
+
+
 _BUILTIN_GGUF_MODELS: Dict[str, str] = {
-    "lite_llama_8b": os.path.join(GGUF_DIR, "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"),
-    "lite_qwen_q4": os.path.join(GGUF_DIR, "Qwen2.5-7B-Instruct-Q4_K_M.gguf"),
+    model_id: _default_builtin_gguf_path(model_id)
+    for model_id in _BUILTIN_GGUF_FILE_CANDIDATES.keys()
 }
 
 _BUILTIN_HF_MODELS: Dict[str, str] = {
@@ -173,7 +229,7 @@ def _load_gguf(model_id: str) -> Any:
     if model_id in _llama_cache:
         return _llama_cache[model_id]
 
-    model_path = GGUF_MODELS.get(model_id)
+    model_path = resolve_gguf_model_path(model_id)
     if not model_path or not os.path.exists(model_path):
         raise FileNotFoundError(f"GGUF model not found for '{model_id}': {model_path}")
     if _is_known_incompatible_gguf(model_path):

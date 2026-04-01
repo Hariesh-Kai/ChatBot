@@ -352,7 +352,9 @@ def _stream_pymupdf4llm_elements(
 
     kwargs = {
         "page_chunks": True,
-        "use_ocr": bool(profile.get("strategy") == "hi_res"),
+        # Balanced mode should stay fast on local CPU-only installs.
+        # Reserve OCR-heavy parsing for explicit high-fidelity ingestion.
+        "use_ocr": bool(resolved_rag_mode == "high_fidelity"),
         "force_ocr": False,
     }
 

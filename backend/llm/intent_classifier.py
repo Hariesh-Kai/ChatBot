@@ -14,6 +14,7 @@ Design goals:
 - NEVER block RAG
 """
 
+import re
 from typing import Literal
 
 from backend.llm.loader import load_intent_classifier
@@ -70,6 +71,50 @@ _FOLLOW_UP_TRIGGERS = {
     "more detail", "detail about", 
 }
 
+_FACT_LOOKUP_PATTERNS = (
+    "company document id",
+    "document id",
+    "document number",
+    "revision number",
+    "current revision",
+    "revision no",
+    "tag number",
+    "basis of design",
+)
+
+_SELF_CONTAINED_FACT_RE = re.compile(
+    r"\b(company\s+document\s+id|document\s+id|document\s+number|revision\s+number|current\s+revision|tag\s+number)\b",
+    re.IGNORECASE,
+)
+
+_FOLLOW_UP_REFERENCE_RE = re.compile(
+    r"\b(this|that|it|again|above|previous|same|earlier|these|those|them|they)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_fact_lookup(question: str) -> bool:
+    q = str(question or "").strip().lower()
+    if not q:
+        return False
+
+    if any(pattern in q for pattern in _FACT_LOOKUP_PATTERNS):
+        return True
+
+    if q.startswith(("what is", "state", "give", "show", "find", "list")) and _SELF_CONTAINED_FACT_RE.search(q):
+        return True
+
+    return False
+
+
+def is_referential_follow_up(question: str) -> bool:
+    q = str(question or "").strip()
+    if not q:
+        return False
+    if _looks_fact_lookup(q):
+        return False
+    return bool(_FOLLOW_UP_REFERENCE_RE.search(q))
+
 
 def _fast_intent_check(question: str) -> Intent | None:
     """
@@ -81,14 +126,17 @@ def _fast_intent_check(question: str) -> Intent | None:
     if not q:
         return "fact_lookup"
 
-    if any(q.startswith(g) for g in _GREETINGS):
+    if q.rstrip("!.?") in _GREETINGS:
         return "greeting"
+
+    if _looks_fact_lookup(q):
+        return "fact_lookup"
 
     tokens = token_count(q)
 
     # Short contextual follow-ups
     # "tell me more details" (4 tokens) should be caught
-    if tokens <= 5 and any(t in q for t in _FOLLOW_UP_TRIGGERS):
+    if tokens <= 5 and any(t in q for t in _FOLLOW_UP_TRIGGERS) and is_referential_follow_up(q):
         return "follow_up"
 
     # Single-word confirmations should NOT block RAG
@@ -111,6 +159,9 @@ def classify_intent(question: str) -> Intent:
     """
 
     if not question or not question.strip():
+        return "fact_lookup"
+
+    if _looks_fact_lookup(question):
         return "fact_lookup"
 
     # --------------------------------------------------------
@@ -159,7 +210,7 @@ def classify_intent(question: str) -> Intent:
     # --------------------------------------------------------
     # 3️⃣ FOLLOW-UP (HIGHEST PRIORITY)
     # --------------------------------------------------------
-    if "follow-up" in top_label or "previous answer" in top_label:
+    if ("follow-up" in top_label or "previous answer" in top_label) and is_referential_follow_up(question):
         return "follow_up"
 
     # --------------------------------------------------------

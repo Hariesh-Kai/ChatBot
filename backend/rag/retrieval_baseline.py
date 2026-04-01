@@ -13,6 +13,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from backend.rag.retrieve import retrieve_rag_context
 from backend.rag.collections import DEFAULT_RAG_COLLECTION_NAME, normalize_collection_name
 from backend.llm.hf_cache_utils import resolve_local_snapshot
+from backend.llm.model_config_store import HF_CACHE_DIR
 
 # ============================================================
 # CONFIG
@@ -25,8 +26,6 @@ DB_CONNECTION = os.getenv(
 ).replace("postgresql+psycopg2://", "postgresql://")
 
 COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
 # ============================================================
 # SETUP

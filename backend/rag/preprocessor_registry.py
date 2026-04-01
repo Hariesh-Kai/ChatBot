@@ -1,11 +1,26 @@
 from __future__ import annotations
 
+import importlib.util
 from typing import Any, Literal
 
 
 RagPreprocessor = Literal["unstructured", "pypdf_text", "pymupdf4llm", "docling"]
 
-DEFAULT_RAG_PREPROCESSOR: RagPreprocessor = "unstructured"
+
+def _detect_default_rag_preprocessor() -> RagPreprocessor:
+    """
+    Prefer the parser that is most reliable for local/offline installs.
+    PyMuPDF4LLM works well on CPU-only Windows systems without extra model
+    downloads, while Unstructured / Docling often need additional artifacts.
+    """
+    if importlib.util.find_spec("pymupdf4llm") is not None:
+        return "pymupdf4llm"
+    if importlib.util.find_spec("unstructured") is not None:
+        return "unstructured"
+    return "pypdf_text"
+
+
+DEFAULT_RAG_PREPROCESSOR: RagPreprocessor = _detect_default_rag_preprocessor()
 ALLOWED_RAG_PREPROCESSORS = {"unstructured", "pypdf_text", "pymupdf4llm", "docling"}
 
 

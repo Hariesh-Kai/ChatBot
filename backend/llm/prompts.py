@@ -86,7 +86,9 @@ STYLE_INSTRUCTIONS = {
 OUTPUT STYLE:
 - Extremely concise.
 - One single sentence.
-- No fluff.
+- Answer only the exact fact(s) requested.
+- For IDs, codes, document numbers, and revision values: copy them exactly and stop.
+- Do not add background, explanation, revision history, or extra context unless explicitly asked.
 """,
     "short": """
 OUTPUT STYLE:

@@ -323,6 +323,16 @@ export default function DashboardPage() {
   }, [activeTab, backendReady]);
 
   useEffect(() => {
+    if (!backendReady || activeTab !== "models") return;
+    const timer = window.setInterval(() => {
+      loadModels();
+    }, 10000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [activeTab, backendReady]);
+
+  useEffect(() => {
     if (!backendReady) return;
     if (activeTab === "runtime") {
       loadRuntime();
@@ -384,6 +394,13 @@ export default function DashboardPage() {
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setModelsData(data);
+      if (Array.isArray(data?.effective_modes)) {
+        setActiveModels((prev: any) => ({
+          ...(prev && typeof prev === "object" ? prev : {}),
+          modes: data.effective_modes,
+          model_registry: data.model_registry,
+        }));
+      }
       const reg = data?.model_registry || {};
       const hfIds = Object.keys(data?.hf_models || {});
       const ggufIds = Object.keys(data?.gguf_models || {});
@@ -859,9 +876,13 @@ export default function DashboardPage() {
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      setHfAutoStatus(
-        `Downloaded (${data.model_type || "model"}) and registered as ${data.mode || "base"}`
-      );
+      if (data?.mode === "inventory") {
+        setHfAutoStatus(`Downloaded and synced to inventory: ${data.asset_id || data.repo_id || "asset"}`);
+      } else {
+        setHfAutoStatus(
+          `Downloaded (${data.model_type || "model"}) and registered as ${data.mode || "base"}`
+        );
+      }
       await loadModels();
     } catch (e: any) {
       setHfAutoStatus(null);
@@ -1020,6 +1041,21 @@ export default function DashboardPage() {
   const activeLiteId = activeModeMap.lite?.model_id || activeModeMap.lite?.model || "";
   const activeNetId =
     activeModeMap.net?.provider || activeModeMap.net?.model || activeModeMap.net?.model_id || "";
+  const modelInventory: any[] = Array.isArray(modelsData?.inventory) ? modelsData.inventory : [];
+  const modelInventoryGroups: Record<string, any[]> = modelInventory.reduce((acc: Record<string, any[]>, item: any) => {
+    const key = String(item?.group || "other").toLowerCase();
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(item);
+    return acc;
+  }, {});
+  const inventoryGroupLabels: Record<string, string> = {
+    chat: "Chat Models",
+    retrieval: "Retrieval",
+    reasoning: "Intent / Reasoning",
+    preprocessing: "Preprocessing",
+    discovered: "Discovered Local Assets",
+    other: "Other",
+  };
   const downloadStatusLabel = modelsBusy
     ? "Downloading"
     : modelsError
@@ -1543,16 +1579,23 @@ export default function DashboardPage() {
                       : "bg-red-500/20 text-red-300";
                     return (
                       <div key={label} className="rounded border border-white/10 bg-black/30 px-2 py-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <div className="w-10 text-[11px] font-semibold text-gray-300">{label}</div>
-                            <div className="text-sm text-white truncate">
-                              {isNet
-                                ? data?.provider || data?.model || "Unknown provider"
-                                : data?.model_id || data?.model || "Unknown"}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className="w-10 text-[11px] font-semibold text-gray-300">{label}</div>
+                              <div className="text-sm text-white truncate">
+                                {isNet
+                                  ? data?.provider || data?.model || "Unknown provider"
+                                  : data?.model_id || data?.model || "Unknown"}
+                              </div>
+                              {data?.type && (
+                                <span className="text-[11px] text-gray-500">({data.type})</span>
+                              )}
                             </div>
-                            {data?.type && (
-                              <span className="text-[11px] text-gray-500">({data.type})</span>
+                            {!isNet && data?.configured_model_id && data?.configured_model_id !== data?.model_id && (
+                              <div className="mt-1 pl-12 text-[11px] text-gray-500">
+                                Configured default: {data.configured_model_id}
+                              </div>
                             )}
                           </div>
                           <div className={`text-[11px] px-2 py-0.5 rounded ${statusClass}`}>
@@ -1577,25 +1620,29 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-gray-400">Base (HF)</span>
                   <span className="text-gray-200 truncate">
-                    {modelsData?.model_registry?.base?.default || "Not set"}
+                      {modelsData?.configured_model_registry?.base?.default || "Not set"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-gray-400">Lite (GGUF)</span>
                   <span className="text-gray-200 truncate">
-                    {modelsData?.model_registry?.lite?.default || "Not set"}
+                      {modelsData?.configured_model_registry?.lite?.default || "Not set"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-gray-400">Net (Provider)</span>
                   <span className="text-gray-200 truncate">
-                    {modelsData?.model_registry?.net?.default || "Not set"}
+                      {modelsData?.configured_model_registry?.net?.default || "Not set"}
                   </span>
                 </div>
               </div>
               <div className="mt-3 text-xs text-gray-500">
                 Models available: HF {Object.keys(modelsData?.hf_models || {}).length} · GGUF{" "}
                 {Object.keys(modelsData?.gguf_models || {}).length}
+              </div>
+              <div className="mt-1 text-xs text-gray-500">
+                Inventory entries: {modelInventory.length} · Default preprocessor:{" "}
+                {String(modelsData?.default_rag_preprocessor || "unknown")}
               </div>
             </Card>
 
@@ -1614,11 +1661,19 @@ export default function DashboardPage() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch">
-            <Card title="Stored Models (HF + GGUF, scrollable)">
+            <Card title="Stored Models On Disk">
               <div className="text-xs text-gray-500 mb-3">
                 HF cache: <span className="font-mono">models/hf_cache</span> | GGUF:
                 <span className="font-mono"> models/gguf</span>
               </div>
+              {Object.keys(modelsData?.hf_models || {}).length === 0 &&
+              Object.keys(modelsData?.gguf_models || {}).length === 0 && (
+                <div className="mb-3 rounded border border-yellow-500/20 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-100">
+                  Local model cache is empty. That is why the HF and GGUF lists are blank here and active local
+                  model status shows missing files. The Backend Model Inventory below still shows the expected backend
+                  assets and whether each one is ready or missing.
+                </div>
+              )}
               <div className="space-y-4 max-h-72 overflow-auto pr-1">
                 <div>
                   <div className="text-xs text-gray-400 mb-2">HF Models</div>
@@ -1647,7 +1702,7 @@ export default function DashboardPage() {
                     </div>
                   ))}
                   {Object.keys(modelsData?.hf_models || {}).length === 0 && (
-                    <div className="text-xs text-gray-500 italic">No HF models registered.</div>
+                    <div className="text-xs text-gray-500 italic">No HF model snapshots found on disk.</div>
                   )}
                 </div>
 
@@ -1678,7 +1733,7 @@ export default function DashboardPage() {
                     </div>
                   ))}
                   {Object.keys(modelsData?.gguf_models || {}).length === 0 && (
-                    <div className="text-xs text-gray-500 italic">No GGUF models registered.</div>
+                    <div className="text-xs text-gray-500 italic">No GGUF files found on disk.</div>
                   )}
                 </div>
               </div>
@@ -1859,6 +1914,56 @@ export default function DashboardPage() {
               <div className="mt-2 text-xs text-gray-500">Status: {downloadStatusLabel}</div>
             </Card>
           </div>
+
+          <Card title="Backend Model Inventory">
+            <div className="mb-4 text-xs text-gray-500">
+              This list is discovered from local cache folders and runtime packages, so downloads from the
+              frontend and command prompt stay in sync.
+            </div>
+            {modelInventory.length > 0 ? (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                {Object.entries(modelInventoryGroups).map(([group, items]) => (
+                  <div key={group} className="rounded border border-white/10 bg-black/20 p-4">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <div className="text-sm text-white">{inventoryGroupLabels[group] || group}</div>
+                      <div className="text-[11px] text-gray-500">{items.length} item(s)</div>
+                    </div>
+                    <div className="space-y-2 max-h-72 overflow-auto pr-1">
+                      {items.map((item: any) => (
+                        <div key={item.id} className="rounded border border-white/10 bg-black/30 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-sm text-white truncate">{item.label || item.id}</div>
+                              <div className="text-[11px] text-gray-500">
+                                {item.component || item.kind || "component"}
+                                {item.source ? ` · ${item.source}` : ""}
+                              </div>
+                            </div>
+                            <span
+                              className={`shrink-0 rounded px-2 py-0.5 text-[11px] ${
+                                item.ready ? "bg-green-500/20 text-green-300" : "bg-yellow-500/20 text-yellow-300"
+                              }`}
+                            >
+                              {item.ready ? "Ready" : "Missing"}
+                            </span>
+                          </div>
+                          {item.repo_id && (
+                            <div className="mt-2 text-[11px] text-gray-400 break-all">{item.repo_id}</div>
+                          )}
+                          {item.location && (
+                            <div className="mt-1 text-[11px] text-gray-500 break-all">{item.location}</div>
+                          )}
+                          {item.note && <div className="mt-2 text-xs text-gray-400">{item.note}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-gray-500 italic">No local model assets found yet.</div>
+            )}
+          </Card>
         </div>
       )}
       {/* === TAB: RUNTIME === */}

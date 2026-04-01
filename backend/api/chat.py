@@ -32,12 +32,13 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 from backend.llm.generate import generate_answer_stream
 from backend.llm.intent_rules import detect_rule_intent
-from backend.llm.intent_classifier import classify_intent
+from backend.llm.intent_classifier import classify_intent, is_referential_follow_up
 from backend.llm.text_normalizer import normalize_text
 from backend.llm.query_rewriter import rewrite_question
 from backend.llm.prompts import build_title_prompt
 from backend.llm.loader import get_llm
-from backend.llm.hf_cache_utils import resolve_local_snapshot
+from backend.llm.hf_cache_utils import require_local_snapshot
+from backend.llm.model_config_store import HF_CACHE_DIR
 # ================================
 # RAG
 # ================================
@@ -121,8 +122,6 @@ DB_CONNECTION = os.getenv(
     "DB_CONNECTION",
     "postgresql+psycopg2://postgres:1@localhost:5432/rag_db",
 )
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-HF_CACHE_DIR = os.path.join(PROJECT_ROOT, "models", "hf_cache")
 
 COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
 SQL_BASE_SCORE = 0.35
@@ -157,8 +156,9 @@ _VECTOR_STORE_LOCK = Lock()
 _EMBEDDING_BOOT_ERROR: Optional[str] = None
 
 try:
+    local_embedding_path = require_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3")
     embedding_model = HuggingFaceEmbeddings(
-        model_name=resolve_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3") or "BAAI/bge-m3",
+        model_name=local_embedding_path,
         model_kwargs={"device": "cpu", "local_files_only": True},
         encode_kwargs={"normalize_embeddings": True},
     )
@@ -271,13 +271,16 @@ def _route_query(intent: str, force_detailed: bool) -> dict:
     if force_detailed:
         return {"force_detailed": True, "limit": 16}
 
-    if intent in ("summary", "summarize"):
+    if intent in ("summary", "summarize", "reasoning"):
         return {"force_detailed": True, "limit": 16}
 
     if intent in ("compare", "comparison"):
         return {"force_detailed": True, "limit": 14}
 
-    if intent in ("factual", "lookup", "definition"):
+    if intent in ("fact_lookup", "factual", "lookup", "definition"):
+        return {"force_detailed": False, "limit": 6}
+
+    if intent == "follow_up":
         return {"force_detailed": False, "limit": 8}
 
     return {"force_detailed": False, "limit": 10}
@@ -314,7 +317,7 @@ def _extract_answer_terms(answer: str) -> List[str]:
     if not text:
         return []
 
-    raw_terms = re.findall(r"[a-z0-9][a-z0-9._\\-/]{2,}", text)
+    raw_terms = re.findall(r"[a-z0-9][a-z0-9._/-]{2,}", text)
     terms: List[str] = []
     seen: set[str] = set()
 
@@ -723,6 +726,9 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     history = get_recent_user_messages(session_id)
     rewritten = rewrite_question(original_question, history)
     intent = classify_intent(rewritten)
+    referential_follow_up = is_referential_follow_up(rewritten)
+    if intent == "follow_up" and not referential_follow_up:
+        intent = "fact_lookup"
     print(
         f"[INTENT][CLASSIFIER] session={session_id} "
         f"original='{original_question}' "
@@ -751,7 +757,7 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     )
 
     previous_context_chunks = []
-    if not rag_disabled and intent == "follow_up":
+    if not rag_disabled and intent == "follow_up" and referential_follow_up:
         prev_ids = get_used_chunk_ids(session_id)
         if prev_ids:
             restored = get_chunks_by_ids(list(prev_ids))
@@ -794,9 +800,15 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     cache_hit = False
     new_rag_chunks = []
 
-    # Conversation-aware query augmentation (Phase 4) - only for cache key + retrieval
+    # Conversation-aware query augmentation should only be used for
+    # genuinely referential follow-ups; otherwise it pollutes short factual
+    # lookups with stale keywords from previous turns.
     conv_history = get_recent_user_messages(session_id)
-    augmented_query = augment_query_with_context(rewritten, conv_history)
+    augmented_query = (
+        augment_query_with_context(rewritten, conv_history)
+        if intent == "follow_up" and referential_follow_up
+        else rewritten
+    )
     retrieval_cache_key = f"[rag_mode:{effective_rag_mode}] {augmented_query}"
 
     if not rag_disabled:
@@ -838,6 +850,10 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
         )
 
         rag_chunks = policy_result.chunks
+
+    route_limit = max(1, int(route_config.get("limit", len(rag_chunks) or 1)))
+    if rag_chunks:
+        rag_chunks = rag_chunks[:route_limit]
 
     did_retrieve = bool(rag_chunks) and not rag_disabled
 
@@ -1025,13 +1041,8 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                 rag_chunks=answer_supported_chunks or rag_chunks,
             )
 
-            # Emit eval quality as a UI event (optional — only if high/low)
-            if eval_scores.get("quality") == "low":
-                yield emit_event({
-                    "type": "EVAL",
-                    "quality": eval_scores["quality"],
-                    "overall": eval_scores["overall"],
-                })
+            # Keep evaluation internal for audit/logging. The chat stream only
+            # emits events that are part of the frontend UI contract.
 
             # Write to audit log
             log_rag_turn(

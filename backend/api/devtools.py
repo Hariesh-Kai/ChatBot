@@ -70,8 +70,10 @@ from backend.llm.loader import (
     get_llm,
     reload_model_config,
 )
+from backend.llm.model_inventory import build_model_inventory
 from backend.llm.model_registry import MODEL_REGISTRY, reload_model_registry
-from backend.llm.hf_cache_utils import resolve_local_snapshot
+from backend.llm.model_selector import resolve_model_id
+from backend.llm.hf_cache_utils import resolve_local_snapshot, require_local_snapshot
 from backend.llm.model_config_store import (
     load_model_config,
     upsert_hf_model,
@@ -95,6 +97,36 @@ router = APIRouter(prefix="/devtools", tags=["Developer Tools"])
 _MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,63}$")
 _PG_DB_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{2,62}$")
 _MINIO_BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
+
+_KNOWN_CHAT_HF_REPO_MODEL_IDS: Dict[str, str] = {
+    "Qwen/Qwen2.5-3B-Instruct": "base_qwen_3b",
+    "Qwen/Qwen2.5-7B-Instruct": "base_qwen_7b",
+}
+
+_KNOWN_CHAT_GGUF_REPO_MODEL_IDS: Dict[str, str] = {
+    "Qwen/Qwen2.5-1.5B-Instruct-GGUF": "lite_qwen_1_5b_q4",
+    "Qwen/Qwen2.5-7B-Instruct-GGUF": "lite_qwen_q4",
+    "AI-Engine/Meta-Llama-3.1-8B-Instruct-GGUF": "lite_llama_8b",
+}
+
+_KNOWN_AUX_HF_REPOS: Dict[str, Dict[str, str]] = {
+    "BAAI/bge-m3": {
+        "asset_id": "embedding_bge_m3",
+        "component": "embedding",
+    },
+    "facebook/bart-large-mnli": {
+        "asset_id": "intent_classifier",
+        "component": "intent_classifier",
+    },
+    "microsoft/table-transformer-structure-recognition": {
+        "asset_id": "unstructured_table_transformer",
+        "component": "unstructured_table",
+    },
+    "unstructuredio/yolo_x_layout": {
+        "asset_id": "unstructured_yolox_layout",
+        "component": "unstructured_layout",
+    },
+}
 
 logger = logging.getLogger("chatui.devtools")
 
@@ -128,6 +160,22 @@ def _derive_model_id(repo_id: str) -> str:
     if len(base) < 2:
         base = "model"
     return base[:64]
+
+
+def _resolve_known_chat_model_id(repo_id: str) -> Optional[str]:
+    repo_id = (repo_id or "").strip()
+    if not repo_id:
+        return None
+    return _KNOWN_CHAT_GGUF_REPO_MODEL_IDS.get(repo_id) or _KNOWN_CHAT_HF_REPO_MODEL_IDS.get(repo_id)
+
+
+def _recommended_registry_patch(model_id: str) -> Dict[str, Dict[str, str]]:
+    model_id = (model_id or "").strip()
+    if model_id == "lite_qwen_1_5b_q4":
+        return {"lite": {"default": "lite_qwen_1_5b_q4", "fallback": "lite_qwen_1_5b_q4"}}
+    if model_id == "base_qwen_3b":
+        return {"base": {"default": "base_qwen_3b", "cpu_fallback": "base_qwen_3b"}}
+    return {}
 
 
 def _hf_repo_cache_dir(repo_id: str) -> Path:
@@ -165,8 +213,14 @@ def _model_status(model_id: str) -> Dict[str, Any]:
         repo_id = HF_MODELS.get(model_id)
         status["type"] = "hf"
         status["repo_id"] = repo_id
-        cache_dir = _hf_repo_cache_dir(repo_id or "")
-        status["ready"] = cache_dir.exists()
+        local_path = Path(repo_id or "")
+        if repo_id and local_path.exists():
+            status["path"] = str(local_path)
+            status["ready"] = True
+        else:
+            snapshot = resolve_local_snapshot(HF_CACHE_DIR, repo_id or "")
+            status["path"] = snapshot or str(_hf_repo_cache_dir(repo_id or ""))
+            status["ready"] = bool(snapshot)
         status["loaded"] = model_id in getattr(llm_loader, "_hf_model_cache", {})
         if not status["ready"]:
             status["error"] = "HF files not cached"
@@ -221,8 +275,11 @@ def _installed_hf_models() -> Dict[str, str]:
     """
     installed: Dict[str, str] = {}
     for model_id, repo_id in dict(HF_MODELS).items():
-        cache_dir = _hf_repo_cache_dir(repo_id or "")
-        if cache_dir.exists():
+        local_path = Path(repo_id or "")
+        if repo_id and local_path.exists():
+            installed[model_id] = repo_id
+            continue
+        if resolve_local_snapshot(HF_CACHE_DIR, repo_id or ""):
             installed[model_id] = repo_id
     return installed
 
@@ -273,7 +330,55 @@ def _visible_model_registry(
     if net_default and net_default not in NET_MODELS:
         visible["net"]["default"] = ""
 
+    if not visible["base"].get("default"):
+        if base_fallback and base_fallback in installed_hf:
+            visible["base"]["default"] = base_fallback
+        elif installed_hf:
+            visible["base"]["default"] = sorted(installed_hf.keys())[0]
+
+    if not visible["base"].get("cpu_fallback") and visible["base"].get("default"):
+        visible["base"]["cpu_fallback"] = visible["base"]["default"]
+
+    if not visible["lite"].get("default"):
+        if lite_fallback and lite_fallback in installed_gguf:
+            visible["lite"]["default"] = lite_fallback
+        elif installed_gguf:
+            visible["lite"]["default"] = sorted(installed_gguf.keys())[0]
+
+    if not visible["lite"].get("fallback") and visible["lite"].get("default"):
+        visible["lite"]["fallback"] = visible["lite"]["default"]
+
     return visible
+
+
+def _build_chat_mode_statuses(visible_registry: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    modes: List[Dict[str, Any]] = []
+
+    for mode in ("base", "lite"):
+        configured_model_id = str(visible_registry.get(mode, {}).get("default") or "").strip()
+        effective_model_id = ""
+        resolve_error = None
+
+        try:
+            effective_model_id = str(resolve_model_id(mode)).strip()
+        except Exception as e:
+            resolve_error = str(e)
+
+        status = _model_status(effective_model_id or configured_model_id)
+        status["mode"] = mode
+        status["configured_model_id"] = configured_model_id or None
+        status["effective_model_id"] = effective_model_id or None
+
+        if effective_model_id:
+            status["model_id"] = effective_model_id
+
+        if resolve_error:
+            status["ready"] = False
+            status["error"] = resolve_error
+
+        modes.append(status)
+
+    return modes
 
 #-- Setup Vector Store for Retrieval Testing ---
 
@@ -295,8 +400,9 @@ _VECTOR_STORE_LOCK = Lock()
 _DEVTOOLS_EMBEDDING_BOOT_ERROR: Optional[str] = None
 
 try:
+    local_embedding_path = require_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3")
     _embedding_model = HuggingFaceEmbeddings(
-        model_name=resolve_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3") or "BAAI/bge-m3",
+        model_name=local_embedding_path,
         model_kwargs={"device": "cpu", "local_files_only": True},
         encode_kwargs={"normalize_embeddings": True},
     )
@@ -1142,12 +1248,21 @@ def list_models(_admin: User = Depends(require_admin)):
     """List locally available models + current mode registry (for the Developer Dashboard)."""
     installed_hf = _installed_hf_models()
     installed_gguf = _installed_gguf_models()
+    visible_registry = _visible_model_registry(installed_hf, installed_gguf)
+    inventory = build_model_inventory()
     return {
-        "model_registry": _visible_model_registry(installed_hf, installed_gguf),
+        "model_registry": visible_registry,
+        "configured_model_registry": {
+            "base": dict(MODEL_REGISTRY.get("base", {})),
+            "lite": dict(MODEL_REGISTRY.get("lite", {})),
+            "net": dict(MODEL_REGISTRY.get("net", {})),
+        },
+        "effective_modes": _build_chat_mode_statuses(visible_registry),
         "hf_models": installed_hf,
         "gguf_models": installed_gguf,
         "net_providers": sorted(NET_MODELS.keys()),
         "model_config": load_model_config(),
+        **inventory,
     }
 
 
@@ -1157,13 +1272,7 @@ def active_models(_admin: User = Depends(require_admin)):
     installed_hf = _installed_hf_models()
     installed_gguf = _installed_gguf_models()
     visible_registry = _visible_model_registry(installed_hf, installed_gguf)
-    modes: List[Dict[str, Any]] = []
-
-    for mode in ("base", "lite"):
-        model_id = visible_registry.get(mode, {}).get("default")
-        status = _model_status(model_id)
-        status["mode"] = mode
-        modes.append(status)
+    modes = _build_chat_mode_statuses(visible_registry)
 
     net_provider = None
     net_model = None
@@ -1232,10 +1341,10 @@ def install_hf_model(req: InstallHFModelReq, _admin: User = Depends(require_admi
     NOTE: Requires internet access from the machine running the backend.
     """
     ensure_model_paths()
-    model_id = _require_safe_model_id(req.model_id)
     repo_id = (req.repo_id or "").strip()
     if not repo_id:
         raise HTTPException(status_code=400, detail="repo_id is required")
+    model_id = _require_safe_model_id(req.model_id or _resolve_known_chat_model_id(repo_id) or _derive_model_id(repo_id))
 
     try:
         snapshot_download(
@@ -1248,6 +1357,9 @@ def install_hf_model(req: InstallHFModelReq, _admin: User = Depends(require_admi
 
     try:
         upsert_hf_model(model_id=model_id, repo_id=repo_id)
+        registry_patch = _recommended_registry_patch(model_id)
+        if registry_patch:
+            patch_model_registry_overrides(registry_patch)
         reload_model_config()
         reload_model_registry()
     except Exception as e:
@@ -1275,7 +1387,8 @@ def download_model(req: DownloadHFModelReq, _admin: User = Depends(require_admin
     if not repo_id:
         raise HTTPException(status_code=400, detail="repo_id is required")
 
-    model_id = req.model_id or _derive_model_id(repo_id)
+    canonical_model_id = _resolve_known_chat_model_id(repo_id)
+    model_id = req.model_id or canonical_model_id or _derive_model_id(repo_id)
     model_id = _require_safe_model_id(model_id)
 
     cfg = load_model_config()
@@ -1361,6 +1474,9 @@ def download_model(req: DownloadHFModelReq, _admin: User = Depends(require_admin
 
         try:
             upsert_gguf_model(model_id=model_id, path=path)
+            registry_patch = _recommended_registry_patch(model_id)
+            if registry_patch:
+                patch_model_registry_overrides(registry_patch)
             reload_model_config()
             reload_model_registry()
         except Exception as e:
@@ -1378,6 +1494,28 @@ def download_model(req: DownloadHFModelReq, _admin: User = Depends(require_admin
             "model_registry": MODEL_REGISTRY,
         }
 
+    aux_meta = _KNOWN_AUX_HF_REPOS.get(repo_id)
+    if aux_meta:
+        try:
+            snapshot_path = snapshot_download(
+                repo_id=repo_id,
+                cache_dir=HF_CACHE_DIR,
+                local_dir_use_symlinks=False,
+            )
+        except Exception as e:
+            _raise_http(f"Download failed: {e}", 500, e)
+
+        return {
+            "ok": True,
+            "model_type": "hf_aux",
+            "mode": "inventory",
+            "asset_id": aux_meta["asset_id"],
+            "component": aux_meta["component"],
+            "repo_id": repo_id,
+            "path": snapshot_path,
+            "stale_cleanup": stale_cleanup,
+        }
+
     # Default: HF model (non-GGUF)
     try:
         snapshot_download(
@@ -1390,6 +1528,9 @@ def download_model(req: DownloadHFModelReq, _admin: User = Depends(require_admin
 
     try:
         upsert_hf_model(model_id=model_id, repo_id=repo_id)
+        registry_patch = _recommended_registry_patch(model_id)
+        if registry_patch:
+            patch_model_registry_overrides(registry_patch)
         reload_model_config()
         reload_model_registry()
     except Exception as e:

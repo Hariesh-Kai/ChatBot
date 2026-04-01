@@ -296,3 +296,62 @@ def validate_policy_result(result: PolicyResult) -> bool:
             return False
 
     return True
+
+
+# =========================================================
+# FINAL POLICY ENTRYPOINT
+# =========================================================
+
+def apply_retrieval_policy(
+    *,
+    question: str,
+    rag_chunks: List[Dict[str, Any]],
+    company_document_id: str,
+    revision_number: str,
+    confidence: Optional[float] = None,
+) -> PolicyResult:
+    """
+    Final retrieval policy entrypoint.
+
+    This definition intentionally sits at the end of the module so duplicate
+    legacy stubs above cannot override the active feedback-aware policy.
+    """
+
+    if not ENABLE_RETRIEVAL_POLICY:
+        return PolicyResult(
+            chunks=rag_chunks,
+            policy_applied=False,
+            reason="policy_disabled",
+        )
+
+    if not rag_chunks:
+        return PolicyResult(
+            chunks=rag_chunks,
+            policy_applied=False,
+            reason="no_chunks",
+        )
+
+    try:
+        boosted = get_boosted_chunk_ids(company_document_id, revision_number)
+        if not boosted:
+            return PolicyResult(
+                chunks=rag_chunks,
+                policy_applied=False,
+                reason="no_feedback_data",
+            )
+
+        adjusted = _apply_boost(rag_chunks, boosted)
+        boosted_count = sum(1 for c in adjusted if c.get("_feedback_boosted"))
+        print(f"[POLICY] Applied feedback boost to {boosted_count}/{len(adjusted)} chunks")
+        return PolicyResult(
+            chunks=adjusted,
+            policy_applied=True,
+            reason=f"feedback_boost:{boosted_count}_chunks",
+        )
+    except Exception as e:
+        print(f"[POLICY] apply_retrieval_policy error (non-fatal): {e}")
+        return PolicyResult(
+            chunks=rag_chunks,
+            policy_applied=False,
+            reason=f"policy_error:{e}",
+        )

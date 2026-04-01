@@ -114,7 +114,7 @@ def save_active_document(
     *,
     session_id: str,
     company_document_id: str,
-    revision_number: int,
+    revision_number: str | int,
     collection_name: Optional[str] = None,
     filename: Optional[str] = None,
 ) -> None:

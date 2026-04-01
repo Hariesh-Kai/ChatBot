@@ -1,11 +1,7 @@
 # backend/llm/query_rewriter.py
 
 import re
-from typing import List, Optional, Tuple
-
-#  NEW: Import Lite LLM loader to perform the correction
-from backend.llm.loader import get_llm
-from backend.llm.model_selector import resolve_model_id
+from typing import List
 # QUERY REWRITER (NOW WITH SPELL CHECK)
 # ------------------------------------------------------------
 # Purpose:
@@ -19,82 +15,31 @@ VAGUE_PHRASES = {
     "what about this", "what about that", "details",
 }
 
+REFERENTIAL_TOKENS = {
+    "this", "that", "it", "its", "they", "them", "those", "these",
+    "same", "again", "previous", "above", "earlier",
+}
+
 NON_INFORMATIVE_MESSAGES = {
     "hi", "hello", "hey", "ok", "okay", "yes", "no", "thanks", "thank you",
 }
 
-# ============================================================
-#  LLM-BASED CORRECTION (The Fix)
-# ============================================================
-
-def _clean_with_llm(text: str) -> str:
+def _clean_question_text(text: str) -> str:
     """
-    Uses the Lite LLM to fix typos and grammar explicitly.
-    Example: "whta is the presure" -> "What is the pressure?"
+    Deterministic query cleanup.
+
+    Keep this stage non-generative so the rewriter can never answer the
+    question or inject unsupported content into intent classification and
+    retrieval.
     """
-    try:
-        # Load the configured Lite model (with selector fallback safeguards).
-        llm_info = get_llm(resolve_model_id("lite"))
-        
-        prompt = f"""<|start_header_id|>system<|end_header_id|>
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
 
-You are a query auto-corrector.
-Your ONLY job is to fix spelling and grammar errors in the user's text.
-- Do NOT answer the question.
-- Do NOT explain your changes.
-- Do NOT add punctuation if not needed.
-- Return ONLY the corrected text.
-
-Example:
-Input: whta is presure
-Output: What is pressure?
-
-<|eot_id|><|start_header_id|>user<|end_header_id|>
-
-Input: {text}
-Output:<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-"""
-
-        cleaned = ""
-
-        #  FIX: Handle Streaming Generator & Remove 'echo' arg
-        if llm_info["type"] == "gguf":
-            # The loader returns a generator, so we must consume it loop-by-loop.
-            # We removed 'echo=False' because the loader wrapper doesn't support it.
-            stream = llm_info["llm"](prompt, max_tokens=30, stop=["\n"])
-            
-            full_text = []
-            for chunk in stream:
-                # Chunk format: {'choices': [{'text': '...'}]}
-                content = chunk.get("choices", [{}])[0].get("text", "")
-                full_text.append(content)
-            
-            cleaned = "".join(full_text).strip()
-
-        else:
-            # HuggingFace fallback (remains same)
-            model = llm_info["model"]
-            tokenizer = llm_info["tokenizer"]
-            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-            tokens = model.generate(
-                **inputs, 
-                max_new_tokens=30, 
-                pad_token_id=tokenizer.eos_token_id,
-                do_sample=False
-            )
-            cleaned = tokenizer.decode(tokens[0], skip_special_tokens=True)
-            if "Output:" in cleaned:
-                cleaned = cleaned.split("Output:")[-1].strip()
-
-        # Safety: If LLM returns nothing or goes crazy, revert to original
-        if not cleaned or len(cleaned) > len(text) * 2:
-            return text
-            
-        return cleaned
-
-    except Exception as e:
-        print(f"Query correction failed: {e}")
-        return text
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"\s+([,;:.!?])", r"\1", cleaned)
+    cleaned = re.sub(r"([,;:.!?]){2,}", r"\1", cleaned)
+    return cleaned.strip()
 
 
 # ============================================================
@@ -106,7 +51,12 @@ def is_vague_question(question: str) -> bool:
     Detect whether a question lacks standalone meaning.
     """
     q = question.lower().strip()
-    return q in VAGUE_PHRASES or len(q.split()) <= 3
+    if not q:
+        return True
+    if q in VAGUE_PHRASES:
+        return True
+    tokens = re.findall(r"[a-z0-9]+", q)
+    return any(token in REFERENTIAL_TOKENS for token in tokens)
 
 
 def rewrite_question(
@@ -115,8 +65,8 @@ def rewrite_question(
 ) -> str:
     """
     Master rewrite function:
-    1. Fix typos (LLM)
-    2. Resolve context (History)
+    1. Clean formatting deterministically
+    2. Resolve context from history
     """
 
     if not question:
@@ -125,7 +75,7 @@ def rewrite_question(
     # --------------------------------------------------------
     # 1️⃣ STEP 1: FIX TYPOS & GRAMMAR
     # --------------------------------------------------------
-    clean_question = _clean_with_llm(question)
+    clean_question = _clean_question_text(question)
     
     if clean_question.strip().lower() != question.strip().lower():
         print(f"✨ [REWRITE] Typo fix: '{question}' -> '{clean_question}'")

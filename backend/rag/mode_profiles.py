@@ -10,8 +10,10 @@ IntentLabel = Literal[
     "compare",
     "comparison",
     "factual",
+    "fact_lookup",
     "lookup",
     "definition",
+    "reasoning",
     "greeting",
     "conversation",
     "confirmation",
@@ -52,10 +54,11 @@ def resolve_effective_retrieval_mode(
         return normalize_rag_mode(mode)
 
     normalized_intent = str(intent or "").strip().lower()
-    if normalized_intent in {"summary", "summarize", "compare", "comparison"}:
+    if normalized_intent in {"summary", "summarize", "compare", "comparison", "reasoning"}:
         return "high_fidelity"
     if normalized_intent in {
         "factual",
+        "fact_lookup",
         "lookup",
         "definition",
         "greeting",
@@ -63,6 +66,8 @@ def resolve_effective_retrieval_mode(
         "confirmation",
     }:
         return "fast"
+    if normalized_intent == "follow_up":
+        return "balanced"
     return "balanced"
 
 

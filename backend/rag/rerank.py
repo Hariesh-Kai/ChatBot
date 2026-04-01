@@ -1,15 +1,17 @@
 # backend/rag/rerank.py
 
 import logging
+from pathlib import Path
 from typing import List, Optional
 
 from flashrank import Ranker, RerankRequest
 from langchain_core.documents import Document
+from backend.llm.model_config_store import HF_CACHE_DIR
 
 logger = logging.getLogger(__name__)
 
 _RERANK_MODEL_NAME = "ms-marco-MiniLM-L-12-v2"
-_RERANK_CACHE_DIR = "models"
+_RERANK_CACHE_DIR = str(Path(HF_CACHE_DIR) / "flashrank")
 _ranker: Optional[Ranker] = None
 _ranker_unavailable = False
 

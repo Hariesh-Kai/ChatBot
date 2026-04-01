@@ -99,11 +99,4 @@ def detect_rule_intent(text: str) -> Optional[Intent]:
     # --------------------------------------------------------
     # 4️⃣ Greeting phrases at sentence start
     # --------------------------------------------------------
-    for g in GREETINGS:
-        if text.startswith(f"{g} "):
-            return "greeting"
-
-    # --------------------------------------------------------
-    # Let ML classifier decide
-    # --------------------------------------------------------
     return None

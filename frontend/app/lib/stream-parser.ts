@@ -90,11 +90,10 @@ export class StreamParser {
         const evt = parseLLMUIEvent(line);
         if (evt) {
           frames.push({ type: "event", value: evt });
-        } else {
-          frames.push({ type: "text", value: line });
         }
       } catch {
-        frames.push({ type: "text", value: line });
+        // Ignore malformed/unknown UI event frames rather than leaking
+        // raw internal protocol messages into the chat transcript.
       }
     }
 

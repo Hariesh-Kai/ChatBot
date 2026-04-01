@@ -136,8 +136,12 @@ models/
 cache/
 
 # Object Storage Data
+minio/
 minio-data/
 postgres-data/
+
+# Local document corpus / test files
+PDF/
 
 # =======================================
 # IDE & SYSTEM FILES

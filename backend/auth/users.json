@@ -1,27 +1,3 @@
 {
-  "users": [
-    {
-      "username": "hariesh",
-      "email": "hariesh@gmail.com",
-      "role": "piping_admin",
-      "disabled": false,
-      "password_hash": "fac30e29c33ca6320d431c52cc63e0c4b50cc2540d67dd23a3d64153bb48ad0c",
-      "salt": "9406799d4f875cb634c4d74f87b6c19c",
-      "created_at": 1772441689,
-      "updated_at": 1772441690,
-      "resources": {
-        "postgres": {
-          "database": "chat_ui_hariesh",
-          "created": true
-        },
-        "minio": {
-          "bucket": "chat-ui-hariesh",
-          "created": true
-        },
-        "redis": {
-          "namespace": "user:hariesh:"
-        }
-      }
-    }
-  ]
+  "users": []
 }

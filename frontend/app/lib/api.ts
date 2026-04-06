@@ -142,6 +142,66 @@ export interface UploadIngestionStatusResponse {
   } | null;
 }
 
+export interface PreprocessingPreviewElement {
+  id: string;
+  type: string;
+  page: number;
+  text: string;
+  bbox?: string;
+  html?: string;
+  metadata?: Record<string, any>;
+  discard_reason?: string;
+}
+
+export interface PreprocessingPreviewChunk {
+  id: string;
+  content: string;
+  page: number;
+  bbox?: string;
+  section?: string;
+  chunk_type?: string;
+  parent_id?: string;
+  doc_id?: string;
+}
+
+export interface PreprocessingPreviewResponse {
+  job_id: string;
+  pdf_path: string;
+  company_document_id: string;
+  revision_number: string;
+  source_file: string;
+  preview_mode?: "quick" | "full";
+  requested_scope?: "auto" | "quick" | "full";
+  can_load_full?: boolean;
+  document_stats?: {
+    page_count?: number;
+    file_size_mb?: number;
+    is_large?: boolean;
+    quick_page_limit?: number;
+  };
+  indexed_pages?: number[];
+  metadata_candidates: Record<string, { value?: string | null; confidence?: number | null }>;
+  metadata_evidence: PreprocessingPreviewElement[];
+  tables: PreprocessingPreviewElement[];
+  chunks: PreprocessingPreviewChunk[];
+  removed_elements: PreprocessingPreviewElement[];
+  summary: Record<string, any>;
+}
+
+export interface PreprocessingPreviewPageResponse {
+  job_id: string;
+  page: number;
+  requested_scope?: "auto" | "quick" | "full";
+  preview_mode?: "quick" | "full";
+  source_scope?: "quick" | "full" | "page";
+  available_in_scope?: boolean;
+  elements: PreprocessingPreviewElement[];
+  tables: PreprocessingPreviewElement[];
+  chunks: PreprocessingPreviewChunk[];
+  removed_elements: PreprocessingPreviewElement[];
+  summary: Record<string, any>;
+}
+
 /* =========================================================
    TYPES — METADATA UPDATE
 ========================================================= */
@@ -344,6 +404,39 @@ export async function fetchUploadIngestionStatus(params: {
   }
 
   const res = await fetch(`${API_BASE}/upload/status?${query.toString()}`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+
+  if (!res.ok) throw new Error(await normalizeError(res));
+  return res.json();
+}
+
+export async function fetchUploadPreprocessingPreview(
+  jobId: string,
+  scope: "auto" | "quick" | "full" = "auto"
+): Promise<PreprocessingPreviewResponse> {
+  const query = new URLSearchParams({ job_id: jobId, scope });
+  const res = await fetch(`${API_BASE}/upload/preview?${query.toString()}`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+
+  if (!res.ok) throw new Error(await normalizeError(res));
+  return res.json();
+}
+
+export async function fetchUploadPreprocessingPagePreview(
+  jobId: string,
+  page: number,
+  scope: "auto" | "quick" | "full" = "auto"
+): Promise<PreprocessingPreviewPageResponse> {
+  const query = new URLSearchParams({
+    job_id: jobId,
+    page: String(page),
+    scope,
+  });
+  const res = await fetch(`${API_BASE}/upload/preview/page-data?${query.toString()}`, {
     credentials: "include",
     cache: "no-store",
   });

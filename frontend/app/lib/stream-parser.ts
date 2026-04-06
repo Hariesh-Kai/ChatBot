@@ -15,6 +15,24 @@ import {
   LLMUIEvent,
 } from "./llm-ui-events";
 
+const LEAKED_SPECIAL_TOKENS = [
+  "<|end|>",
+  "<|system|>",
+  "<|user|>",
+  "<|assistant|>",
+  "<|eot_id|>",
+  "<|start_header_id|>",
+  "<|end_header_id|>",
+];
+
+function stripLeakedTokens(value: string): string {
+  let next = value || "";
+  for (const token of LEAKED_SPECIAL_TOKENS) {
+    next = next.split(token).join("");
+  }
+  return next;
+}
+
 export type StreamFrame =
   | { type: "text"; value: string }
   | { type: "event"; value: LLMUIEvent };
@@ -49,9 +67,10 @@ export class StreamParser {
           /[\s.,!?]\s*$/.test(this.textBuffer);
 
         if (shouldFlush) {
+          const sanitized = stripLeakedTokens(this.textBuffer);
           frames.push({
             type: "text",
-            value: this.textBuffer,
+            value: sanitized,
           });
           this.textBuffer = "";
         }
@@ -64,9 +83,10 @@ export class StreamParser {
       // -------------------------------------------------
       if (eventIdx > 0) {
         this.textBuffer += this.buffer.slice(0, eventIdx);
+        const sanitized = stripLeakedTokens(this.textBuffer);
         frames.push({
           type: "text",
-          value: this.textBuffer,
+          value: sanitized,
         });
         this.textBuffer = "";
         this.buffer = this.buffer.slice(eventIdx);
@@ -108,17 +128,19 @@ export class StreamParser {
     const frames: StreamFrame[] = [];
 
     if (this.textBuffer) {
+      const sanitized = stripLeakedTokens(this.textBuffer);
       frames.push({
         type: "text",
-        value: this.textBuffer,
+        value: sanitized,
       });
       this.textBuffer = "";
     }
 
     if (this.buffer) {
+      const sanitized = stripLeakedTokens(this.buffer);
       frames.push({
         type: "text",
-        value: this.buffer,
+        value: sanitized,
       });
       this.buffer = "";
     }

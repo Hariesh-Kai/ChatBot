@@ -10,13 +10,15 @@ from langchain_core.documents import Document
 from backend.memory.redis_memory import clear_used_chunk_ids
 #  Import the streaming preprocessor
 from backend.rag.preprocess import stream_pdf_to_elements
-from backend.rag.mode_profiles import normalize_rag_mode
+from backend.rag.mode_profiles import DEFAULT_RAG_MODE, normalize_rag_mode
 from backend.rag.collections import (
     DEFAULT_RAG_COLLECTION_NAME,
     normalize_collection_name,
 )
-from backend.rag.preprocessor_registry import normalize_rag_preprocessor
+from backend.rag.preprocessor_registry import DEFAULT_RAG_PREPROCESSOR, normalize_rag_preprocessor
 from backend.rag.chunk import ContextAwareChunker
+from backend.rag.chunk_strategy import get_chunk_config
+from backend.rag.filtering import FILTER_VERSION, filter_element_dicts
 from backend.rag.metadata import (
     extract_document_metadata,
     enrich_chunks,
@@ -33,7 +35,52 @@ from backend.state.dev_settings import get_dev_settings
 # PIPELINE MODES
 # ============================================================
 
-PipelineMode = Literal["metadata", "commit"]
+PipelineMode = Literal["metadata", "preview", "commit"]
+
+
+def _load_chunk_content_sample(elements_path: Path, *, max_chars: int = 1500) -> str:
+    """Load a small text sample so chunk strategy can detect document type."""
+    try:
+        raw = json.loads(elements_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    parts: List[str] = []
+    total_chars = 0
+
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or item.get("content") or "").strip()
+        if not text:
+            continue
+        parts.append(text)
+        total_chars += len(text)
+        if total_chars >= max_chars:
+            break
+
+    return " ".join(parts)[:max_chars]
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+
+
+def _filter_report_version(path: Path) -> int:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+
+    if not isinstance(payload, dict):
+        return 0
+
+    try:
+        return int(payload.get("filter_version") or 0)
+    except Exception:
+        return 0
 
 
 # ============================================================
@@ -75,17 +122,21 @@ def run_pipeline(
         settings = get_dev_settings()
     except Exception:
         settings = {}
+    fast_document_processing = bool(
+        extra_metadata.get("enable_fast_document_processing")
+        if extra_metadata.get("enable_fast_document_processing") is not None
+        else settings.get("enable_fast_document_processing", False)
+    )
     resolved_rag_mode = normalize_rag_mode(
         rag_mode
         or extra_metadata.get("rag_ingest_mode")
         or extra_metadata.get("rag_mode")
-        or settings.get("rag_ingest_mode")
-        or settings.get("rag_mode")
+        or (DEFAULT_RAG_MODE if fast_document_processing else "high_fidelity")
     )
     resolved_preprocessor = normalize_rag_preprocessor(
         preprocessor
         or extra_metadata.get("rag_preprocessor")
-        or settings.get("rag_preprocessor")
+        or (DEFAULT_RAG_PREPROCESSOR if fast_document_processing else "unstructured")
     )
     resolved_collection_name = normalize_collection_name(
         collection_name
@@ -96,6 +147,13 @@ def run_pipeline(
     print(f"[PIPELINE] rag_ingest_mode={resolved_rag_mode}")
     print(f"[PIPELINE] rag_preprocessor={resolved_preprocessor}")
     print(f"[PIPELINE] rag_collection_name={resolved_collection_name}")
+
+    # Normalize retrieval-quality metadata early so later chunk/enrichment
+    # stages can score chunks even when they are loaded from an existing cache.
+    extra_metadata = dict(extra_metadata or {})
+    extra_metadata.setdefault("enable_fast_document_processing", fast_document_processing)
+    extra_metadata.setdefault("rag_preprocessor", resolved_preprocessor)
+    extra_metadata.setdefault("rag_ingest_mode", resolved_rag_mode)
 
 
     job_dir = Path(job_dir)
@@ -117,13 +175,18 @@ def run_pipeline(
 
     #  OPTIMIZATION: Separate cache for Preview vs Full Ingest
     # This ensures we don't accidentally treat a partial Page 1 scan as the full document later.
-    if mode == "metadata":
-        elements_path = job_dir / "page1_preview.json"
-    else:
-        elements_path = job_dir / "filtered_elements.json"
-
+    preview_elements_path = job_dir / "page1_preview.json"
+    raw_elements_path = job_dir / "raw_elements.json"
+    filtered_elements_path = job_dir / "filtered_elements.json"
+    removed_elements_path = job_dir / "removed_elements.json"
+    filter_report_path = job_dir / "filter_report.json"
     chunks_path = job_dir / "chunks.json"
     enriched_path = job_dir / "enriched_chunks.json"
+
+    if mode == "metadata":
+        elements_path = preview_elements_path
+    else:
+        elements_path = raw_elements_path
 
     # --------------------------------------------------
     # 1️⃣ PDF → ELEMENTS (STREAMING MODE)
@@ -173,6 +236,37 @@ def run_pipeline(
     if not elements_path.exists():
         raise RuntimeError(f"Preprocess failed: {elements_path.name} not created")
 
+    existing_filter_version = _filter_report_version(filter_report_path)
+    if mode != "metadata" and (
+        not filtered_elements_path.exists()
+        or not removed_elements_path.exists()
+        or not filter_report_path.exists()
+        or existing_filter_version != FILTER_VERSION
+    ):
+        try:
+            raw_elements = json.loads(raw_elements_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"Failed to read raw preprocessing artifacts: {exc}") from exc
+
+        yield progress_event(
+            value=22,
+            label="Removing headers, footers, image placeholders, and boilerplateâ€¦",
+        )
+        filter_result = filter_element_dicts(raw_elements if isinstance(raw_elements, list) else [])
+        _write_json(filtered_elements_path, filter_result["filtered_elements"])
+        _write_json(removed_elements_path, filter_result["removed_elements"])
+        _write_json(filter_report_path, filter_result["summary"])
+        print(
+            "[PIPELINE] Filtering complete | "
+            f"kept={len(filter_result['filtered_elements'])} "
+            f"removed={len(filter_result['removed_elements'])}"
+        )
+
+    if mode != "metadata":
+        elements_path = filtered_elements_path
+        if not elements_path.exists():
+            raise RuntimeError(f"Preprocess failed: {elements_path.name} not created")
+
     # ==================================================
     # 🔹 MODE: METADATA ONLY (NO CHUNKS, NO DB)
     # ==================================================
@@ -212,6 +306,20 @@ def run_pipeline(
                     "value": metadata.get("revision_code", {}).get("value"),
                     "confidence": metadata.get("revision_code", {}).get("confidence"),
                 },
+                {
+                    "key": "document_number",
+                    "label": "Document Number",
+                    "placeholder": "e.g. 363010BGRB00508",
+                    "value": metadata.get("document_number", {}).get("value"),
+                    "confidence": metadata.get("document_number", {}).get("confidence"),
+                },
+                {
+                    "key": "project_name",
+                    "label": "Project Name",
+                    "placeholder": "e.g. Agogo Integrated West Hub",
+                    "value": metadata.get("project_name", {}).get("value"),
+                    "confidence": metadata.get("project_name", {}).get("confidence"),
+                },
             ],
         }
 
@@ -230,7 +338,25 @@ def run_pipeline(
     # 2️⃣ CONTEXT-AWARE CHUNKING
     # --------------------------------------------------
 
-    chunker = ContextAwareChunker()
+    chunk_config = get_chunk_config(
+        filename=str(source_file or pdf_path),
+        document_title=str(
+            extra_metadata.get("document_title")
+            or extra_metadata.get("document_type")
+            or ""
+        ),
+        content_sample=_load_chunk_content_sample(elements_path),
+        metadata=extra_metadata,
+    )
+    print(
+        "[PIPELINE] chunk_config="
+        f"{chunk_config.doc_type} size={chunk_config.chunk_size} overlap={chunk_config.chunk_overlap}"
+    )
+
+    chunker = ContextAwareChunker(
+        chunk_size=chunk_config.chunk_size,
+        chunk_overlap=chunk_config.chunk_overlap,
+    )
     yield  progress_event(value=30, label="Chunking document…")
 
     chunker.process(

@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import torch
 
 from backend.llm.loader import DEVICE as LLM_DEVICE
-from backend.queue.celery_app import is_celery_enabled, use_celery_for_outbox
+from backend.queue.celery_app import celery_app, is_celery_enabled, use_celery_for_outbox
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -18,6 +18,13 @@ def _safe_int(value: Any, default: int) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
 
 
 def _safe_pkg_version(package_name: str) -> Optional[str]:
@@ -44,6 +51,16 @@ def _masked_url(raw_url: Optional[str]) -> Optional[str]:
         return None
 
 
+def _celery_configured_broker_url() -> Optional[str]:
+    try:
+        if celery_app is None:
+            return None
+        value = str(getattr(celery_app.conf, "broker_url", "") or "").strip()
+        return value or None
+    except Exception:
+        return None
+
+
 def _tcp_check(host: str, port: int, timeout_sec: float = 1.0) -> Tuple[bool, Optional[str]]:
     try:
         with socket.create_connection((host, port), timeout=timeout_sec):
@@ -61,6 +78,12 @@ def _resolve_rabbitmq_target() -> Dict[str, Any]:
             broker_url = value
             broker_source = env_name
             break
+
+    if not broker_url and is_celery_enabled():
+        configured = _celery_configured_broker_url()
+        if configured:
+            broker_url = configured
+            broker_source = "celery_app"
 
     host = (os.getenv("RABBITMQ_HOST") or "").strip() or None
     port = _safe_int(os.getenv("RABBITMQ_PORT"), 5672)
@@ -155,6 +178,7 @@ def get_rabbitmq_status() -> Dict[str, Any]:
 def get_software_status() -> Dict[str, Any]:
     celery_mode = is_celery_enabled()
     outbox_via_celery = use_celery_for_outbox()
+    rabbit_target = _resolve_rabbitmq_target()
 
     packages = {
         "python": sys.version.split(" ")[0],
@@ -204,11 +228,7 @@ def get_software_status() -> Dict[str, Any]:
             "celery_enabled": celery_mode,
             "outbox_via_celery": outbox_via_celery,
             "default_queue": os.getenv("CELERY_DEFAULT_QUEUE", "chatui.default"),
-            "broker_source": (
-                "CELERY_BROKER_URL"
-                if (os.getenv("CELERY_BROKER_URL") or "").strip()
-                else ("RABBITMQ_URL" if (os.getenv("RABBITMQ_URL") or "").strip() else None)
-            ),
+            "broker_source": rabbit_target.get("source"),
         },
     }
 

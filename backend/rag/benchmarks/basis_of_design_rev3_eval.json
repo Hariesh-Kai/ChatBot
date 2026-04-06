@@ -1,0 +1,83 @@
+{
+  "name": "basis_of_design_rev3_eval",
+  "defaults": {
+    "company_document_id": "53f0f96c-0b41-5319-9d8c-cfa6b8868ec7",
+    "revision_number": "3"
+  },
+  "cases": [
+    {
+      "id": "metadata_company_document_id",
+      "question": "What is the company document ID?",
+      "expected_outcome": "release",
+      "challenge_tags": ["repeated_metadata", "title_page_metadata"],
+      "expected_pages": [1],
+      "expected_source_files": ["Basis of Design.pdf"],
+      "expected_answer_keywords": ["363010BGRB00508", "company document id"],
+      "expected_answer": "The company document ID is 363010BGRB00508."
+    },
+    {
+      "id": "local_acts_rules_regulation",
+      "question": "What categories are listed under local acts, laws, rules and regulation?",
+      "expected_outcome": "release",
+      "challenge_tags": ["enumerated_list", "section_heading_noise"],
+      "expected_pages": [14],
+      "expected_source_files": ["Basis of Design.pdf"],
+      "expected_answer_keywords": ["Angolan laws and regulations", "Project Technical Documents", "International codes and standards"],
+      "expected_answer": "The categories listed are Angolan Laws and Regulations, Project Technical Documents, Drawings or Company Standards, and International codes and standards."
+    },
+    {
+      "id": "casing_design_salt_diapirs",
+      "question": "How many wells will cross the salt diapirs?",
+      "expected_outcome": "release",
+      "challenge_tags": ["numeric_fact", "nearby_numeric_noise"],
+      "expected_pages": [43],
+      "expected_source_files": ["Basis of Design.pdf"],
+      "expected_answer_keywords": ["12 wells", "salt diapirs"],
+      "expected_answer": "A number of 12 wells will cross the salt diapirs."
+    },
+    {
+      "id": "minimum_operating_temperature",
+      "question": "What is the minimum recommended operating temperature for FPSO design purposes?",
+      "expected_outcome": "release",
+      "challenge_tags": ["competing_numbers", "temperature_units"],
+      "expected_pages": [62],
+      "expected_source_files": ["Basis of Design.pdf"],
+      "expected_answer_keywords": ["40°C", "minimum recommended operating temperature"],
+      "expected_answer": "The minimum recommended operating temperature for FPSO design purposes is 40°C."
+    },
+    {
+      "id": "emulsion_inversion_point",
+      "question": "At what water cut may the emulsion inversion point be fixed for Agogo fluid?",
+      "expected_outcome": "release",
+      "challenge_tags": ["competing_numbers", "temperature_vs_wc"],
+      "expected_pages": [65],
+      "expected_source_files": ["Basis of Design.pdf"],
+      "expected_answer_keywords": ["40%", "WC", "emulsion inversion point"],
+      "expected_answer": "For Agogo fluid, the emulsion inversion point may be fixed at 40% WC."
+    },
+    {
+      "id": "metadata_revision_number",
+      "question": "What is the current revision number of the document?",
+      "expected_outcome": "release",
+      "challenge_tags": ["repeated_metadata", "revision_block"],
+      "expected_pages": [1],
+      "expected_source_files": ["Basis of Design.pdf"],
+      "expected_answer_keywords": ["05", "revision number"],
+      "expected_answer": "The revision number is 05."
+    },
+    {
+      "id": "unanswerable_project_budget",
+      "question": "What is the project budget?",
+      "expected_outcome": "abstain",
+      "challenge_tags": ["unanswerable", "generic_business_query"],
+      "expected_source_files": ["Basis of Design.pdf"]
+    },
+    {
+      "id": "unanswerable_crew_capacity",
+      "question": "What is the maximum crew capacity of the FPSO?",
+      "expected_outcome": "abstain",
+      "challenge_tags": ["unanswerable", "capacity_distractor"],
+      "expected_source_files": ["Basis of Design.pdf"]
+    }
+  ]
+}

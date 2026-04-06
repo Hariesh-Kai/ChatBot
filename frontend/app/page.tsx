@@ -1652,7 +1652,12 @@ function AuthedHome({
     return;
   }
     
-    if (result.next_action === "WAIT_FOR_METADATA") {
+    if (
+      result.next_action === "WAIT_FOR_METADATA" ||
+      result.next_action === "READY_FOR_PROCESSING" ||
+      result.next_action === "READY_TO_COMMIT" ||
+      result.next_action === "READY_FOR_COMMIT"
+    ) {
       setUploadPipeline(null);
 
       const chatId = uploadChatIdRef.current ?? activeId;
@@ -1665,7 +1670,7 @@ function AuthedHome({
                   ...m,
                   status: "progress",
                   progress: 40,
-                  progressLabel: "Waiting for metadata...",
+                  progressLabel: "Review preprocessing preview...",
                 }
               : m
           )
@@ -1689,91 +1694,6 @@ function AuthedHome({
       });
 
       return;
-    }
-
-    // Accept either backend string to be robust
-    if (
-      result.next_action === "READY_FOR_PROCESSING" ||
-      result.next_action === "READY_TO_COMMIT" ||
-      result.next_action === "READY_FOR_COMMIT"
-    ) {
-      try {
-        const chatId = uploadChatIdRef.current ?? activeId;
-        const msgId = uploadProgressMsgIdRef.current;
-
-        setUploadPipeline({ percent: 40, label: "Preparing document..." });
-        if (chatId && msgId) {
-          updateMessagesForChat(chatId, (prev) =>
-            prev.map((m) =>
-              m.id === msgId
-                ? {
-                    ...m,
-                    status: "progress",
-                    progress: 40,
-                    progressLabel: "Preparing document...",
-                  }
-                : m
-            )
-          );
-        }
-
-        // Streaming commit: shows chunking / embedding / indexing progress
-        await updateMetadata(
-          { job_id: result.job_id, metadata: {}, force: true },
-          (evt) => {
-            if (!evt) return;
-            const raw = typeof evt.progress === "number" ? evt.progress : 50;
-            const pct = mapCommitProgress(raw);
-            const lbl = evt.message ?? "Processing document...";
-
-            setUploadPipeline({ percent: pct, label: lbl });
-
-            if (chatId && msgId) {
-              updateMessagesForChat(chatId, (prev) =>
-                prev.map((m) =>
-                  m.id === msgId
-                    ? {
-                        ...m,
-                        status: "progress",
-                        progress: pct,
-                        progressLabel: lbl,
-                      }
-                    : m
-                )
-              );
-            }
-          }
-        );
-
-        setUploadPipeline(null);
-        finalizeUploadSuccess();
-
-        if (chatId && msgId) {
-          updateMessagesForChat(chatId, (prev) =>
-            prev.map((m) =>
-              m.id === msgId
-                ? {
-                    ...m,
-                    status: "progress",
-                    content: "",
-                    progress: 45,
-                    progressLabel: "Queued for background processing...",
-                  }
-                : m
-            )
-          );
-
-          addPendingIngestion({
-            jobId: typeof result?.job_id === "string" ? result.job_id : null,
-            sessionId: chatId,
-            chatId,
-            messageId: msgId,
-          });
-        }
-      } catch (err: any) {
-        setUploadPipeline(null);
-        handleSidebarUploadError(err?.message || "Failed to process document.");
-      }
     }
 
   };

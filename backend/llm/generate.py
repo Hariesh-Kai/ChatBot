@@ -33,6 +33,7 @@ from backend.llm.response_policy import apply_response_policy
 from backend.contracts.ui_events import text_event
 from backend.contracts.ui_constants import UI_EVENT_PREFIX
 from backend.rag.grounding import check_grounding
+from backend.state.dev_settings import get_dev_settings
 
 
 
@@ -193,10 +194,42 @@ def _lite_fallback_model_id(current_model_id: str) -> Optional[str]:
     return fallback_id
 
 
-def _finalize_fact_answer(parts: List[str], *, verbosity: str) -> str:
+def _finalize_fact_answer(
+    parts: List[str],
+    *,
+    question: Optional[str] = None,
+    context_chunks: Optional[List[Dict[str, str]]] = None,
+    verbosity: str,
+) -> str:
     raw = clean_model_output("".join(parts or []))
     compact = apply_response_policy(raw, verbosity=verbosity)
-    return (compact or raw or "").strip()
+    final = (compact or raw or "").strip()
+    if not final:
+        return ""
+
+    try:
+        settings = get_dev_settings()
+    except Exception:
+        settings = {}
+
+    if (
+        bool(settings.get("enable_eval_gate", False))
+        and question
+        and context_chunks
+    ):
+        try:
+            from backend.llm.orchestrator import release_strict_factual_answer
+
+            return release_strict_factual_answer(
+                question=question,
+                answer=final,
+                context_chunks=context_chunks,
+                verbosity=verbosity,
+            )
+        except Exception as exc:
+            print(f"[ORCH] Strict factual release fallback: {exc}")
+
+    return final
 
 
 # ============================================================
@@ -241,15 +274,38 @@ def generate_answer_stream(
         
         return
 
+    try:
+        settings = get_dev_settings()
+    except Exception:
+        settings = {}
+
+    enable_agent_pipeline = bool(settings.get("enable_agent_pipeline", False))
+    enable_eval_gate = bool(settings.get("enable_eval_gate", False))
+
     policy = infer_answer_policy(question)
     style = decide_answer_style(question, context_chunks)
     context_text = _context_to_text(context_chunks)
-    enforce_compact_fact_answer = bool(policy.strict_factual and context_chunks)
+    enforce_compact_fact_answer = bool(
+        enable_eval_gate and policy.strict_factual and context_chunks
+    )
 
-    if enforce_compact_fact_answer:
+    if enable_eval_gate and enforce_compact_fact_answer:
         max_tokens = min(max_tokens, 96)
+        try:
+            from backend.llm.orchestrator import resolve_strict_factual_answer
 
-    if model in ("lite", "base"):
+            deterministic = resolve_strict_factual_answer(
+                question=question,
+                context_chunks=context_chunks,
+                verbosity=style.verbosity,
+            )
+            if deterministic and deterministic.get("final_answer"):
+                yield str(deterministic["final_answer"])
+                return
+        except Exception as exc:
+            print(f"[ORCH] Strict factual heuristic fallback: {exc}")
+
+    if model in ("lite", "base") and enable_agent_pipeline and not enforce_compact_fact_answer:
         try:
             from backend.llm.orchestrator import run_agentic_review_pipeline
 
@@ -281,16 +337,15 @@ def generate_answer_stream(
                 # Last-resort fallback when registry is unavailable.
                 model_id = "lite_llama_8b"
         else:
-            prompt = (
-                build_prompt_hf(
+            if enable_agent_pipeline and not enforce_compact_fact_answer:
+                prompt = build_prompt_cot(question, context_chunks, chat_history)
+            else:
+                prompt = build_prompt_hf(
                     question,
                     context_chunks,
                     chat_history,
                     answer_style=style,
                 )
-                if enforce_compact_fact_answer
-                else build_prompt_cot(question, context_chunks, chat_history)
-            )
 
             try:
                 if model == "net":
@@ -322,6 +377,8 @@ def generate_answer_stream(
                         if enforce_compact_fact_answer:
                             final = _finalize_fact_answer(
                                 buffered_parts,
+                                question=question,
+                                context_chunks=context_chunks,
                                 verbosity=style.verbosity,
                             )
                             if final:
@@ -403,6 +460,8 @@ def generate_answer_stream(
                     if enforce_compact_fact_answer:
                         final = _finalize_fact_answer(
                             buffered_parts,
+                            question=question,
+                            context_chunks=context_chunks,
                             verbosity=style.verbosity,
                         )
                         if final:
@@ -426,7 +485,7 @@ def generate_answer_stream(
                 return
 
             # --- Grounding check (soft warning, non-blocking) ---
-            if context_chunks and collected:
+            if enable_eval_gate and context_chunks and collected:
                 full_answer = "".join(collected)
                 try:
                     grounding = check_grounding(full_answer, context_chunks)
@@ -451,7 +510,7 @@ def generate_answer_stream(
         max_tokens = min(max_tokens, 512 if context_chunks else 256)
 
     # -------- Advanced reasoning (optional)
-    if ADVANCED_REASONING and not _is_conversational(intent):
+    if enable_agent_pipeline and ADVANCED_REASONING and not _is_conversational(intent):
         try:
             from backend.llm.orchestrator import deliberate_answer
 
@@ -521,7 +580,11 @@ def generate_answer_stream(
     try:
         if llm["type"] == "gguf":
             buffered_parts: List[str] = []
-            for chunk in llm["llm"](prompt, max_tokens=max_tokens):
+            for chunk in llm["llm"](
+                prompt,
+                max_tokens=max_tokens,
+                stop=_PROMPT_ECHO_STOP_MARKERS,
+            ):
                 if session_id and is_aborted(session_id):
                     yield ""
                     return
@@ -541,6 +604,8 @@ def generate_answer_stream(
             if enforce_compact_fact_answer:
                 final = _finalize_fact_answer(
                     buffered_parts,
+                    question=question,
+                    context_chunks=context_chunks,
                     verbosity=style.verbosity,
                 )
                 if final:
@@ -602,6 +667,8 @@ def generate_answer_stream(
             if enforce_compact_fact_answer:
                 final = _finalize_fact_answer(
                     buffered_parts,
+                    question=question,
+                    context_chunks=context_chunks,
                     verbosity=style.verbosity,
                 )
                 if final:
@@ -622,7 +689,7 @@ def generate_answer_stream(
         return
 
     # --- Grounding check for lite mode (soft warning, non-blocking) ---
-    if context_chunks and collected:
+    if enable_eval_gate and context_chunks and collected:
         full_answer = "".join(collected)
         try:
             grounding = check_grounding(full_answer, context_chunks)

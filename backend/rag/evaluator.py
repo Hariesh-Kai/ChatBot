@@ -32,6 +32,43 @@ WEIGHT_PRECISION      = 0.20
 QUALITY_HIGH   = 0.75
 QUALITY_MEDIUM = 0.50
 
+_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "how",
+    "in",
+    "is",
+    "it",
+    "many",
+    "much",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "their",
+    "there",
+    "these",
+    "this",
+    "to",
+    "was",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "will",
+    "with",
+}
+
 
 # ============================================================
 # HELPERS
@@ -40,6 +77,11 @@ QUALITY_MEDIUM = 0.50
 def _tokenize(text: str) -> set:
     """Lowercase alphanum tokens from text."""
     return set(re.findall(r"[a-z0-9]+", text.lower())) if text else set()
+
+
+def _content_tokens(text: str) -> set:
+    """Meaningful content tokens with common filler words removed."""
+    return _tokenize(text) - _STOPWORDS
 
 
 def _sentence_split(text: str) -> List[str]:
@@ -71,7 +113,7 @@ def _faithfulness(answer: str, chunk_corpus: str) -> float:
     for sent in checkable:
         sent_tokens = _tokenize(sent)
         # At least 40% of the sentence's meaningful tokens must be in corpus
-        meaningful = sent_tokens - {"the", "a", "an", "is", "are", "of", "in"}
+        meaningful = sent_tokens - _STOPWORDS
         if not meaningful:
             grounded += 1
             continue
@@ -88,8 +130,8 @@ def _faithfulness(answer: str, chunk_corpus: str) -> float:
 # ============================================================
 
 def _answer_relevance(question: str, answer: str) -> float:
-    q_tokens = _tokenize(question) - {"what", "is", "the", "how", "a", "an", "of"}
-    a_tokens = _tokenize(answer)
+    q_tokens = _content_tokens(question)
+    a_tokens = _content_tokens(answer) or _tokenize(answer)
 
     if not q_tokens:
         return 1.0

@@ -85,8 +85,15 @@ def get_preprocess_profile(
     """
     is_preview = str(pipeline_mode or "").lower() == "metadata"
 
-    # Keep metadata preview lightweight even in high_fidelity mode.
     if is_preview:
+        if rag_mode == "high_fidelity":
+            return {
+                "strategy": "hi_res",
+                "infer_table_structure": True,
+                "extract_images_in_pdf": True,
+                "extract_image_block_types": ["Image", "Table"],
+                "prefer_quantized_hi_res": False,
+            }
         return {
             "strategy": "fast",
             "infer_table_structure": False,

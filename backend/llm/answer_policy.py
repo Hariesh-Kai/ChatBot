@@ -104,6 +104,12 @@ def infer_answer_policy(
     is_fact_lookup = q.startswith((
         "what is the",
         "what are the",
+        "what categories are",
+        "which categories are",
+        "what categories",
+        "which categories",
+        "at what",
+        "at which",
         "state",
         "list",
         "give",
@@ -113,14 +119,13 @@ def infer_answer_policy(
         "how many",
     ))
 
-    is_reasoning = q.startswith((
-        "why",
-        "how",
-        "explain",
-        "compare",
-        "describe",
-        "detail",
-    ))
+    is_reasoning = bool(
+        q.startswith(("why", "explain", "compare", "describe", "detail"))
+        or (
+            q.startswith("how")
+            and not q.startswith(("how many", "how much"))
+        )
+    )
 
     is_vague = word_count <= 3 and not is_conversational
 

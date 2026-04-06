@@ -43,6 +43,22 @@ function formatTime(timestamp: number) {
   });
 }
 
+function stripLeakedSpecialTokens(value: string): string {
+  let next = value || "";
+  for (const token of [
+    "<|end|>",
+    "<|system|>",
+    "<|user|>",
+    "<|assistant|>",
+    "<|eot_id|>",
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+  ]) {
+    next = next.split(token).join("");
+  }
+  return next;
+}
+
 /* ================= COMPONENT ================= */
 
 export default function MessageBubble({
@@ -118,7 +134,7 @@ export default function MessageBubble({
 
   /* ================= PARSE CHAIN OF THOUGHT (CoT) ================= */
   let thoughtContent: string | null = null;
-  let finalDisplayContent = message.content || "";
+  let finalDisplayContent = stripLeakedSpecialTokens(message.content || "");
 
   if (isAssistant && hasContent) {
     const thoughtMatch = finalDisplayContent.match(/<thinking>([\s\S]*?)<\/thinking>/);

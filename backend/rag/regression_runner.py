@@ -6,7 +6,7 @@ import os
 import re
 import statistics
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,7 +23,7 @@ from backend.rag.collections import (
     DEFAULT_RAG_COLLECTION_NAME,
     normalize_collection_name,
 )
-from backend.rag.evaluator import evaluate_answer
+from backend.rag.evaluator_runtime import evaluate_answer
 from backend.rag.mode_profiles import normalize_rag_mode
 from backend.rag.retrieve import retrieve_rag_context
 
@@ -45,6 +45,22 @@ class BenchmarkCase:
     expected_answer_keywords: List[str]
     expected_answer: Optional[str]
     expected_source_files: List[str]
+    expected_outcome: str = "release"
+    challenge_tags: List[str] = field(default_factory=list)
+
+
+_ABSTENTION_PATTERNS = (
+    "couldn't verify",
+    "could not verify",
+    "cannot verify",
+    "can't verify",
+    "not specified",
+    "not provided",
+    "insufficient context",
+    "insufficient information",
+    "no supported answer",
+    "unable to verify",
+)
 
 
 def _to_int_list(values: Any) -> List[int]:
@@ -74,6 +90,49 @@ def _normalize_text_tokens(text: str) -> List[str]:
     if not text:
         return []
     return re.findall(r"[a-z0-9]{2,}", text.lower())
+
+
+def _normalize_expected_outcome(value: Any) -> str:
+    raw = str(value or "release").strip().lower()
+    if raw in {"abstain", "reject", "no_release", "do_not_release"}:
+        return "abstain"
+    return "release"
+
+
+def _strip_page_citations(text: str) -> str:
+    return re.sub(r"\[Pages?[^\]]+\]", "", str(text or ""), flags=re.IGNORECASE)
+
+
+def _looks_like_abstention(answer: str) -> bool:
+    lowered = _strip_page_citations(answer).lower()
+    return any(pattern in lowered for pattern in _ABSTENTION_PATTERNS)
+
+
+def _outcome_metrics(
+    expected_outcome: str,
+    answer: str,
+    answer_eval: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    evaluation = answer_eval if isinstance(answer_eval, dict) else {}
+    should_release = bool(evaluation.get("should_release"))
+    abstained = _looks_like_abstention(answer) or ("abstained" in list(evaluation.get("blockers") or []))
+
+    if expected_outcome == "abstain":
+        gate_ok = not should_release
+        outcome_match = gate_ok and abstained
+        score = (0.4 if gate_ok else 0.0) + (0.6 if abstained else 0.0)
+    else:
+        gate_ok = should_release
+        outcome_match = gate_ok
+        score = 1.0 if gate_ok else 0.0
+
+    return {
+        "expected_outcome": expected_outcome,
+        "should_release": should_release,
+        "abstained": abstained,
+        "outcome_match": outcome_match,
+        "outcome_score": round(score, 4),
+    }
 
 
 def _keyword_hit_rate(keywords: List[str], text: str) -> Optional[float]:
@@ -189,6 +248,8 @@ def _load_cases(benchmark_file: Path) -> Tuple[str, List[BenchmarkCase]]:
                     else None
                 ),
                 expected_source_files=_to_str_list(item.get("expected_source_files")),
+                expected_outcome=_normalize_expected_outcome(item.get("expected_outcome")),
+                challenge_tags=_to_str_list(item.get("challenge_tags")),
             )
         )
 
@@ -272,20 +333,40 @@ def _generate_answer(
 
 def _score_case(
     *,
+    expected_outcome: str,
     page_recall: Optional[float],
+    page_precision: Optional[float],
     retrieval_keyword_hit_rate: Optional[float],
     answer_keyword_hit_rate: Optional[float],
     answer_eval_overall: Optional[float],
     answer_similarity_f1: Optional[float],
+    outcome_score: Optional[float],
 ) -> float:
+    if expected_outcome == "abstain":
+        weighted_sum = 0.0
+        total_weight = 0.0
+        components = [
+            (outcome_score, 0.70),
+            (page_precision, 0.10),
+            (retrieval_keyword_hit_rate, 0.20),
+        ]
+        for value, weight in components:
+            if isinstance(value, (int, float)):
+                weighted_sum += float(value) * weight
+                total_weight += weight
+        if total_weight <= 0:
+            return 0.0
+        return round(weighted_sum / total_weight, 4)
+
     # Dynamically normalize by available metrics.
     weighted_sum = 0.0
     total_weight = 0.0
 
     components = [
-        (page_recall, 0.30),
+        (page_recall, 0.20),
+        (page_precision, 0.15),
         (retrieval_keyword_hit_rate, 0.15),
-        (answer_keyword_hit_rate, 0.15),
+        (answer_keyword_hit_rate, 0.10),
         (answer_eval_overall, 0.30),
         (answer_similarity_f1, 0.10),
     ]
@@ -351,6 +432,13 @@ def _run_mode(
         answer_eval_overall: Optional[float] = None
         answer_keyword_hit_rate: Optional[float] = None
         answer_similarity_f1: Optional[float] = None
+        outcome_metrics = {
+            "expected_outcome": case.expected_outcome,
+            "should_release": False,
+            "abstained": False,
+            "outcome_match": False,
+            "outcome_score": 0.0,
+        }
 
         if generate_answers and model_id:
             gen_t0 = time.time()
@@ -368,19 +456,28 @@ def _run_mode(
                 answer_keyword_hit_rate = _keyword_hit_rate(case.expected_answer_keywords, answer)
                 if case.expected_answer:
                     answer_similarity_f1 = _token_f1(case.expected_answer, answer)
+            outcome_metrics = _outcome_metrics(case.expected_outcome, answer, answer_eval)
 
         composite_score = _score_case(
+            expected_outcome=case.expected_outcome,
             page_recall=page_recall,
+            page_precision=page_precision,
             retrieval_keyword_hit_rate=retrieval_keyword_hit_rate,
             answer_keyword_hit_rate=answer_keyword_hit_rate,
             answer_eval_overall=answer_eval_overall,
             answer_similarity_f1=answer_similarity_f1,
+            outcome_score=outcome_metrics.get("outcome_score"),
         )
+
+        passed = composite_score >= 0.65
+        if generate_answers and model_id:
+            passed = passed and bool(outcome_metrics.get("outcome_match"))
 
         rows.append(
             {
                 "case_id": case.case_id,
                 "question": case.question,
+                "challenge_tags": case.challenge_tags,
                 "company_document_id": case.company_document_id,
                 "revision_number": case.revision_number,
                 "retrieval_mode": mode,
@@ -391,6 +488,7 @@ def _run_mode(
                 "retrieved_source_files": retrieved_files,
                 "expected_pages": case.expected_pages,
                 "expected_source_files": case.expected_source_files,
+                "expected_outcome": case.expected_outcome,
                 "page_recall": page_recall,
                 "page_precision": page_precision,
                 "source_file_precision": source_file_precision,
@@ -398,10 +496,11 @@ def _run_mode(
                 "answer_keyword_hit_rate": answer_keyword_hit_rate,
                 "answer_similarity_f1": answer_similarity_f1,
                 "answer_eval": answer_eval,
+                "outcome_metrics": outcome_metrics,
                 "answer": answer,
                 "answer_errors": answer_errors,
                 "composite_score": composite_score,
-                "passed": composite_score >= 0.65,
+                "passed": passed,
             }
         )
 
@@ -410,6 +509,25 @@ def _run_mode(
         "cases": len(rows),
         "avg_composite_score": _safe_mean([r.get("composite_score") for r in rows]),
         "pass_rate": _safe_mean([1.0 if r.get("passed") else 0.0 for r in rows]),
+        "release_rate": _safe_mean(
+            [
+                1.0
+                if isinstance(r.get("answer_eval"), dict)
+                and bool((r.get("answer_eval") or {}).get("should_release"))
+                else 0.0
+                if isinstance(r.get("answer_eval"), dict)
+                else None
+                for r in rows
+            ]
+        ),
+        "outcome_match_rate": _safe_mean(
+            [
+                1.0 if (r.get("outcome_metrics") or {}).get("outcome_match") else 0.0
+                if isinstance(r.get("outcome_metrics"), dict)
+                else None
+                for r in rows
+            ]
+        ),
         "avg_retrieval_ms": _safe_mean([r.get("retrieval_ms") for r in rows]),
         "avg_generation_ms": _safe_mean([r.get("generation_ms") for r in rows]),
         "avg_page_recall": _safe_mean([r.get("page_recall") for r in rows]),
@@ -433,12 +551,30 @@ def _run_mode(
             "case_id": w["case_id"],
             "composite_score": w["composite_score"],
             "page_recall": w["page_recall"],
+            "page_precision": w["page_precision"],
             "retrieval_keyword_hit_rate": w["retrieval_keyword_hit_rate"],
             "answer_eval_overall": (
                 (w.get("answer_eval") or {}).get("overall")
                 if isinstance(w.get("answer_eval"), dict)
                 else None
             ),
+            "answer_eval_decision": (
+                (w.get("answer_eval") or {}).get("decision")
+                if isinstance(w.get("answer_eval"), dict)
+                else None
+            ),
+            "answer_eval_blockers": (
+                (w.get("answer_eval") or {}).get("blockers")
+                if isinstance(w.get("answer_eval"), dict)
+                else None
+            ),
+            "expected_outcome": w.get("expected_outcome"),
+            "outcome_match": (
+                (w.get("outcome_metrics") or {}).get("outcome_match")
+                if isinstance(w.get("outcome_metrics"), dict)
+                else None
+            ),
+            "challenge_tags": w.get("challenge_tags") or [],
         }
         for w in worst
     ]
@@ -459,18 +595,21 @@ def _render_markdown(report: Dict[str, Any]) -> str:
     lines.append("")
     lines.append("## Mode Summary")
     lines.append("")
-    lines.append("| Mode | Avg Score | Pass Rate | Avg Retrieval ms | Avg Gen ms | Avg Page Recall | Avg Eval Overall |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    lines.append("| Mode | Avg Score | Pass Rate | Release Rate | Outcome Match | Avg Retrieval ms | Avg Gen ms | Avg Page Recall | Avg Page Precision | Avg Eval Overall |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
 
     for item in report.get("mode_summaries", []):
         lines.append(
-            "| {mode} | {score} | {pass_rate} | {r_ms} | {g_ms} | {page_recall} | {eval_overall} |".format(
+            "| {mode} | {score} | {pass_rate} | {release_rate} | {outcome_match} | {r_ms} | {g_ms} | {page_recall} | {page_precision} | {eval_overall} |".format(
                 mode=item.get("mode"),
                 score=item.get("avg_composite_score"),
                 pass_rate=item.get("pass_rate"),
+                release_rate=item.get("release_rate"),
+                outcome_match=item.get("outcome_match_rate"),
                 r_ms=item.get("avg_retrieval_ms"),
                 g_ms=item.get("avg_generation_ms"),
                 page_recall=item.get("avg_page_recall"),
+                page_precision=item.get("avg_page_precision"),
                 eval_overall=item.get("avg_answer_eval_overall"),
             )
         )
@@ -479,13 +618,18 @@ def _render_markdown(report: Dict[str, Any]) -> str:
     for item in report.get("mode_summaries", []):
         lines.append(f"### Worst Cases: `{item.get('mode')}`")
         lines.append("")
-        lines.append("| Case ID | Score | Page Recall | Retrieval Keyword Hit | Answer Eval Overall |")
-        lines.append("|---|---:|---:|---:|---:|")
+        lines.append("| Case ID | Tags | Expected | Outcome Match | Score | Page Recall | Page Precision | Retrieval Keyword Hit | Answer Eval Overall | Decision | Blockers |")
+        lines.append("|---|---|---|---:|---:|---:|---:|---:|---:|---|---|")
         for w in item.get("worst_cases", []):
+            blockers = ", ".join(str(x) for x in list(w.get("answer_eval_blockers") or [])[:4])
+            tags = ", ".join(str(x) for x in list(w.get("challenge_tags") or []))
             lines.append(
-                f"| {w.get('case_id')} | {w.get('composite_score')} | "
-                f"{w.get('page_recall')} | {w.get('retrieval_keyword_hit_rate')} | "
-                f"{w.get('answer_eval_overall')} |"
+                f"| {w.get('case_id')} | {tags} | {w.get('expected_outcome')} | {w.get('outcome_match')} | {w.get('composite_score')} | "
+                f"{w.get('page_recall')} | {w.get('page_precision')} | "
+                f"{w.get('retrieval_keyword_hit_rate')} | "
+                f"{w.get('answer_eval_overall')} | "
+                f"{w.get('answer_eval_decision') or ''} | "
+                f"{blockers} |"
             )
         lines.append("")
 

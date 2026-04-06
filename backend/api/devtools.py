@@ -69,6 +69,7 @@ from backend.llm.loader import (
     GGUF_DIR,
     get_llm,
     reload_model_config,
+    sync_model_runtime_if_needed,
 )
 from backend.llm.model_inventory import build_model_inventory
 from backend.llm.model_registry import MODEL_REGISTRY, reload_model_registry
@@ -104,6 +105,7 @@ _KNOWN_CHAT_HF_REPO_MODEL_IDS: Dict[str, str] = {
 }
 
 _KNOWN_CHAT_GGUF_REPO_MODEL_IDS: Dict[str, str] = {
+    "Qwen/Qwen2.5-3B-Instruct-GGUF": "lite_qwen_3b_q4",
     "Qwen/Qwen2.5-1.5B-Instruct-GGUF": "lite_qwen_1_5b_q4",
     "Qwen/Qwen2.5-7B-Instruct-GGUF": "lite_qwen_q4",
     "AI-Engine/Meta-Llama-3.1-8B-Instruct-GGUF": "lite_llama_8b",
@@ -171,6 +173,11 @@ def _resolve_known_chat_model_id(repo_id: str) -> Optional[str]:
 
 def _recommended_registry_patch(model_id: str) -> Dict[str, Dict[str, str]]:
     model_id = (model_id or "").strip()
+    if model_id == "lite_qwen_3b_q4":
+        return {
+            "lite": {"default": "lite_qwen_3b_q4", "fallback": "lite_qwen_3b_q4"},
+            "base": {"default": "lite_qwen_3b_q4", "cpu_fallback": "lite_qwen_3b_q4"},
+        }
     if model_id == "lite_qwen_1_5b_q4":
         return {"lite": {"default": "lite_qwen_1_5b_q4", "fallback": "lite_qwen_1_5b_q4"}}
     if model_id == "base_qwen_3b":
@@ -317,9 +324,12 @@ def _visible_model_registry(
     lite_fallback = (visible["lite"].get("fallback") or "").strip()
     net_default = (visible["net"].get("default") or "").strip()
 
-    if base_default and base_default not in installed_hf:
+    def _has_local_model(model_id: str) -> bool:
+        return bool(model_id and (model_id in installed_hf or model_id in installed_gguf))
+
+    if base_default and not _has_local_model(base_default):
         visible["base"]["default"] = ""
-    if base_fallback and base_fallback not in installed_hf:
+    if base_fallback and not _has_local_model(base_fallback):
         visible["base"]["cpu_fallback"] = ""
 
     if lite_default and lite_default not in installed_gguf:
@@ -331,10 +341,12 @@ def _visible_model_registry(
         visible["net"]["default"] = ""
 
     if not visible["base"].get("default"):
-        if base_fallback and base_fallback in installed_hf:
+        if base_fallback and _has_local_model(base_fallback):
             visible["base"]["default"] = base_fallback
         elif installed_hf:
             visible["base"]["default"] = sorted(installed_hf.keys())[0]
+        elif installed_gguf:
+            visible["base"]["default"] = sorted(installed_gguf.keys())[0]
 
     if not visible["base"].get("cpu_fallback") and visible["base"].get("default"):
         visible["base"]["cpu_fallback"] = visible["base"]["default"]
@@ -1246,6 +1258,7 @@ def rag_enable(req: RagOverrideReq, _admin: User = Depends(require_admin)):
 @router.get("/models")
 def list_models(_admin: User = Depends(require_admin)):
     """List locally available models + current mode registry (for the Developer Dashboard)."""
+    sync_model_runtime_if_needed()
     installed_hf = _installed_hf_models()
     installed_gguf = _installed_gguf_models()
     visible_registry = _visible_model_registry(installed_hf, installed_gguf)
@@ -1269,6 +1282,7 @@ def list_models(_admin: User = Depends(require_admin)):
 @router.get("/models/active")
 def active_models(_admin: User = Depends(require_admin)):
     """Report active model per mode + readiness."""
+    sync_model_runtime_if_needed()
     installed_hf = _installed_hf_models()
     installed_gguf = _installed_gguf_models()
     visible_registry = _visible_model_registry(installed_hf, installed_gguf)
@@ -1311,6 +1325,83 @@ def active_models(_admin: User = Depends(require_admin)):
 def runtime_status(_admin: User = Depends(require_admin)):
     """Runtime visibility for GPU, RabbitMQ broker and worker queues."""
     return get_runtime_status()
+
+
+@router.get("/uploads/recent")
+def recent_upload_jobs(
+    limit: int = Query(12, ge=1, le=50),
+    _admin: User = Depends(require_admin),
+):
+    """
+    Recent upload/preprocessing jobs for the Developer Dashboard.
+
+    Includes enough metadata to open the preprocessing preview and inspect
+    extracted tables, removed boilerplate, and chunk output.
+    """
+    rows: List[Dict[str, Any]] = []
+
+    try:
+        with pg_memory.get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        job_id,
+                        session_id,
+                        status,
+                        progress,
+                        progress_label,
+                        error,
+                        metadata,
+                        missing_fields,
+                        created_at,
+                        updated_at
+                    FROM rag_job_runs
+                    ORDER BY updated_at DESC
+                    LIMIT %s;
+                    """,
+                    (int(limit),),
+                )
+                rows = [dict(row) for row in (cur.fetchall() or [])]
+    except psycopg2.errors.UndefinedTable:
+        return {"jobs": []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load upload jobs: {e}")
+
+    jobs: List[Dict[str, Any]] = []
+    for row in rows:
+        metadata = dict(row.get("metadata") or {})
+        missing_fields = list(row.get("missing_fields") or [])
+        pdf_path = str(metadata.get("pdf_path") or "").strip()
+        preview_available = bool(pdf_path and Path(pdf_path).exists())
+
+        jobs.append(
+            {
+                "job_id": str(row.get("job_id") or ""),
+                "session_id": str(row.get("session_id") or "") or None,
+                "status": str(row.get("status") or "PROCESSING"),
+                "progress": int(row.get("progress") or 0),
+                "progress_label": str(row.get("progress_label") or "") or None,
+                "error": str(row.get("error") or "") or None,
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+                "company_document_id": str(metadata.get("company_document_id") or "") or None,
+                "revision_number": str(metadata.get("revision_number") or "") or None,
+                "source_file": str(metadata.get("source_file") or "") or None,
+                "rag_preprocessor": str(metadata.get("rag_preprocessor") or "") or None,
+                "rag_ingest_mode": str(metadata.get("rag_ingest_mode") or "") or None,
+                "rag_collection_name": str(metadata.get("rag_collection_name") or "") or None,
+                "preview_available": preview_available,
+                "preview_unavailable_reason": (
+                    None
+                    if preview_available
+                    else "Local PDF copy is no longer available for preview."
+                ),
+                "missing_fields": missing_fields,
+            }
+        )
+
+    return {"jobs": jobs}
 
 
 @router.get("/mvp/overview")
@@ -2052,7 +2143,7 @@ def reset_all(req: ResetRequest, _admin: User = Depends(require_admin)):
 
 @router.post("/retrieve")
 def debug_retrieval(req: RetrievalDebugReq):
-    """Test the full RAG pipeline (Vector + Keyword + Rerank)"""
+    """Test the current RAG retrieval path using the active developer settings."""
 
     settings = get_dev_settings()
     collection_name = normalize_collection_name(
@@ -2072,7 +2163,15 @@ def debug_retrieval(req: RetrievalDebugReq):
     if not req.revision_number:
         raise HTTPException(400, "revision_number required")
 
-    intent = classify_intent(normalize_text(req.question))
+    enable_query_rewrite = bool(settings.get("enable_query_rewrite", False))
+    enable_hybrid_retrieval = bool(settings.get("enable_hybrid_retrieval", False))
+    normalized_question = normalize_text(req.question)
+    question = (
+        rewrite_question(normalized_question, [])
+        if enable_query_rewrite
+        else normalized_question
+    )
+    intent = classify_intent(question) if enable_query_rewrite else "fact_lookup"
     rag_retrieval_mode_setting = normalize_retrieval_mode_setting(
         settings.get("rag_retrieval_mode", settings.get("rag_mode"))
     )
@@ -2082,17 +2181,21 @@ def debug_retrieval(req: RetrievalDebugReq):
     )
 
     chunks = retrieve_rag_context(
-        question=req.question,
+        question=question,
         vector_store=target_vector_store,
         company_document_id=req.company_document_id,
         revision_number=str(req.revision_number),
         rag_mode=effective_rag_mode,
-        force_detailed=bool(settings.get("force_detailed_retrieval"))
+        force_detailed=bool(settings.get("force_detailed_retrieval")),
+        enable_hybrid_retrieval=enable_hybrid_retrieval,
     )
 
     return {
         "count": len(chunks),
         "intent": intent,
+        "question": question,
+        "enable_query_rewrite": enable_query_rewrite,
+        "enable_hybrid_retrieval": enable_hybrid_retrieval,
         "collection_name": collection_name,
         "rag_retrieval_mode_setting": rag_retrieval_mode_setting,
         "effective_rag_mode": effective_rag_mode,

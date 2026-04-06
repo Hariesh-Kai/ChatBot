@@ -21,6 +21,63 @@ _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\
 _LIST_ITEM_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+)")
 
 
+def _resolve_extraction_metadata(
+    *,
+    preprocessor: str,
+    rag_mode: str,
+    pipeline_mode: str,
+) -> dict:
+    resolved_preprocessor = normalize_rag_preprocessor(preprocessor)
+    resolved_rag_mode = normalize_rag_mode(rag_mode)
+    profile = get_preprocess_profile(
+        resolved_rag_mode,
+        pipeline_mode=str(pipeline_mode or "commit"),
+    )
+
+    if resolved_preprocessor == "pymupdf4llm":
+        source_weight_key = "pymupdf"
+        ocr_used = bool(resolved_rag_mode == "high_fidelity")
+    elif resolved_preprocessor == "docling":
+        source_weight_key = "docling"
+        ocr_used = False
+    elif resolved_preprocessor == "pypdf_text":
+        source_weight_key = "pypdf_text"
+        ocr_used = False
+    else:
+        strategy = str(profile.get("strategy") or "hi_res").strip().lower()
+        source_weight_key = "unstructured_hi_res" if strategy == "hi_res" else "unstructured_fast"
+        ocr_used = bool(strategy == "hi_res")
+
+    return {
+        "extraction_backend": resolved_preprocessor,
+        "extraction_source": source_weight_key,
+        "source_weight_key": source_weight_key,
+        "ocr_used": bool(ocr_used),
+        "pipeline_mode": str(pipeline_mode or "commit"),
+        "rag_mode": resolved_rag_mode,
+    }
+
+
+def _annotate_batch_extraction_metadata(
+    batch: List[dict],
+    *,
+    extraction_metadata: dict,
+) -> List[dict]:
+    annotated: List[dict] = []
+    for item in batch or []:
+        if not isinstance(item, dict):
+            continue
+
+        cloned = dict(item)
+        metadata = dict(cloned.get("metadata") or {})
+        for key, value in extraction_metadata.items():
+            metadata[key] = value
+        cloned["metadata"] = metadata
+        annotated.append(cloned)
+
+    return annotated
+
+
 def _make_element(
     element_type: str,
     text: str,
@@ -498,37 +555,43 @@ def stream_pdf_to_elements(
     """
     resolved_preprocessor = normalize_rag_preprocessor(preprocessor)
     print(f"[PREPROCESS] Selected preprocessor: {resolved_preprocessor}")
-
-    if resolved_preprocessor == "pypdf_text":
-        yield from _stream_pypdf_text_elements(
-            pdf_path,
-            output_json,
-            rag_mode=rag_mode,
-            pipeline_mode=pipeline_mode,
-        )
-        return
-
-    if resolved_preprocessor == "pymupdf4llm":
-        yield from _stream_pymupdf4llm_elements(
-            pdf_path,
-            output_json,
-            rag_mode=rag_mode,
-            pipeline_mode=pipeline_mode,
-        )
-        return
-
-    if resolved_preprocessor == "docling":
-        yield from _stream_docling_elements(
-            pdf_path,
-            output_json,
-            rag_mode=rag_mode,
-            pipeline_mode=pipeline_mode,
-        )
-        return
-
-    yield from _stream_unstructured_elements(
-        pdf_path,
-        output_json,
+    extraction_metadata = _resolve_extraction_metadata(
+        preprocessor=resolved_preprocessor,
         rag_mode=rag_mode,
         pipeline_mode=pipeline_mode,
     )
+
+    if resolved_preprocessor == "pypdf_text":
+        source_stream = _stream_pypdf_text_elements(
+            pdf_path,
+            output_json,
+            rag_mode=rag_mode,
+            pipeline_mode=pipeline_mode,
+        )
+    elif resolved_preprocessor == "pymupdf4llm":
+        source_stream = _stream_pymupdf4llm_elements(
+            pdf_path,
+            output_json,
+            rag_mode=rag_mode,
+            pipeline_mode=pipeline_mode,
+        )
+    elif resolved_preprocessor == "docling":
+        source_stream = _stream_docling_elements(
+            pdf_path,
+            output_json,
+            rag_mode=rag_mode,
+            pipeline_mode=pipeline_mode,
+        )
+    else:
+        source_stream = _stream_unstructured_elements(
+            pdf_path,
+            output_json,
+            rag_mode=rag_mode,
+            pipeline_mode=pipeline_mode,
+        )
+
+    for batch in source_stream:
+        yield _annotate_batch_extraction_metadata(
+            batch,
+            extraction_metadata=extraction_metadata,
+        )

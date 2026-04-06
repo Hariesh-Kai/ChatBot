@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from flashrank import Ranker, RerankRequest
 from langchain_core.documents import Document
@@ -14,6 +14,43 @@ _RERANK_MODEL_NAME = "ms-marco-MiniLM-L-12-v2"
 _RERANK_CACHE_DIR = str(Path(HF_CACHE_DIR) / "flashrank")
 _ranker: Optional[Ranker] = None
 _ranker_unavailable = False
+
+def _normalize_chunk_type(metadata: Optional[Dict]) -> str:
+    raw = str((metadata or {}).get("chunk_type") or (metadata or {}).get("type") or "text").strip().lower()
+    if raw in {"parent", "text", "child"}:
+        return raw
+    return "text"
+
+
+def _scoring_multiplier(metadata: Optional[Dict]) -> float:
+    try:
+        return max(float((metadata or {}).get("scoring_multiplier") or 1.0), 0.0)
+    except Exception:
+        return 1.0
+
+
+def _fallback_rank(
+    docs: List[Document],
+    *,
+    top_k: int,
+    query_profile: Optional[Dict] = None,
+) -> List[Document]:
+    del query_profile
+    rescored = []
+    for doc in docs:
+        meta = dict(doc.metadata or {})
+        meta["final_score"] = round(float(meta.get("retrieval_score") or 0.0), 8)
+        rescored.append(Document(page_content=doc.page_content, metadata=meta))
+
+    rescored.sort(
+        key=lambda doc: (
+            float((doc.metadata or {}).get("final_score") or 0.0),
+            1 if _normalize_chunk_type(doc.metadata) == "parent" else 0,
+            len(doc.page_content or ""),
+        ),
+        reverse=True,
+    )
+    return rescored[:top_k]
 
 
 def _get_ranker() -> Optional[Ranker]:
@@ -41,17 +78,28 @@ def _get_ranker() -> Optional[Ranker]:
         return None
 
 
-def rerank_documents(query: str, docs: List[Document], top_k: int = 5) -> List[Document]:
+def rerank_documents(
+    query: str,
+    docs: List[Document],
+    top_k: int = 5,
+    query_profile: Optional[Dict] = None,
+) -> List[Document]:
     """
     Re-orders retrieved documents based on relevance to the query.
-    Falls back to the incoming order if FlashRank is unavailable.
+
+    The extra structural boost fixes table-heavy retrieval where a strong
+    row-level lexical match could otherwise outrank the correct full table.
     """
     if not docs:
         return []
 
     ranker = _get_ranker()
     if ranker is None:
-        return docs[:top_k]
+        return _fallback_rank(
+            docs,
+            top_k=top_k,
+            query_profile=query_profile,
+        )
 
     passages = [
         {"id": str(i), "text": d.page_content, "meta": d.metadata}
@@ -66,18 +114,38 @@ def rerank_documents(query: str, docs: List[Document], top_k: int = 5) -> List[D
             "FlashRank rerank failed; returning the current candidate order. Error: %s",
             exc,
         )
-        return docs[:top_k]
+        return _fallback_rank(
+            docs,
+            top_k=top_k,
+            query_profile=query_profile,
+        )
 
-    reranked_docs = []
-    for res in results[:top_k]:
+    rescored = []
+    for res in results:
         original_meta = dict(res.get("meta") or {})
-        original_meta["rerank_score"] = res.get("score")
+        rerank_score = float(res.get("score") or 0.0)
+        retrieval_score = float(original_meta.get("retrieval_score") or 0.0)
+        scoring_multiplier = _scoring_multiplier(original_meta)
+        original_meta["rerank_score"] = rerank_score
+        original_meta["rerank_multiplier"] = round(scoring_multiplier, 4)
+        original_meta["final_score"] = round(
+            max(rerank_score * scoring_multiplier, retrieval_score),
+            8,
+        )
 
-        reranked_docs.append(
+        rescored.append(
             Document(
                 page_content=res["text"],
                 metadata=original_meta,
             )
         )
 
-    return reranked_docs
+    rescored.sort(
+        key=lambda doc: (
+            float((doc.metadata or {}).get("final_score") or 0.0),
+            1 if _normalize_chunk_type(doc.metadata) == "parent" else 0,
+            len(doc.page_content or ""),
+        ),
+        reverse=True,
+    )
+    return rescored[:top_k]

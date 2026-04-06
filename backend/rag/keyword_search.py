@@ -156,6 +156,14 @@ def _fts_search(
     # Build metadata filter SQL
     meta_where = ""
     params: Dict = {"limit": limit, "tsq": tsquery_str}
+    collection_name = str(getattr(vector_store, "collection_name", "") or "")
+    join_sql = ""
+    if collection_name:
+        join_sql = """
+        JOIN langchain_pg_collection AS c
+          ON langchain_pg_embedding.collection_id = c.uuid
+        """
+        params["collection_name"] = collection_name
     for k, v in metadata_filter.items():
         meta_where += f" AND cmetadata->>'{ k }' = :val_{k}"
         params[f"val_{k}"] = str(v)
@@ -164,7 +172,9 @@ def _fts_search(
         SELECT document, cmetadata,
                ts_rank(content_tsv, to_tsquery('english', :tsq)) AS rank
         FROM langchain_pg_embedding
+        {join_sql}
         WHERE content_tsv @@ to_tsquery('english', :tsq)
+        {"AND c.name = :collection_name" if collection_name else ""}
         {meta_where}
         ORDER BY rank DESC
         LIMIT :limit
@@ -193,6 +203,14 @@ def _ilike_search(
 ) -> List[Tuple[Document, float]]:
     clauses = []
     params: Dict = {"limit": limit}
+    collection_name = str(getattr(vector_store, "collection_name", "") or "")
+    join_sql = ""
+    if collection_name:
+        join_sql = """
+        JOIN langchain_pg_collection AS c
+          ON langchain_pg_embedding.collection_id = c.uuid
+        """
+        params["collection_name"] = collection_name
 
     for i, kw in enumerate(keywords):
         key = f"kw{i}"
@@ -200,6 +218,8 @@ def _ilike_search(
         params[key] = f"%{kw}%"
 
     where_sql = "(" + " OR ".join(clauses) + ")"
+    if collection_name:
+        where_sql += " AND c.name = :collection_name"
 
     for k, v in metadata_filter.items():
         where_sql += f" AND cmetadata->>'{k}' = :val_{k}"
@@ -208,6 +228,7 @@ def _ilike_search(
     sql = text(f"""
         SELECT document, cmetadata, 0.1 AS rank
         FROM langchain_pg_embedding
+        {join_sql}
         WHERE {where_sql}
         ORDER BY LENGTH(document) ASC
         LIMIT :limit

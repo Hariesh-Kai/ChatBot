@@ -8,20 +8,32 @@
     {
       "id": "q001",
       "question": "What is the design pressure?",
+      "expected_outcome": "release",
+      "challenge_tags": ["numeric_fact"],
       "expected_pages": [12],
       "expected_answer_keywords": ["design pressure", "bar"]
     },
     {
       "id": "q002",
       "question": "List the operating temperature range.",
+      "expected_outcome": "release",
+      "challenge_tags": ["enumerated_list"],
       "expected_pages": [14, 15],
       "expected_answer_keywords": ["temperature", "operating", "range"]
     },
     {
       "id": "q003",
       "question": "Summarize the main safety requirements.",
+      "expected_outcome": "release",
+      "challenge_tags": ["summary"],
       "expected_pages": [22],
       "expected_answer_keywords": ["safety", "requirement", "shall"]
+    },
+    {
+      "id": "q004",
+      "question": "What is the approved project budget?",
+      "expected_outcome": "abstain",
+      "challenge_tags": ["unanswerable"]
     }
   ]
 }

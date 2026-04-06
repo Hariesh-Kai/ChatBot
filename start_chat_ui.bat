@@ -6,8 +6,8 @@ COLOR 0A
 :: 1. CONFIGURATION
 :: ====================================================
 
-:: The Main Folder where your code lives
-SET PROJECT_ROOT=D:\chat-ui
+:: The main folder where your code lives
+FOR %%I IN ("%~dp0.") DO SET "PROJECT_ROOT=%%~fI"
 
 :: Python Virtual Environment Name 
 :: (IMPORTANT: If your folder is named 'text_venv', change 'venv' to 'text_venv' below)

@@ -4,12 +4,19 @@ import os
 
 import torch
 
-from backend.llm.loader import GGUF_MODELS, HF_MODELS, HF_CACHE_DIR, resolve_gguf_model_path
+from backend.llm.loader import (
+    GGUF_MODELS,
+    HF_MODELS,
+    HF_CACHE_DIR,
+    resolve_gguf_model_path,
+    sync_model_runtime_if_needed,
+)
 from backend.llm.hf_cache_utils import resolve_local_snapshot
 from backend.llm.model_registry import MODEL_REGISTRY, ChatMode
 
 
 _SMALL_CPU_GGUF_CANDIDATES = [
+    "lite_qwen_3b_q4",
     "lite_qwen_1_5b_q4",
     "lite_qwen_q4",
     "lite_llama_8b",
@@ -118,6 +125,8 @@ def _resolve_first_registered_model(candidates: list[str], *, prefer_small_cpu: 
 
 
 def resolve_model_id(mode: ChatMode) -> str:
+    sync_model_runtime_if_needed()
+
     if mode not in MODEL_REGISTRY:
         raise ValueError(f"Unknown chat mode: {mode}")
 

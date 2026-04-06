@@ -59,6 +59,12 @@ _KNOWN_GGUF_ASSETS: Dict[str, Dict[str, str]] = {
         "label": "Qwen 2.5 0.5B Agent GGUF",
         "note": "Hidden routing, extraction, and release-gate model.",
     },
+    "lite_qwen_3b_q4": {
+        "group": "chat",
+        "component": "lite",
+        "label": "Qwen 2.5 3B GGUF",
+        "note": "Recommended single local model for CPU-first developer setups.",
+    },
     "lite_qwen_1_5b_q4": {
         "group": "chat",
         "component": "lite",

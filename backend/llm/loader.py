@@ -21,6 +21,7 @@ import torch
 from backend.llm.model_config_store import (
     GGUF_DIR as CONFIG_GGUF_DIR,
     HF_CACHE_DIR as CONFIG_HF_CACHE_DIR,
+    get_model_config_fingerprint,
     load_model_config,
 )
 
@@ -85,6 +86,10 @@ _BUILTIN_GGUF_FILE_CANDIDATES: Dict[str, tuple[str, ...]] = {
     "agent_qwen_0_5b_q4": (
         "qwen2.5-0.5b-instruct-q4_k_m.gguf",
         "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+    ),
+    "lite_qwen_3b_q4": (
+        "qwen2.5-3b-instruct-q4_k_m.gguf",
+        "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
     ),
     "lite_llama_8b": (
         "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
@@ -159,6 +164,7 @@ _llama_cache: Dict[str, Any] = {}
 _hf_model_cache: Dict[str, Any] = {}
 _hf_tokenizer_cache: Dict[str, Any] = {}
 _intent_classifier: Optional[Any] = None
+_model_config_fingerprint = (0, 0)
 
 
 # ============================================================
@@ -203,8 +209,34 @@ def reload_model_config() -> Dict[str, Any]:
     return cfg
 
 
+def sync_model_runtime_if_needed(force: bool = False) -> Dict[str, Any]:
+    """
+    Reload model registries when `models/model_config.json` changes on disk.
+
+    This keeps a running backend in sync with external installer scripts
+    without requiring a restart.
+    """
+    global _model_config_fingerprint
+
+    current = get_model_config_fingerprint()
+    if not force and current == _model_config_fingerprint:
+        return load_model_config()
+
+    cfg = reload_model_config()
+
+    try:
+        from backend.llm.model_registry import reload_model_registry
+
+        reload_model_registry()
+    except Exception as exc:
+        print(f"[LLM] Failed to reload model registry: {exc}")
+
+    _model_config_fingerprint = current
+    return cfg
+
+
 try:
-    reload_model_config()
+    sync_model_runtime_if_needed(force=True)
 except Exception as _e:
     print(f"[LLM] Failed to load model_config.json: {_e}")
 
@@ -444,12 +476,13 @@ def load_intent_classifier():
 # ============================================================
 
 def get_llm(model_id: str) -> Dict[str, Any]:
-    
     """
     Returns:
     - GGUF: {"type": "gguf", "llm": callable}
     - HF:   {"type": "hf", "model": model, "tokenizer": tokenizer}
     """
+    sync_model_runtime_if_needed()
+
     if model_id in GGUF_MODELS:
         llm_inst = _load_gguf(model_id)
 

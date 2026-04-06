@@ -15,7 +15,13 @@ import { CHAT_UI_MODELS, ChatUIModelId } from "@/app/lib/chat-ui-models";
 import { LLMUIEvent, MetadataRequestField, UI_EVENT_PREFIX, parseLLMUIEvent } from "@/app/lib/llm-ui-events";
 import type { UploadStatus } from "@/app/hooks/useSmartUpload";
 import { StreamParser } from "@/app/lib/stream-parser";
-import { streamChat, updateMetadata, generateChatTitle } from "@/app/lib/api";
+import {
+  fetchUploadPreprocessingPreview,
+  generateChatTitle,
+  streamChat,
+  updateMetadata,
+  type PreprocessingPreviewResponse,
+} from "@/app/lib/api";
 
 import { startJob, abortJob, finishJob } from "@/app/lib/job-manager";
 import NetKeyModal from "@/app/components/net/NetKeyModal";
@@ -235,6 +241,10 @@ export default function ChatWindow({
 
   
   const [pendingJobId, setPendingJobId] = useState<string | null>(null);
+  const [preprocessingPreview, setPreprocessingPreview] =
+    useState<PreprocessingPreviewResponse | null>(null);
+  const [preprocessingPreviewLoading, setPreprocessingPreviewLoading] = useState(false);
+  const [preprocessingPreviewError, setPreprocessingPreviewError] = useState<string | null>(null);
 
   // --- Live Model Stage ---
   const [currentStage, setCurrentStage] = useState<string>("");
@@ -324,6 +334,61 @@ export default function ChatWindow({
     setInlineMetadataFields(externalMetadataRequest.fields);
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
   }, [externalMetadataRequest, inlineMetadataFields, disableMetadataWorkflow]);
+
+  const loadPreprocessingPreview = useCallback(async (
+    jobId: string,
+    scope: "auto" | "quick" | "full" = "auto"
+  ) => {
+    if (!jobId) return;
+    setPreprocessingPreviewLoading(true);
+    setPreprocessingPreviewError(null);
+
+    try {
+      const preview = await fetchUploadPreprocessingPreview(jobId, scope);
+      setPreprocessingPreview(preview);
+    } catch (err: any) {
+      setPreprocessingPreviewError(
+        err?.message || "Failed to load preprocessing preview."
+      );
+    } finally {
+      setPreprocessingPreviewLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (disableMetadataWorkflow || !pendingJobId || !inlineMetadataFields) {
+      if (!inlineMetadataFields) {
+        setPreprocessingPreview(null);
+        setPreprocessingPreviewError(null);
+        setPreprocessingPreviewLoading(false);
+      }
+      return;
+    }
+
+    let canceled = false;
+    setPreprocessingPreviewLoading(true);
+    setPreprocessingPreviewError(null);
+
+    fetchUploadPreprocessingPreview(pendingJobId, "auto")
+      .then((preview) => {
+        if (canceled) return;
+        setPreprocessingPreview(preview);
+      })
+      .catch((err: any) => {
+        if (canceled) return;
+        setPreprocessingPreviewError(
+          err?.message || "Failed to load preprocessing preview."
+        );
+      })
+      .finally(() => {
+        if (canceled) return;
+        setPreprocessingPreviewLoading(false);
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [pendingJobId, inlineMetadataFields, disableMetadataWorkflow]);
 
   // ----------------------------------------------------------------------
   // 2. INLINE METADATA SUBMISSION
@@ -1037,6 +1102,20 @@ useEffect(() => {
                             <InlineMetadataPrompt
                                 fields={inlineMetadataFields}
                                 onSubmit={handleInlineMetadataSubmit}
+                                previewJobId={pendingJobId}
+                                preview={preprocessingPreview}
+                                previewLoading={preprocessingPreviewLoading}
+                                previewError={preprocessingPreviewError}
+                                onRetryPreview={() => {
+                                  if (pendingJobId) {
+                                    void loadPreprocessingPreview(pendingJobId);
+                                  }
+                                }}
+                                onLoadFullPreview={() => {
+                                  if (pendingJobId) {
+                                    void loadPreprocessingPreview(pendingJobId, "full");
+                                  }
+                                }}
                             />
                         )}
 

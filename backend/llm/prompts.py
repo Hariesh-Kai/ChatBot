@@ -15,6 +15,27 @@ UPDATED DESIGN PHILOSOPHY:
 
 from typing import List, Dict, Optional
 
+
+INTERNAL_MODEL_MARKERS = (
+    "<|end|>",
+    "<|system|>",
+    "<|user|>",
+    "<|assistant|>",
+    "<|eot_id|>",
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+)
+
+
+def strip_model_markup(text: str) -> str:
+    if not text:
+        return ""
+
+    cleaned = str(text)
+    for marker in INTERNAL_MODEL_MARKERS:
+        cleaned = cleaned.replace(marker, "")
+    return cleaned
+
 # ============================================================
 # UTILS (Moved to top to prevent reference errors)
 # ============================================================
@@ -27,12 +48,7 @@ def clean_model_output(text: str) -> str:
     if not text:
         return ""
 
-    stop_markers = (
-        "<|end|>",
-        "<|system|>",
-        "<|user|>",
-        "<|assistant|>",
-        "<|eot_id|>",
+    stop_markers = INTERNAL_MODEL_MARKERS + (
         "REFINED ANSWER:",
         "END OF RESPONSE",
     )
@@ -41,7 +57,7 @@ def clean_model_output(text: str) -> str:
         if marker in text:
             text = text.split(marker)[0]  # Take content BEFORE the stop marker
 
-    return text.strip()
+    return strip_model_markup(text).strip()
 
 
 # ============================================================

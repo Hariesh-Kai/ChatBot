@@ -7,33 +7,23 @@ import { API_BASE } from "@/app/lib/config";
 import { Play, CheckCircle, AlertTriangle, Search, FileText, Download, Trash2, RefreshCw, Key } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { authMe } from "@/app/lib/api";
+import {
+  authMe,
+  fetchUploadPreprocessingPreview,
+  type PreprocessingPreviewResponse,
+} from "@/app/lib/api";
 import DeleteConfirmModal from "@/app/components/ui/DeleteConfirmModal";
 import StartupLoader from "@/app/components/ui/StartupLoader";
 import RuntimeOverview from "@/app/components/debug/RuntimeOverview";
+import PreprocessingPreviewPanel from "@/app/components/chat/PreprocessingPreviewPanel";
 
-const RAG_PREPROCESSOR_OPTIONS = [
-  {
-    value: "unstructured",
-    label: "Unstructured",
-    description: "Current production parser with adaptive fast and hi_res modes.",
-  },
-  {
-    value: "pypdf_text",
-    label: "PyPDF Text",
-    description: "Lightweight text-only baseline for quick retrieval tests.",
-  },
-  {
-    value: "pymupdf4llm",
-    label: "PyMuPDF4LLM",
-    description: "Layout-aware markdown extraction. Requires optional install in the venv.",
-  },
-  {
-    value: "docling",
-    label: "Docling",
-    description: "Structured PDF conversion with markdown export. Requires optional install in the venv.",
-  },
-] as const;
+const RECOMMENDED_LOCAL_MODEL = {
+  label: "Qwen 2.5 3B GGUF (Q4_K_M)",
+  repoId: "Qwen/Qwen2.5-3B-Instruct-GGUF",
+  modelId: "lite_qwen_3b_q4",
+  ggufFilename: "qwen2.5-3b-instruct-q4_k_m.gguf",
+  note: "Best single local model for CPU-first developer setups. Installs once, then powers both Lite and Base.",
+} as const;
 
 type DevtoolsHealthStatus = "ok" | "fail" | "skipped";
 
@@ -45,6 +35,26 @@ interface DevtoolsHealthEntry {
   code?: number;
   timeMs?: number;
   detail?: string;
+}
+
+interface RecentUploadJob {
+  job_id: string;
+  session_id?: string | null;
+  status: string;
+  progress?: number | null;
+  progress_label?: string | null;
+  error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  company_document_id?: string | null;
+  revision_number?: string | null;
+  source_file?: string | null;
+  rag_preprocessor?: string | null;
+  rag_ingest_mode?: string | null;
+  rag_collection_name?: string | null;
+  preview_available?: boolean;
+  preview_unavailable_reason?: string | null;
+  missing_fields?: string[] | null;
 }
 
 function canAccessDeveloperDashboard(role?: string) {
@@ -62,7 +72,7 @@ export default function DashboardPage() {
   const router = useRouter();
 
   const [activeTab, setActiveTab] = useState<
-    "settings" | "models" | "runtime" | "users" | "databases" | "danger" | "intent" | "rewrite" | "retrieve" | "health"
+    "settings" | "preprocessing" | "models" | "runtime" | "users" | "databases" | "danger" | "intent" | "rewrite" | "retrieve" | "health"
   >("settings");
 
   const [backendReady, setBackendReady] = useState(false);
@@ -95,6 +105,17 @@ export default function DashboardPage() {
   const [retrievalRevision, setRetrievalRevision] = useState("1");
   const [retrievalCollectionName, setRetrievalCollectionName] = useState("");
   const [retrievalResult, setRetrievalResult] = useState<any>(null);
+
+  // --- Preprocessing Preview State ---
+  const [preprocessingJobs, setPreprocessingJobs] = useState<RecentUploadJob[]>([]);
+  const [preprocessingJobsError, setPreprocessingJobsError] = useState<string | null>(null);
+  const [preprocessingJobsBusy, setPreprocessingJobsBusy] = useState(false);
+  const [preprocessingJobDraft, setPreprocessingJobDraft] = useState("");
+  const [selectedPreprocessingJobId, setSelectedPreprocessingJobId] = useState<string | null>(null);
+  const [preprocessingPreview, setPreprocessingPreview] =
+    useState<PreprocessingPreviewResponse | null>(null);
+  const [preprocessingPreviewLoading, setPreprocessingPreviewLoading] = useState(false);
+  const [preprocessingPreviewError, setPreprocessingPreviewError] = useState<string | null>(null);
 
   // --- Settings State ---
   const [settings, setSettings] = useState<any>(null);
@@ -295,6 +316,8 @@ export default function DashboardPage() {
     setRetrievalCollectionName((prev) => (prev.trim() ? prev : nextCollection));
   }, [settings]);
 
+  const documentProcessingProfile = settings?.document_processing_profile || {};
+
   useEffect(() => {
     if (!backendReady) return;
     let cancelled = false;
@@ -404,12 +427,13 @@ export default function DashboardPage() {
       const reg = data?.model_registry || {};
       const hfIds = Object.keys(data?.hf_models || {});
       const ggufIds = Object.keys(data?.gguf_models || {});
+      const baseIds = Array.from(new Set([...hfIds, ...ggufIds]));
       const netProviders = Array.isArray(data?.net_providers) ? data.net_providers : [];
 
       const nextBase =
-        reg?.base?.default && hfIds.includes(reg.base.default)
+        reg?.base?.default && baseIds.includes(reg.base.default)
           ? reg.base.default
-          : hfIds[0] || "";
+          : baseIds[0] || "";
       const nextLite =
         reg?.lite?.default && ggufIds.includes(reg.lite.default)
           ? reg.lite.default
@@ -452,6 +476,111 @@ export default function DashboardPage() {
       setRuntimeBusy(false);
     }
   }
+
+  const loadDashboardPreprocessingPreview = useCallback(async (
+    jobId: string,
+    scope: "auto" | "quick" | "full" = "full"
+  ) => {
+    const trimmed = (jobId || "").trim();
+    if (!trimmed) {
+      setPreprocessingPreview(null);
+      setPreprocessingPreviewError("Enter an upload job id to load a preprocessing preview.");
+      return;
+    }
+
+    setPreprocessingPreviewLoading(true);
+    setPreprocessingPreviewError(null);
+    try {
+      const preview = await fetchUploadPreprocessingPreview(trimmed, scope);
+      setPreprocessingPreview(preview);
+      setSelectedPreprocessingJobId(trimmed);
+      setPreprocessingJobDraft(trimmed);
+    } catch (e: any) {
+      setPreprocessingPreview(null);
+      setPreprocessingPreviewError(e?.message || "Failed to load preprocessing preview.");
+    } finally {
+      setPreprocessingPreviewLoading(false);
+    }
+  }, []);
+
+  const loadRecentUploadJobs = useCallback(async () => {
+    setPreprocessingJobsBusy(true);
+    setPreprocessingJobsError(null);
+    try {
+      const res = await fetch(`${API_BASE}/devtools/uploads/recent?limit=12`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error(await res.text());
+
+      const data = await res.json();
+      const jobs = Array.isArray(data?.jobs) ? (data.jobs as RecentUploadJob[]) : [];
+      setPreprocessingJobs(jobs);
+
+      if (!jobs.length) {
+        setSelectedPreprocessingJobId(null);
+        setPreprocessingPreview(null);
+        setPreprocessingJobDraft("");
+        return;
+      }
+    } catch (e: any) {
+      setPreprocessingJobsError(e?.message || "Failed to load recent upload jobs.");
+    } finally {
+      setPreprocessingJobsBusy(false);
+    }
+  }, []);
+
+  const openDashboardPreprocessingJob = useCallback(async (
+    jobId: string,
+    scope: "auto" | "quick" | "full" = "full"
+  ) => {
+    const trimmed = (jobId || "").trim();
+    if (!trimmed) {
+      setPreprocessingPreviewError("Enter an upload job id to load a preprocessing preview.");
+      return;
+    }
+    await loadDashboardPreprocessingPreview(trimmed, scope);
+  }, [loadDashboardPreprocessingPreview]);
+
+  useEffect(() => {
+    if (!backendReady) return;
+    if (activeTab === "preprocessing") {
+      void loadRecentUploadJobs();
+    }
+  }, [activeTab, backendReady, loadRecentUploadJobs]);
+
+  useEffect(() => {
+    if (!backendReady || activeTab !== "preprocessing") return;
+    if (!preprocessingJobs.length) return;
+
+    const currentSelected = (selectedPreprocessingJobId || "").trim();
+    const selectedStillPresent = currentSelected
+      ? preprocessingJobs.some((job) => job.job_id === currentSelected)
+      : false;
+
+    if (selectedStillPresent) return;
+
+    const fallbackJob = preprocessingJobs.find((job) => job.preview_available) || preprocessingJobs[0];
+    if (!fallbackJob) return;
+
+    setSelectedPreprocessingJobId(fallbackJob.job_id);
+    setPreprocessingJobDraft(fallbackJob.job_id);
+
+    if (fallbackJob.preview_available) {
+      void loadDashboardPreprocessingPreview(fallbackJob.job_id, "full");
+    } else {
+      setPreprocessingPreview(null);
+      setPreprocessingPreviewError(
+        fallbackJob.preview_unavailable_reason || "This upload no longer has a local PDF available for preview."
+      );
+    }
+  }, [
+    activeTab,
+    backendReady,
+    loadDashboardPreprocessingPreview,
+    preprocessingJobs,
+    selectedPreprocessingJobId,
+  ]);
 
   async function loadUsers() {
     setUsersError(null);
@@ -855,12 +984,17 @@ export default function DashboardPage() {
     }
   }
 
-  async function downloadHFAuto() {
+  async function downloadModelFromRepo(opts: {
+    repoId: string;
+    modelId?: string;
+    ggufFilename?: string;
+    successLabel?: string;
+  }) {
     setModelsBusy(true);
     setModelsError(null);
     setHfAutoStatus("Downloading...");
     try {
-      const repoId = (hfAutoRepoId || "").trim();
+      const repoId = (opts.repoId || "").trim();
       if (!repoId) {
         throw new Error("Hugging Face repo_id is required");
       }
@@ -870,8 +1004,8 @@ export default function DashboardPage() {
         credentials: "include",
         body: JSON.stringify({
           repo_id: repoId,
-          model_id: hfAutoModelId || undefined,
-          gguf_filename: hfAutoGgufFile || undefined,
+          model_id: opts.modelId || undefined,
+          gguf_filename: opts.ggufFilename || undefined,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -880,7 +1014,8 @@ export default function DashboardPage() {
         setHfAutoStatus(`Downloaded and synced to inventory: ${data.asset_id || data.repo_id || "asset"}`);
       } else {
         setHfAutoStatus(
-          `Downloaded (${data.model_type || "model"}) and registered as ${data.mode || "base"}`
+          opts.successLabel ||
+            `Downloaded (${data.model_type || "model"}) and registered as ${data.mode || "base"}`
         );
       }
       await loadModels();
@@ -890,6 +1025,26 @@ export default function DashboardPage() {
     } finally {
       setModelsBusy(false);
     }
+  }
+
+  async function downloadHFAuto() {
+    await downloadModelFromRepo({
+      repoId: hfAutoRepoId,
+      modelId: hfAutoModelId || undefined,
+      ggufFilename: hfAutoGgufFile || undefined,
+    });
+  }
+
+  async function installRecommendedLocalModel() {
+    setHfAutoRepoId(RECOMMENDED_LOCAL_MODEL.repoId);
+    setHfAutoModelId(RECOMMENDED_LOCAL_MODEL.modelId);
+    setHfAutoGgufFile(RECOMMENDED_LOCAL_MODEL.ggufFilename);
+    await downloadModelFromRepo({
+      repoId: RECOMMENDED_LOCAL_MODEL.repoId,
+      modelId: RECOMMENDED_LOCAL_MODEL.modelId,
+      ggufFilename: RECOMMENDED_LOCAL_MODEL.ggufFilename,
+      successLabel: "Recommended local model installed and synced to Lite + Base.",
+    });
   }
 
   async function applyModeAssignment(mode: "base" | "lite" | "net") {
@@ -1041,6 +1196,14 @@ export default function DashboardPage() {
   const activeLiteId = activeModeMap.lite?.model_id || activeModeMap.lite?.model || "";
   const activeNetId =
     activeModeMap.net?.provider || activeModeMap.net?.model || activeModeMap.net?.model_id || "";
+  const selectedPreprocessingJob =
+    preprocessingJobs.find((job) => job.job_id === selectedPreprocessingJobId) || null;
+  const baseAssignmentOptions = Array.from(
+    new Set([
+      ...Object.keys(modelsData?.hf_models || {}),
+      ...Object.keys(modelsData?.gguf_models || {}),
+    ])
+  );
   const modelInventory: any[] = Array.isArray(modelsData?.inventory) ? modelsData.inventory : [];
   const modelInventoryGroups: Record<string, any[]> = modelInventory.reduce((acc: Record<string, any[]>, item: any) => {
     const key = String(item?.group || "other").toLowerCase();
@@ -1139,6 +1302,7 @@ export default function DashboardPage() {
       {/* TABS */}
       <div className="mb-8 flex gap-4 border-b border-white/10 pb-1 overflow-x-auto">
         <TabButton active={activeTab === "settings"} onClick={() => setActiveTab("settings")} label="Settings" />
+        <TabButton active={activeTab === "preprocessing"} onClick={() => setActiveTab("preprocessing")} label="Preprocessing" />
         <TabButton active={activeTab === "models"} onClick={() => setActiveTab("models")} label="Models" />
         <TabButton active={activeTab === "runtime"} onClick={() => setActiveTab("runtime")} label="Runtime" />
         <TabButton active={activeTab === "users"} onClick={() => setActiveTab("users")} label="Users" />
@@ -1169,42 +1333,13 @@ export default function DashboardPage() {
                     Runtime flags that control chat behavior and retrieval.
                   </div>
                   <div className="mb-3 rounded border border-white/10 bg-black/30 px-3 py-3">
-                    <label className="block text-xs text-gray-400 mb-2">RAG Ingest Mode</label>
-                    <select
-                      value={String(settings.rag_ingest_mode || settings.rag_mode || "balanced")}
+                    <Toggle
+                      label="Fast document processing"
+                      description="Off keeps uploads on the strict high-accuracy path for richer table extraction, image classification, and stronger header/footer cleanup. Turn it on only when you want faster preprocessing."
+                      value={!!settings.enable_fast_document_processing}
                       disabled={settingsBusy}
-                      onChange={(e) => patchSettings({ rag_ingest_mode: e.target.value })}
-                      className="w-full bg-[#222] border border-white/10 rounded p-2 text-white"
-                    >
-                      <option value="fast">Fast</option>
-                      <option value="balanced">Balanced</option>
-                      <option value="high_fidelity">High Fidelity</option>
-                    </select>
-                    <div className="mt-2 text-xs text-gray-500">
-                      Controls upload parsing/indexing quality. High Fidelity extracts richer structure.
-                    </div>
-                  </div>
-                  <div className="mb-3 rounded border border-white/10 bg-black/30 px-3 py-3">
-                    <label className="block text-xs text-gray-400 mb-2">RAG Preprocessor</label>
-                    <select
-                      value={String(settings.rag_preprocessor || "unstructured")}
-                      disabled={settingsBusy}
-                      onChange={(e) => patchSettings({ rag_preprocessor: e.target.value })}
-                      className="w-full bg-[#222] border border-white/10 rounded p-2 text-white"
-                    >
-                      {RAG_PREPROCESSOR_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="mt-2 text-xs text-gray-500">
-                      {
-                        RAG_PREPROCESSOR_OPTIONS.find(
-                          (option) => option.value === String(settings.rag_preprocessor || "unstructured")
-                        )?.description
-                      }
-                    </div>
+                      onChange={(v) => patchSettings({ enable_fast_document_processing: v })}
+                    />
                   </div>
                   <div className="mb-3 rounded border border-white/10 bg-black/30 px-3 py-3">
                     <label className="block text-xs text-gray-400 mb-2">RAG Collection Name</label>
@@ -1253,15 +1388,69 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <div className="mb-3 rounded border border-emerald-500/20 bg-emerald-500/5 px-3 py-3">
-                    <div className="text-[11px] uppercase tracking-wide text-emerald-300">Active Test Profile</div>
+                    <div className="text-[11px] uppercase tracking-wide text-emerald-300">Document Processing Profile</div>
                     <div className="mt-2 text-sm text-white">
-                      {String(settings.rag_preprocessor || "unstructured")} into{" "}
+                      {documentProcessingProfile.label === "fast" ? "Fast" : "High accuracy"} using{" "}
                       <span className="font-mono text-emerald-200">
-                        {String(settings.rag_collection_name || "rag_documents")}
+                        {String(documentProcessingProfile.rag_preprocessor || settings.rag_preprocessor || "unstructured")}
                       </span>
+                    </div>
+                    <div className="mt-2 text-xs text-emerald-100/80 space-y-1">
+                      <div>Ingest mode: {String(documentProcessingProfile.rag_ingest_mode || settings.rag_ingest_mode || settings.rag_mode || "high_fidelity")}</div>
+                      <div>Preview scope: {String(documentProcessingProfile.preview_scope || "full")}</div>
+                      <div>Header/footer cleanup: {String(documentProcessingProfile.header_footer_cleanup || "strict")}</div>
+                      <div>Image classification: {documentProcessingProfile.image_classification ? "enabled" : "reduced"}</div>
+                      <div>
+                        Collection:{" "}
+                        <span className="font-mono">
+                          {String(settings.rag_collection_name || "rag_documents")}
+                        </span>
+                      </div>
                     </div>
                   </div>
                   <div className="grid grid-cols-1 gap-3">
+                    <Toggle
+                      label="Query rewrite"
+                      description="Enable query rewrite and intent routing before retrieval"
+                      value={!!settings.enable_query_rewrite}
+                      disabled={settingsBusy}
+                      onChange={(v) => patchSettings({ enable_query_rewrite: v })}
+                    />
+                    <Toggle
+                      label="Agent pipeline"
+                      description="Allow orchestrator-based multi-step answer generation"
+                      value={!!settings.enable_agent_pipeline}
+                      disabled={settingsBusy}
+                      onChange={(v) => patchSettings({ enable_agent_pipeline: v })}
+                    />
+                    <Toggle
+                      label="Hybrid retrieval"
+                      description="Enable keyword search, fusion, reranking, and retrieval extras"
+                      value={!!settings.enable_hybrid_retrieval}
+                      disabled={settingsBusy}
+                      onChange={(v) => patchSettings({ enable_hybrid_retrieval: v })}
+                    />
+                    <Toggle
+                      label="Learning"
+                      description="Enable adaptive retrieval, retrieval stats, and few-shot helpers"
+                      value={!!settings.enable_learning}
+                      disabled={settingsBusy}
+                      onChange={(v) => patchSettings({ enable_learning: v })}
+                    />
+                    <Toggle
+                      label="Eval gate"
+                      description="Enable release gating and answer evaluation checks"
+                      value={!!settings.enable_eval_gate}
+                      disabled={settingsBusy}
+                      onChange={(v) => patchSettings({ enable_eval_gate: v })}
+                    />
+                    <Toggle
+                      label="Cache"
+                      description="Enable retrieval cache reuse between similar questions"
+                      value={!!settings.enable_cache}
+                      disabled={settingsBusy}
+                      onChange={(v) => patchSettings({ enable_cache: v })}
+                    />
                     <Toggle
                       label="RAG visualization"
                       description="Show model stages in chat"
@@ -1362,10 +1551,15 @@ export default function DashboardPage() {
           <div className="lg:col-span-2 space-y-6">
             <Card title="What These Affect">
               <div className="text-gray-300 space-y-3 text-sm leading-relaxed">
-                <div><span className="text-white font-medium">RAG ingest mode</span> controls upload parsing/indexing quality and speed.</div>
-                <div><span className="text-white font-medium">RAG preprocessor</span> switches which PDF parser runs during upload and indexing.</div>
+                <div><span className="text-white font-medium">Fast document processing</span> is the single upload-quality toggle. Off forces the strict high-accuracy path, full preview scope, stronger table parsing, and tougher cleanup of repeated headers, footers, page markers, and image placeholders.</div>
                 <div><span className="text-white font-medium">RAG collection name</span> decides which PGVector collection both upload indexing and chat retrieval use.</div>
                 <div><span className="text-white font-medium">RAG retrieval mode</span> controls live query retrieval depth. Auto applies intent-based routing with manual override.</div>
+                <div><span className="text-white font-medium">Query rewrite</span> re-enables the pre-retrieval rewrite and intent classification layer.</div>
+                <div><span className="text-white font-medium">Agent pipeline</span> re-enables the orchestrated multi-step answer flow instead of single-model generation.</div>
+                <div><span className="text-white font-medium">Hybrid retrieval</span> adds keyword search, fusion, reranking, and metadata-heavy retrieval behaviors.</div>
+                <div><span className="text-white font-medium">Learning</span> re-enables adaptive retrieval, retrieval stats, and few-shot prompt injection.</div>
+                <div><span className="text-white font-medium">Eval gate</span> re-enables release checks and factual answer gating after generation.</div>
+                <div><span className="text-white font-medium">Cache</span> re-enables retrieval result reuse for repeated questions.</div>
                 <div><span className="text-white font-medium">RAG visualization</span> shows high-level retrieval stages during responses.</div>
                 <div><span className="text-white font-medium">Confidence score</span> controls the confidence badge in chat.</div>
                 <div><span className="text-white font-medium">Sources</span> controls the citations button and source viewer.</div>
@@ -1551,6 +1745,185 @@ export default function DashboardPage() {
                     )}
                  </Card>
             </div>
+        </div>
+      )}
+
+      {/* === TAB: PREPROCESSING === */}
+      {activeTab === "preprocessing" && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-1 space-y-6">
+            <Card title="Preview Loader">
+              <div className="text-xs text-gray-400 mb-3">
+                Open a document preprocessing preview from a recent upload job. This shows OCR elements,
+                extracted tables, removed headers and footers, and the chunks that will be indexed.
+                The dashboard loads the full preview so you can inspect all detected tables for the selected upload.
+              </div>
+              <label className="block text-xs text-gray-400 mb-2">Upload Job ID</label>
+              <div className="flex gap-2">
+                <input
+                  value={preprocessingJobDraft}
+                  onChange={(e) => setPreprocessingJobDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void openDashboardPreprocessingJob(preprocessingJobDraft, "full");
+                    }
+                  }}
+                  className="w-full bg-[#222] border border-white/10 rounded p-2 text-white font-mono text-xs"
+                  placeholder="Paste a job_id from an upload"
+                />
+                <button
+                  type="button"
+                  onClick={() => void openDashboardPreprocessingJob(preprocessingJobDraft, "full")}
+                  disabled={preprocessingPreviewLoading}
+                  className="shrink-0 rounded bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
+                >
+                  Open All Tables
+                </button>
+              </div>
+              {selectedPreprocessingJob ? (
+                <div className="mt-4 rounded border border-blue-500/20 bg-blue-500/10 p-3 text-xs text-blue-100">
+                  <div className="font-medium text-white">
+                    {selectedPreprocessingJob.source_file || "Selected upload"}
+                  </div>
+                  <div className="mt-1 font-mono text-blue-200 break-all">
+                    {selectedPreprocessingJob.job_id}
+                  </div>
+                  <div className="mt-2 space-y-1 text-blue-100/80">
+                    <div>Status: {selectedPreprocessingJob.status}</div>
+                    <div>Preprocessor: {selectedPreprocessingJob.rag_preprocessor || "unknown"}</div>
+                    <div>Ingest mode: {selectedPreprocessingJob.rag_ingest_mode || "unknown"}</div>
+                    <div>Collection: {selectedPreprocessingJob.rag_collection_name || "rag_documents"}</div>
+                  </div>
+                </div>
+              ) : null}
+            </Card>
+
+            <Card title="Recent Upload Jobs" className="max-h-[75vh] overflow-hidden">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div className="text-xs text-gray-400">
+                  Pick a recent upload to inspect how table extraction and cleanup behaved.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadRecentUploadJobs()}
+                  disabled={preprocessingJobsBusy}
+                  className="inline-flex items-center gap-2 rounded border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-gray-200 hover:bg-white/10 disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={preprocessingJobsBusy ? "animate-spin" : ""} />
+                  Refresh
+                </button>
+              </div>
+
+              {preprocessingJobsError ? (
+                <div className="mb-3 rounded border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
+                  {preprocessingJobsError}
+                </div>
+              ) : null}
+
+              {!preprocessingJobs.length ? (
+                <div className="rounded border border-dashed border-white/10 bg-black/30 p-4 text-sm text-gray-400">
+                  No upload jobs found yet. Upload a document first, then come back here to inspect the preprocessing output.
+                </div>
+              ) : (
+                <div className="space-y-3 overflow-auto pr-1 max-h-[58vh]">
+                  {preprocessingJobs.map((job) => {
+                    const isSelected = job.job_id === selectedPreprocessingJobId;
+                    return (
+                      <div
+                        key={job.job_id}
+                        className={`rounded-lg border p-3 ${
+                          isSelected
+                            ? "border-blue-500/40 bg-blue-500/10"
+                            : "border-white/10 bg-black/30"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-sm text-white truncate">
+                              {job.source_file || "Unnamed upload"}
+                            </div>
+                            <div className="mt-1 text-[11px] font-mono text-gray-400 break-all">
+                              {job.job_id}
+                            </div>
+                          </div>
+                          <span className="shrink-0 rounded bg-white/10 px-2 py-1 text-[10px] uppercase tracking-wide text-gray-200">
+                            {job.status}
+                          </span>
+                        </div>
+
+                        <div className="mt-3 space-y-1 text-[11px] text-gray-400">
+                          <div>Document: {job.company_document_id || "n/a"} / rev {job.revision_number || "n/a"}</div>
+                          <div>Parser: {job.rag_preprocessor || "unknown"} / {job.rag_ingest_mode || "unknown"}</div>
+                          <div>
+                            Updated: {job.updated_at ? new Date(job.updated_at).toLocaleString() : "n/a"}
+                          </div>
+                          {job.progress_label ? <div>{job.progress_label}</div> : null}
+                          {job.missing_fields?.length ? (
+                            <div>Missing metadata fields: {job.missing_fields.join(", ")}</div>
+                          ) : null}
+                          {!job.preview_available && job.preview_unavailable_reason ? (
+                            <div className="text-amber-300">{job.preview_unavailable_reason}</div>
+                          ) : null}
+                          {job.error ? (
+                            <div className="text-red-300">{job.error}</div>
+                          ) : null}
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void openDashboardPreprocessingJob(job.job_id, "full")}
+                            disabled={!job.preview_available || preprocessingPreviewLoading}
+                            className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Open all tables
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Card>
+          </div>
+
+          <div className="lg:col-span-2 space-y-6">
+            <Card title="What You Can Inspect">
+              <div className="text-gray-300 space-y-3 text-sm leading-relaxed">
+                <div><span className="text-white font-medium">Tables</span> show the OCR text, structured HTML, row and column counts, and a cropped image of the detected table area.</div>
+                <div><span className="text-white font-medium">OCR Metadata</span> shows the elements and evidence used for metadata extraction.</div>
+                <div><span className="text-white font-medium">Removed Elements</span> shows headers, footers, page markers, image placeholders, and repeated boilerplate that were filtered out before chunking.</div>
+                <div><span className="text-white font-medium">Chunks</span> shows the final text blocks that are prepared for indexing after preprocessing cleanup.</div>
+              </div>
+            </Card>
+
+            {selectedPreprocessingJobId ? (
+              <PreprocessingPreviewPanel
+                jobId={selectedPreprocessingJobId}
+                preview={preprocessingPreview}
+                loading={preprocessingPreviewLoading}
+                error={preprocessingPreviewError}
+                defaultTab="tables"
+                onRetry={() => {
+                  if (selectedPreprocessingJobId) {
+                    void loadDashboardPreprocessingPreview(selectedPreprocessingJobId, "full");
+                  }
+                }}
+                onLoadFullPreview={() => {
+                  if (selectedPreprocessingJobId) {
+                    void loadDashboardPreprocessingPreview(selectedPreprocessingJobId, "full");
+                  }
+                }}
+              />
+            ) : (
+              <Card title="Preprocessing Preview">
+                <div className="text-gray-400">
+                  Select a recent upload job or paste a job ID to inspect table extraction and preprocessing output.
+                </div>
+              </Card>
+            )}
+          </div>
         </div>
       )}
 
@@ -1744,7 +2117,7 @@ export default function DashboardPage() {
                 <div className="rounded border border-white/10 bg-black/30 p-3">
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <div className="flex items-center gap-2">
-                      <label className="block text-xs text-gray-400">Base (HF)</label>
+                      <label className="block text-xs text-gray-400">Base (Best Local)</label>
                       {activeBaseId && (
                         <span className="text-[10px] px-2 py-0.5 rounded bg-green-500/20 text-green-300">
                           Active
@@ -1758,7 +2131,7 @@ export default function DashboardPage() {
                     className="w-full bg-[#222] border border-white/10 rounded p-2 text-white"
                     disabled={modelsBusy}
                   >
-                    {(Object.keys(modelsData?.hf_models || {}) || []).map((id) => (
+                    {baseAssignmentOptions.map((id) => (
                       <option key={id} value={id}>
                         {id}
                       </option>
@@ -1777,6 +2150,9 @@ export default function DashboardPage() {
                     >
                       Apply
                     </button>
+                  </div>
+                  <div className="mt-2 text-[11px] text-gray-500">
+                    Base can use either an HF snapshot or a GGUF local model on CPU-first machines.
                   </div>
                 </div>
 
@@ -1875,6 +2251,21 @@ export default function DashboardPage() {
                   className="rounded bg-gray-700 hover:bg-gray-600 px-2.5 py-1 text-[11px] leading-none text-white disabled:opacity-50 inline-flex items-center gap-2 whitespace-nowrap"
                 >
                   <RefreshCw size={12} /> Refresh Registry
+                </button>
+              </div>
+              <div className="mb-4 rounded border border-emerald-500/20 bg-emerald-500/10 p-3">
+                <div className="text-xs uppercase tracking-wide text-emerald-300">Recommended Local Install</div>
+                <div className="mt-2 text-sm text-white">{RECOMMENDED_LOCAL_MODEL.label}</div>
+                <div className="mt-1 text-[11px] text-gray-300">{RECOMMENDED_LOCAL_MODEL.note}</div>
+                <div className="mt-2 text-[11px] text-gray-500 break-all">
+                  {RECOMMENDED_LOCAL_MODEL.repoId} · {RECOMMENDED_LOCAL_MODEL.ggufFilename}
+                </div>
+                <button
+                  onClick={installRecommendedLocalModel}
+                  disabled={modelsBusy}
+                  className="mt-3 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded inline-flex items-center gap-2 disabled:opacity-50"
+                >
+                  <Download size={16} /> Install Recommended Model
                 </button>
               </div>
               <label className="block text-xs text-gray-400 mb-2">Hugging Face repo_id</label>

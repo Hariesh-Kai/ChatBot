@@ -52,6 +52,21 @@ def ensure_model_paths() -> None:
         )
 
 
+def get_model_config_fingerprint() -> Tuple[int, int]:
+    """
+    Return a stable fingerprint for the persisted model config file.
+
+    The backend uses this to auto-reload model registrations when an external
+    script updates `models/model_config.json`.
+    """
+    ensure_model_paths()
+    try:
+        stat = MODEL_CONFIG_PATH.stat()
+        return int(stat.st_mtime_ns), int(stat.st_size)
+    except Exception:
+        return 0, 0
+
+
 def load_model_config() -> Dict[str, Any]:
     with _LOCK:
         ensure_model_paths()

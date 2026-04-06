@@ -22,6 +22,8 @@ import re
 from typing import List, Dict, Any, Optional
 from collections import OrderedDict
 
+from backend.state.dev_settings import get_dev_settings
+
 
 # ============================================================
 # CONFIG
@@ -39,6 +41,16 @@ _CACHE_ENABLED    = True       # global toggle
 # OrderedDict used as an LRU — most-recently-used moves to end
 # Entry format: { key: (timestamp, chunk_data_list) }
 _store: OrderedDict = OrderedDict()
+
+
+def _is_cache_enabled() -> bool:
+    if not _CACHE_ENABLED:
+        return False
+    try:
+        settings = get_dev_settings()
+    except Exception:
+        return False
+    return bool(settings.get("enable_cache", False))
 
 
 # ============================================================
@@ -76,7 +88,7 @@ def get_cached_chunks(
     """
     Return cached chunks for this question, or None if not cached / expired.
     """
-    if not _CACHE_ENABLED:
+    if not _is_cache_enabled():
         return None
 
     try:
@@ -111,7 +123,7 @@ def set_cached_chunks(
     Store retrieved chunks in cache.
     Evicts oldest entry if at capacity.
     """
-    if not _CACHE_ENABLED:
+    if not _is_cache_enabled():
         return
 
     try:
@@ -160,5 +172,5 @@ def get_cache_stats() -> Dict[str, Any]:
         "size": len(_store),
         "max_size": CACHE_MAX_SIZE,
         "ttl_seconds": CACHE_TTL_SECONDS,
-        "enabled": _CACHE_ENABLED,
+        "enabled": _is_cache_enabled(),
     }

@@ -30,7 +30,7 @@ from backend.llm.loader import (
 )
 from backend.llm.prompts import clean_model_output
 from backend.llm.response_policy import apply_response_policy
-from backend.rag.evaluator import evaluate_answer
+from backend.rag.evaluator_runtime import evaluate_answer
 from backend.rag.grounding import check_grounding
 from backend.state.abort_signals import is_aborted
 
@@ -483,6 +483,50 @@ def _normalize_search_content(content: str) -> str:
     return text.strip()
 
 
+_METADATA_PRIORITY_FIELDS = {"company_document_id", "document_number", "revision_number"}
+
+
+def _fact_candidate_priority(field: str, candidate: Dict[str, Any]) -> tuple:
+    page = int(candidate.get("page") or 999)
+    quote = str(candidate.get("support_quote") or "").lower()
+
+    page_priority = -page
+    if field in _METADATA_PRIORITY_FIELDS:
+        if page == 1:
+            page_priority = 500
+        elif page == 2:
+            page_priority = 400
+        else:
+            page_priority = max(100 - page, -page)
+
+    label_priority = 0
+    if field == "company_document_id":
+        if "company document id" in quote:
+            label_priority += 50
+        if "file name" in quote:
+            label_priority += 10
+    elif field == "document_number" and "document number" in quote:
+        label_priority += 50
+    elif field == "revision_number":
+        if "revision number" in quote:
+            label_priority += 50
+        if "validity status revision number" in quote:
+            label_priority += 20
+
+    quote_priority = min(len(quote), 220)
+    return (page_priority, label_priority, quote_priority)
+
+
+def _should_replace_fact_candidate(
+    field: str,
+    existing: Optional[Dict[str, Any]],
+    candidate: Dict[str, Any],
+) -> bool:
+    if not existing:
+        return True
+    return _fact_candidate_priority(field, candidate) > _fact_candidate_priority(field, existing)
+
+
 def _heuristic_extract_facts(question: str, retrieval_chunks: List[Dict[str, Any]], focus_fields: List[str]) -> Dict[str, Any]:
     requested = focus_fields or _infer_focus_fields(question)
     question_lower = str(question or "").lower()
@@ -495,18 +539,25 @@ def _heuristic_extract_facts(question: str, retrieval_chunks: List[Dict[str, Any
                 for match in pattern.finditer(search_content):
                     value = (match.group(1) or "").strip().strip(".,;:")
                     if value and value.lower() not in INVALID_FIELD_VALUES:
-                        matches[field][value] = {
+                        candidate = {
                             "field": field,
                             "value": value,
                             "chunk_id": str(chunk.get("chunk_id") or ""),
                             "page": int(chunk.get("page") or 1),
                             "support_quote": _compact_text(_line_with_match(search_content, match), 220),
                         }
+                        existing = matches[field].get(value)
+                        if _should_replace_fact_candidate(field, existing, candidate):
+                            matches[field][value] = candidate
     facts: List[Dict[str, Any]] = []
     conflicts: List[Dict[str, Any]] = []
     missing_fields: List[str] = []
     for field in requested:
-        values = list(matches.get(field, {}).values())
+        values = sorted(
+            list(matches.get(field, {}).values()),
+            key=lambda item: _fact_candidate_priority(field, item),
+            reverse=True,
+        )
         if field in {"company_document_id", "revision_number"}:
             preferred = [item for item in values if int(item.get("page") or 0) <= 2]
             if preferred:
@@ -578,7 +629,7 @@ def _fact_phrase(question: str, field: str, value: str) -> str:
     if field == "company_document_id":
         subject = "The specific Company Document ID" if "specific" in q else "The Company Document ID"
     elif field == "revision_number":
-        subject = "the current Revision Number" if "current" in q else "the Revision Number"
+        subject = "The current Revision Number" if "current" in q else "The Revision Number"
     else:
         subject = f"The {label}"
     return f"{subject} is {value}"
@@ -610,6 +661,86 @@ def _sentence_count(text: str) -> int:
     return len(sentences) if sentences else (1 if str(text or "").strip() else 0)
 
 
+def _has_page_citation(text: str) -> bool:
+    return bool(re.search(r"\[Pages?\s+\d", str(text or ""), flags=re.IGNORECASE))
+
+
+def _release_gate_review_issues(
+    question: str,
+    answer: str,
+    retrieval_chunks: List[Dict[str, Any]],
+) -> List[str]:
+    if not retrieval_chunks:
+        return []
+
+    evaluation = evaluate_answer(question, answer, retrieval_chunks)
+    blockers = [
+        str(item).strip()
+        for item in list(evaluation.get("blockers") or [])
+        if str(item).strip()
+    ]
+
+    # Draft answers often get citations appended later in the pipeline.
+    # We still want support and relevance gating here without rejecting
+    # an otherwise correct draft solely because the page tag is added later.
+    if not _has_page_citation(answer):
+        blockers = [item for item in blockers if item != "citation_missing_or_invalid"]
+
+    if evaluation.get("decision") == "review" and not blockers:
+        warnings = {
+            str(item).strip()
+            for item in list(evaluation.get("warnings") or [])
+            if str(item).strip()
+        }
+        if warnings & {"facts_weakly_supported", "partial_grounding", "relevance_soft"}:
+            blockers.append("needs_release_review")
+
+    return list(dict.fromkeys(blockers))
+
+
+def _passes_release_gate(
+    question: str,
+    answer: str,
+    retrieval_chunks: List[Dict[str, Any]],
+) -> bool:
+    if not retrieval_chunks:
+        return bool(str(answer or "").strip())
+    return bool(evaluate_answer(question, answer, retrieval_chunks).get("should_release"))
+
+
+def _finalize_strict_factual_output(
+    *,
+    question: str,
+    answer: str,
+    pages: List[int],
+    verbosity: str,
+    max_sentences: int,
+    context_chunks: List[Dict[str, Any]],
+) -> Optional[str]:
+    cited_answer = _append_page_citation(answer, pages)
+    candidates: List[str] = []
+
+    formatted = apply_response_policy(cited_answer, verbosity=verbosity)
+    formatted = _maybe_force_one_line(formatted, max_sentences)
+    if formatted:
+        candidates.append(formatted)
+
+    one_line_cited = _maybe_force_one_line(cited_answer, max_sentences)
+    if one_line_cited:
+        candidates.append(one_line_cited)
+
+    if cited_answer:
+        candidates.append(cited_answer)
+
+    for candidate in candidates:
+        normalized = clean_model_output(candidate).strip()
+        if not normalized:
+            continue
+        if _passes_release_gate(question, normalized, list(context_chunks or [])):
+            return normalized
+    return None
+
+
 def _deterministic_review(
     question: str,
     answer: str,
@@ -637,8 +768,7 @@ def _deterministic_review(
                 break
     if retrieval_chunks and check_grounding(answer, retrieval_chunks).get("grounding_score", 1.0) < 0.45:
         issues.append("unsupported_claim")
-    if retrieval_chunks and evaluate_answer(question, answer, retrieval_chunks).get("quality") == "low":
-        issues.append("low_quality")
+    issues.extend(_release_gate_review_issues(question, answer, retrieval_chunks))
     issues = list(dict.fromkeys(issues))
     return {
         "verdict": "pass" if not issues else "fail",
@@ -718,8 +848,533 @@ def _instruction_senior() -> str:
 def _maybe_force_one_line(text: str, max_sentences: int) -> str:
     if max_sentences > 1:
         return text.strip()
-    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", str(text or "").strip()) if part.strip()]
-    return sentences[0] if sentences else str(text or "").strip()
+    cleaned = str(text or "").strip()
+    citation_match = re.search(r"(\[Page(?:s)?[^\]]+\])\s*$", cleaned, re.IGNORECASE)
+    trailing_citation = citation_match.group(1).strip() if citation_match else ""
+    body = cleaned[:citation_match.start()].strip() if citation_match else cleaned
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", body) if part.strip()]
+    first_sentence = sentences[0] if sentences else body
+    if trailing_citation and trailing_citation.lower() not in first_sentence.lower():
+        return f"{first_sentence} {trailing_citation}".strip()
+    return first_sentence
+
+
+_STRICT_FACT_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "be",
+    "by",
+    "for",
+    "from",
+    "how",
+    "in",
+    "is",
+    "it",
+    "many",
+    "much",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "this",
+    "to",
+    "what",
+    "which",
+    "who",
+    "will",
+    "with",
+}
+_STRICT_FACT_NEGATIONS = (
+    "not specified",
+    "not provided",
+    "not mentioned",
+    "not available",
+    "cannot be determined",
+    "no information available",
+)
+
+
+def _extract_retrieved_pages(chunks: List[Dict[str, Any]]) -> List[int]:
+    pages = sorted(
+        {
+            int((chunk.get("metadata") or {}).get("page_number") or chunk.get("page") or 1)
+            for chunk in (chunks or [])
+            if isinstance((chunk.get("metadata") or {}).get("page_number") or chunk.get("page") or 1, (int, float))
+        }
+    )
+    return [page for page in pages if page > 0]
+
+
+def _format_page_citation(pages: List[int]) -> str:
+    unique_pages = sorted({int(page) for page in pages if isinstance(page, int) and page > 0})
+    if not unique_pages:
+        return ""
+    if len(unique_pages) == 1:
+        return f"[Page {unique_pages[0]}]"
+    preview = ", ".join(str(page) for page in unique_pages[:3])
+    if len(unique_pages) > 3:
+        preview += ", ..."
+    return f"[Pages {preview}]"
+
+
+def _append_page_citation(text: str, pages: List[int]) -> str:
+    cleaned = clean_model_output(text or "").strip()
+    if not cleaned:
+        return ""
+    if re.search(r"\[Page(?:s)?\s+\d", cleaned, re.IGNORECASE):
+        return cleaned
+    citation = _format_page_citation(pages)
+    if not citation:
+        return cleaned
+    return f"{cleaned} {citation}".strip()
+
+
+def _strict_fact_question_tokens(question: str) -> set[str]:
+    tokens = set(re.findall(r"[a-z0-9]{2,}", str(question or "").lower()))
+    return tokens - _STRICT_FACT_STOPWORDS
+
+
+def _clean_support_unit(text: str) -> str:
+    cleaned = str(text or "").strip()
+    cleaned = re.sub(r"^(?:#{1,6}\s*)?(?:section|table):\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^context:\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^(?:\*{1,2}[^*]{2,40}\*{1,2}\s*){1,3}", "", cleaned)
+    cleaned = re.sub(r"^([A-Z][A-Za-z]{2,})(?:\s+\1){1,2}\s+", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip(" -|")
+
+
+def _split_support_units(text: str) -> List[str]:
+    raw_units = re.split(r"[\r\n]+", str(text or ""))
+    units: List[str] = []
+    for raw in raw_units:
+        fragments = re.split(r"(?=\b\d+[\.\)])", str(raw or ""))
+        for fragment in fragments:
+            cleaned = _clean_support_unit(fragment)
+            if len(cleaned) >= 12:
+                units.append(cleaned)
+    if units:
+        return units[:12]
+
+    fallback = _clean_support_unit(text)
+    return [fallback] if len(fallback) >= 12 else []
+
+
+def _question_expects_numeric(question: str) -> bool:
+    q = str(question or "").lower()
+    return any(
+        phrase in q
+        for phrase in ("how many", "how much", "maximum", "minimum", "what is the", "current revision")
+    )
+
+
+def _question_expects_list(question: str) -> bool:
+    q = str(question or "").lower()
+    return any(phrase in q for phrase in ("list", "what are", "which are", "categories"))
+
+
+def _has_standalone_numeric_value(text: str) -> bool:
+    return bool(re.search(r"\b\d+(?:\.\d+)?\b", str(text or "")))
+
+
+def _looks_like_list_answer(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return False
+    lowered = cleaned.lower()
+    if any(
+        phrase in lowered
+        for phrase in (
+            "same categories",
+            "same set of classifications",
+            "same classifications",
+            "categorized under the same",
+        )
+    ):
+        return False
+    item_like = cleaned.count(";") >= 1 or cleaned.count(",") >= 2
+    enumerated = bool(re.search(r"\b1[\.\)]\s+", cleaned))
+    return item_like or enumerated
+
+
+def _extract_best_support_snippet(question: str, source_text: str, fallback_text: str = "") -> str:
+    candidates: List[str] = []
+    normalized = _normalize_search_content(source_text)
+    question_lower = str(question or "").lower()
+    if normalized and question_lower.startswith(("at what", "at which")):
+        sentence_candidates = [
+            _clean_support_unit(part)
+            for part in re.split(r"(?<=[.!?])\s+", normalized)
+            if len(_clean_support_unit(part)) >= 12
+        ]
+        if sentence_candidates:
+            best_sentence = ""
+            best_sentence_score = float("-inf")
+            for sentence in sentence_candidates:
+                score = _support_unit_score(question, _strict_fact_question_tokens(question), sentence)
+                if score <= best_sentence_score:
+                    continue
+                best_sentence = sentence
+                best_sentence_score = score
+            if best_sentence:
+                return best_sentence.rstrip(" .")
+    if normalized:
+        candidates.extend(re.split(r"(?<=[.!?])\s+", normalized))
+    if source_text:
+        candidates.extend(re.split(r"[\r\n]+", source_text))
+    if fallback_text:
+        candidates.append(fallback_text)
+
+    best_text = ""
+    best_score = float("-inf")
+
+    for candidate in candidates:
+        cleaned = _clean_support_unit(candidate)
+        if len(cleaned) < 12:
+            continue
+        score = _support_unit_score(question, _strict_fact_question_tokens(question), cleaned)
+        if _question_expects_numeric(question) and not _has_standalone_numeric_value(cleaned):
+            continue
+        if score > best_score:
+            best_score = score
+            best_text = cleaned
+
+    if not best_text:
+        best_text = _clean_support_unit(fallback_text or source_text)
+
+    if _question_expects_numeric(question):
+        best_text = re.sub(
+            r"^[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4}\s+(?=(?:A\s+number\s+of|A\s+total\s+of|Only\s+\w+|\d))",
+            "",
+            best_text,
+        ).strip()
+        for splitter in (" and ", " due to ", " however ", " but "):
+            lower = best_text.lower()
+            idx = lower.find(splitter)
+            if idx > 25:
+                best_text = best_text[:idx].strip(" ,;:")
+                break
+
+    return best_text.strip()
+
+
+def _support_unit_score(question: str, question_tokens: set[str], unit: str) -> float:
+    unit_tokens = set(re.findall(r"[a-z0-9]{2,}", unit.lower()))
+    overlap = question_tokens & unit_tokens
+    if not overlap:
+        return 0.0
+
+    score = float(len(overlap) * 2) + (len(overlap) / max(len(question_tokens), 1))
+    if _question_expects_numeric(question) and re.search(r"\b\d", unit):
+        score += 2.5
+    if _question_expects_list(question) and re.search(r"^\d+[\.\)]\s+", unit):
+        score += 1.5
+    if any(phrase in unit.lower() for phrase in _STRICT_FACT_NEGATIONS):
+        score -= 2.5
+    return score
+
+
+def _find_support_evidence(question: str, retrieval_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    question_tokens = _strict_fact_question_tokens(question)
+    if not question_tokens:
+        return []
+
+    evidence: List[Dict[str, Any]] = []
+    for chunk in retrieval_chunks:
+        page = int((chunk.get("metadata") or {}).get("page_number") or chunk.get("page") or 1)
+        for unit in _split_support_units(chunk.get("content", "")):
+            score = _support_unit_score(question, question_tokens, unit)
+            if score <= 0:
+                continue
+            evidence.append(
+                {
+                    "text": unit,
+                    "page": page,
+                    "score": round(score, 3),
+                    "source_text": str(chunk.get("content") or ""),
+                }
+            )
+
+    return sorted(evidence, key=lambda item: float(item.get("score") or 0.0), reverse=True)
+
+
+def _coalesce_list_items(lines: List[str]) -> str:
+    items: List[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        cleaned = re.sub(r"^\d+[\.\)]\s*", "", str(line or "").strip())
+        cleaned = cleaned.strip(" -;:,")
+        lowered = cleaned.lower()
+        if not cleaned or lowered in seen:
+            continue
+        seen.add(lowered)
+        items.append(cleaned)
+
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return "; ".join(items[:3])
+
+
+def _extract_list_items_from_source(text: str) -> List[str]:
+    normalized = _normalize_search_content(text)
+    enumerated: List[str] = []
+    seen_enumerated: set[str] = set()
+    for match in re.finditer(r"(?:^|\s)\d+\.\s+(.+?)(?=(?:\s+\d+\.\s+)|$)", normalized):
+        cleaned = str(match.group(1) or "").strip(" -;:,")
+        cleaned = re.sub(r"==>\s*picture.*?<==", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        letters = re.sub(r"[^A-Za-z]+", "", cleaned)
+        word_count = len(cleaned.split())
+        lowered = cleaned.lower()
+        if word_count < 2 or word_count > 12 or lowered in seen_enumerated:
+            continue
+        if letters and sum(1 for ch in letters if ch.isupper()) / max(len(letters), 1) >= 0.8:
+            continue
+        seen_enumerated.add(lowered)
+        enumerated.append(cleaned)
+    if enumerated:
+        return enumerated[:4]
+
+    units = _split_support_units(text)
+    items: List[str] = []
+    seen: set[str] = set()
+    for unit in units:
+        cleaned = re.sub(r"^\d+[\.\)]\s*", "", str(unit or "").strip())
+        cleaned = re.sub(r"==>\s*picture.*?<==", "", cleaned, flags=re.IGNORECASE)
+        cleaned = cleaned.strip(" -;:,")
+        word_count = len(cleaned.split())
+        lowered = cleaned.lower()
+        if not cleaned or word_count < 2 or word_count > 12 or lowered in seen:
+            continue
+        seen.add(lowered)
+        items.append(cleaned)
+    return items[:4]
+
+
+def _build_passage_fact_answer(question: str, retrieval_chunks: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    evidence = _find_support_evidence(question, retrieval_chunks)
+    if not evidence:
+        return None
+
+    top = evidence[0]
+    pages = [int(top.get("page") or 1)]
+
+    if _question_expects_list(question):
+        preferred = top
+        for item in evidence:
+            sibling_count = len(_extract_list_items_from_source(str(item.get("source_text") or "")))
+            if sibling_count >= 2:
+                preferred = item
+                break
+
+        pages = [int(preferred.get("page") or 1)]
+        sibling_lines = _extract_list_items_from_source(str(preferred.get("source_text") or ""))
+        if not sibling_lines:
+            sibling_lines = [
+                item["text"]
+                for item in evidence[:4]
+                if int(item.get("page") or 1) == pages[0]
+                and float(item.get("score") or 0.0) >= max(float(preferred.get("score") or 0.0) - 1.25, 2.5)
+            ]
+        merged = _coalesce_list_items(sibling_lines)
+        if merged:
+            return {"answer": f"The listed items are {merged}.", "pages": pages}
+
+    if _question_expects_numeric(question):
+        support_text = _extract_best_support_snippet(
+            question,
+            str(top.get("source_text") or ""),
+            str(top.get("text") or ""),
+        )
+        if not _has_standalone_numeric_value(support_text):
+            return None
+        return {"answer": f"According to the document, {support_text}.", "pages": pages}
+
+    if float(top.get("score") or 0.0) < 3.0:
+        return None
+    support_text = _extract_best_support_snippet(
+        question,
+        str(top.get("source_text") or ""),
+        str(top.get("text") or ""),
+    ).rstrip(" .")
+    return {"answer": f"According to the document, {support_text}.", "pages": pages}
+
+
+def resolve_strict_factual_answer(
+    *,
+    question: str,
+    context_chunks: Optional[List[Dict[str, Any]]],
+    verbosity: str,
+) -> Optional[Dict[str, Any]]:
+    if not context_chunks:
+        return None
+
+    compact_chunks = _compact_chunks(context_chunks)
+    router_output = _default_router_output(question)
+    if not router_output.get("strict_copy"):
+        return None
+
+    planner_output = _default_planner_output(router_output, len(compact_chunks))
+    prioritized_chunks = _prioritize_chunks(compact_chunks, router_output, planner_output)
+    planned_chunks = prioritized_chunks[: max(1, int(planner_output.get("top_k") or 1))]
+    extractor_output = _heuristic_extract_facts(
+        question,
+        planned_chunks,
+        list(router_output.get("focus_fields") or []),
+    )
+
+    candidate = clean_model_output(_compose_fact_answer(question, router_output, extractor_output)).strip()
+    if candidate:
+        candidate_review = _deterministic_review(
+            question,
+            candidate,
+            router_output,
+            extractor_output,
+            list(context_chunks or []),
+        )
+        if candidate_review.get("verdict") == "pass" and not extractor_output.get("conflicts"):
+            pages = [
+                int(item.get("page") or 1)
+                for item in list(extractor_output.get("facts") or [])
+                if isinstance(item, dict)
+            ]
+            final_answer = _finalize_strict_factual_output(
+                question=question,
+                answer=candidate,
+                pages=pages,
+                verbosity=verbosity,
+                max_sentences=int(router_output.get("max_sentences") or 1),
+                context_chunks=list(context_chunks or []),
+            )
+            if final_answer:
+                return {"final_answer": final_answer, "mode": "field_heuristic"}
+
+    passage_candidate = _build_passage_fact_answer(question, planned_chunks)
+    if not passage_candidate:
+        return None
+
+    passage_answer = clean_model_output(str(passage_candidate.get("answer") or "")).strip()
+    if not passage_answer:
+        return None
+
+    passage_review = _deterministic_review(
+        question,
+        passage_answer,
+        router_output,
+        extractor_output,
+        list(context_chunks or []),
+    )
+    if passage_review.get("verdict") != "pass":
+        return None
+
+    final_answer = _finalize_strict_factual_output(
+        question=question,
+        answer=passage_answer,
+        pages=[int(page) for page in list(passage_candidate.get("pages") or [])],
+        verbosity=verbosity,
+        max_sentences=int(router_output.get("max_sentences") or 1),
+        context_chunks=list(context_chunks or []),
+    )
+    if final_answer:
+        return {"final_answer": final_answer, "mode": "support_passage"}
+    return None
+
+
+def release_strict_factual_answer(
+    *,
+    question: str,
+    answer: str,
+    context_chunks: Optional[List[Dict[str, Any]]],
+    verbosity: str,
+) -> str:
+    abstain = _append_page_citation(
+        "I couldn't verify a supported answer from the retrieved document context.",
+        _extract_retrieved_pages(list(context_chunks or [])),
+    )
+    candidate = clean_model_output(answer or "").strip()
+    if not candidate:
+        resolved = resolve_strict_factual_answer(
+            question=question,
+            context_chunks=context_chunks,
+            verbosity=verbosity,
+        )
+        return resolved["final_answer"] if resolved else apply_response_policy(abstain, verbosity=verbosity)
+
+    if _question_expects_numeric(question) and not _has_standalone_numeric_value(candidate):
+        resolved = resolve_strict_factual_answer(
+            question=question,
+            context_chunks=context_chunks,
+            verbosity=verbosity,
+        )
+        return resolved["final_answer"] if resolved else apply_response_policy(abstain, verbosity=verbosity)
+
+    if _question_expects_list(question) and not _looks_like_list_answer(candidate):
+        resolved = resolve_strict_factual_answer(
+            question=question,
+            context_chunks=context_chunks,
+            verbosity=verbosity,
+        )
+        return resolved["final_answer"] if resolved else apply_response_policy(abstain, verbosity=verbosity)
+
+    if any(phrase in candidate.lower() for phrase in _STRICT_FACT_NEGATIONS):
+        resolved = resolve_strict_factual_answer(
+            question=question,
+            context_chunks=context_chunks,
+            verbosity=verbosity,
+        )
+        return resolved["final_answer"] if resolved else apply_response_policy(abstain, verbosity=verbosity)
+
+    if not context_chunks:
+        return apply_response_policy(candidate, verbosity=verbosity)
+
+    compact_chunks = _compact_chunks(context_chunks)
+    router_output = _default_router_output(question)
+    extractor_output = _heuristic_extract_facts(
+        question,
+        compact_chunks,
+        list(router_output.get("focus_fields") or []),
+    )
+    review_output = _deterministic_review(
+        question,
+        candidate,
+        router_output,
+        extractor_output,
+        list(context_chunks or []),
+    )
+    if review_output.get("verdict") != "pass":
+        resolved = resolve_strict_factual_answer(
+            question=question,
+            context_chunks=context_chunks,
+            verbosity=verbosity,
+        )
+        return resolved["final_answer"] if resolved else apply_response_policy(abstain, verbosity=verbosity)
+
+    cited_answer = candidate
+    if not re.search(r"\[Page(?:s)?\s+\d", candidate, re.IGNORECASE):
+        support = _build_passage_fact_answer(question, compact_chunks)
+        support_pages = (
+            [int(page) for page in list(support.get("pages") or [])]
+            if support
+            else _extract_retrieved_pages(list(context_chunks or []))[:2]
+        )
+        cited_answer = _append_page_citation(candidate, support_pages)
+
+    final_answer = apply_response_policy(cited_answer, verbosity=verbosity)
+    final_answer = _maybe_force_one_line(final_answer, int(router_output.get("max_sentences") or 1))
+    if _passes_release_gate(question, final_answer, list(context_chunks or [])):
+        return final_answer
+
+    resolved = resolve_strict_factual_answer(
+        question=question,
+        context_chunks=context_chunks,
+        verbosity=verbosity,
+    )
+    return resolved["final_answer"] if resolved else apply_response_policy(abstain, verbosity=verbosity)
 
 
 def run_agentic_review_pipeline(

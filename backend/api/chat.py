@@ -35,7 +35,7 @@ from backend.llm.intent_rules import detect_rule_intent
 from backend.llm.intent_classifier import classify_intent, is_referential_follow_up
 from backend.llm.text_normalizer import normalize_text
 from backend.llm.query_rewriter import rewrite_question
-from backend.llm.prompts import build_title_prompt
+from backend.llm.prompts import build_title_prompt, clean_model_output, strip_model_markup
 from backend.llm.loader import get_llm
 from backend.llm.hf_cache_utils import require_local_snapshot
 from backend.llm.model_config_store import HF_CACHE_DIR
@@ -54,7 +54,7 @@ from backend.learning.retrieval_stats import record_retrieval_stats
 from backend.learning.retrieval_policy import apply_retrieval_policy
 from backend.llm.model_selector import resolve_model_id
 from backend.llm.pii import detect_pii
-from backend.rag.evaluator import evaluate_answer
+from backend.rag.evaluator_runtime import evaluate_answer
 from backend.rag.audit import log_rag_turn
 from backend.rag.cache import get_cached_chunks, set_cached_chunks
 from backend.rag.collections import (
@@ -126,8 +126,21 @@ DB_CONNECTION = os.getenv(
 COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
 SQL_BASE_SCORE = 0.35
 UI_EVENT_PREFIX = "__UI_EVENT__"
+MAX_CONTEXT_CHUNKS = 5
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
+
+
+_INTERNAL_STREAM_MARKERS = (
+    "<|end|>",
+    "<|system|>",
+    "<|user|>",
+    "<|assistant|>",
+    "<|eot_id|>",
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+)
+_INTERNAL_STREAM_TAIL = max(len(marker) for marker in _INTERNAL_STREAM_MARKERS) - 1
 logger = logging.getLogger("chatui.chat")
 
 
@@ -233,6 +246,17 @@ def _get_vector_store_for_collection(collection_name: str) -> Optional[PGVector]
         if resolved_collection_name == COLLECTION_NAME:
             vector_store = store
         return store
+
+
+def _rag_debug_flags(settings: Dict[str, Any]) -> Dict[str, bool]:
+    return {
+        "enable_query_rewrite": bool(settings.get("enable_query_rewrite", False)),
+        "enable_agent_pipeline": bool(settings.get("enable_agent_pipeline", False)),
+        "enable_hybrid_retrieval": bool(settings.get("enable_hybrid_retrieval", False)),
+        "enable_learning": bool(settings.get("enable_learning", False)),
+        "enable_eval_gate": bool(settings.get("enable_eval_gate", False)),
+        "enable_cache": bool(settings.get("enable_cache", False)),
+    }
 
 _SMALLTALK_MAP = {
     "who are you": "I'm Kavin, your AI document assistant.",
@@ -439,6 +463,25 @@ def safe_stream_response(
     collected: List[str] = []
     saw_error_event = False
     user_persisted = False
+    pending_text = ""
+
+    def flush_pending(*, final: bool = False) -> str:
+        nonlocal pending_text
+
+        if not pending_text:
+            return ""
+
+        if not final:
+            safe_end = max(0, len(pending_text) - _INTERNAL_STREAM_TAIL)
+            if safe_end <= 0:
+                return ""
+            emit = pending_text[:safe_end]
+            pending_text = pending_text[safe_end:]
+            return strip_model_markup(emit)
+
+        emit = strip_model_markup(pending_text)
+        pending_text = ""
+        return emit
 
     # Persist user turn early so hard model/runtime crashes do not lose it.
     try:
@@ -458,10 +501,14 @@ def safe_stream_response(
             
             # 🔒 SAFETY: If backend ever emits invalid TEXT UI event, normalize it
             if chunk.startswith(UI_EVENT_PREFIX):
+                flushed = flush_pending(final=True)
+                if flushed:
+                    yield flushed
+                    collected.append(flushed)
                 try:
                     event = json.loads(chunk[len(UI_EVENT_PREFIX):])
                     if event.get("type") == "TEXT":
-                        content = event.get("content", "")
+                        content = strip_model_markup(event.get("content", ""))
                         yield content
                         collected.append(content)
                         continue
@@ -474,17 +521,23 @@ def safe_stream_response(
                 except Exception:
                     continue
 
-            # 🔥 chunk is already a UI event
-            yield chunk
-            if not chunk.startswith(UI_EVENT_PREFIX):
-                collected.append(chunk)
+            pending_text += chunk
+            flushed = flush_pending(final=False)
+            if flushed:
+                yield flushed
+                collected.append(flushed)
 
     except Exception:
         signal_abort(session_id)
         yield emit_event(error_event("Generation failed"))
         return ""
 
-    final_answer = "".join(collected).strip()
+    flushed = flush_pending(final=True)
+    if flushed:
+        yield flushed
+        collected.append(flushed)
+
+    final_answer = clean_model_output("".join(collected)).strip()
 
     if not final_answer:
         if saw_error_event:
@@ -522,6 +575,7 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     job_state = get_job_state(session_id)
 
     settings = get_dev_settings()
+    feature_flags = _rag_debug_flags(settings)
     emit_model_stages = bool(settings.get("emit_model_stage_events", True))
     emit_sources = bool(settings.get("emit_sources", True))
     emit_answer_confidence = bool(settings.get("emit_answer_confidence", True))
@@ -723,31 +777,41 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     except Exception:
         pass
 
-    history = get_recent_user_messages(session_id)
-    rewritten = rewrite_question(original_question, history)
-    intent = classify_intent(rewritten)
-    referential_follow_up = is_referential_follow_up(rewritten)
-    if intent == "follow_up" and not referential_follow_up:
+    if feature_flags["enable_query_rewrite"]:
+        history = get_recent_user_messages(session_id)
+        rewritten = rewrite_question(original_question, history)
+        intent = classify_intent(rewritten)
+        referential_follow_up = is_referential_follow_up(rewritten)
+        if intent == "follow_up" and not referential_follow_up:
+            intent = "fact_lookup"
+        print(
+            f"[INTENT][CLASSIFIER] session={session_id} "
+            f"original='{original_question}' "
+            f"rewritten='{rewritten}' "
+            f"intent='{intent}'"
+        )
+        if intent == "greeting":
+            static_reply = _static_smalltalk_reply(original_question, "greeting")
+            if static_reply:
+                def static_stream():
+                    yield static_reply
+
+                try:
+                    append_chat_message(session_id, "user", original_question)
+                    append_chat_message(session_id, "assistant", static_reply)
+                except Exception:
+                    pass
+
+                return StreamingResponse(static_stream(), media_type="text/plain")
+    else:
+        rewritten = original_question
         intent = "fact_lookup"
-    print(
-        f"[INTENT][CLASSIFIER] session={session_id} "
-        f"original='{original_question}' "
-        f"rewritten='{rewritten}' "
-        f"intent='{intent}'"
-)
-    if intent == "greeting":
-        static_reply = _static_smalltalk_reply(original_question, "greeting")
-        if static_reply:
-            def static_stream():
-                yield static_reply
+        referential_follow_up = False
+        print(
+            f"[INTENT][MINIMAL] session={session_id} "
+            f"question='{rewritten}' intent='{intent}'"
+        )
 
-            try:
-                append_chat_message(session_id, "user", original_question)
-                append_chat_message(session_id, "assistant", static_reply)
-            except Exception:
-                pass
-
-            return StreamingResponse(static_stream(), media_type="text/plain")
     rag_vector_store = _get_vector_store_for_collection(rag_collection_name)
     embedding_unavailable = rag_vector_store is None
     rag_disabled = (
@@ -757,7 +821,12 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     )
 
     previous_context_chunks = []
-    if not rag_disabled and intent == "follow_up" and referential_follow_up:
+    if (
+        feature_flags["enable_query_rewrite"]
+        and not rag_disabled
+        and intent == "follow_up"
+        and referential_follow_up
+    ):
         prev_ids = get_used_chunk_ids(session_id)
         if prev_ids:
             restored = get_chunks_by_ids(list(prev_ids))
@@ -784,15 +853,16 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     # ADAPTIVE RETRIEVAL CONFIG (Phase 4)
     # Overrides route_config K if doc has history
     # =====================================================
-    try:
-        adaptive = get_adaptive_config(company_document_id, str(revision_number))
-        # Adaptive can widen route_config but not override force_detailed
-        if adaptive["k"] > route_config.get("limit", 8):
-            route_config["limit"] = adaptive["k"]
-        if adaptive["force_detailed"] and not route_config["force_detailed"]:
-            route_config["force_detailed"] = True
-    except Exception:
-        pass
+    if feature_flags["enable_learning"]:
+        try:
+            adaptive = get_adaptive_config(company_document_id, str(revision_number))
+            # Adaptive can widen route_config but not override force_detailed
+            if adaptive["k"] > route_config.get("limit", 8):
+                route_config["limit"] = adaptive["k"]
+            if adaptive["force_detailed"] and not route_config["force_detailed"]:
+                route_config["force_detailed"] = True
+        except Exception:
+            pass
 
     # =====================================================
     # SEMANTIC CACHE CHECK (Phase 2)
@@ -803,16 +873,22 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     # Conversation-aware query augmentation should only be used for
     # genuinely referential follow-ups; otherwise it pollutes short factual
     # lookups with stale keywords from previous turns.
-    conv_history = get_recent_user_messages(session_id)
+    conv_history = get_recent_user_messages(session_id) if feature_flags["enable_query_rewrite"] else []
     augmented_query = (
         augment_query_with_context(rewritten, conv_history)
-        if intent == "follow_up" and referential_follow_up
+        if feature_flags["enable_query_rewrite"] and intent == "follow_up" and referential_follow_up
         else rewritten
     )
     retrieval_cache_key = f"[rag_mode:{effective_rag_mode}] {augmented_query}"
 
     if not rag_disabled:
-        cached = get_cached_chunks(company_document_id, str(revision_number), retrieval_cache_key)
+        cached = None
+        if feature_flags["enable_cache"]:
+            cached = get_cached_chunks(
+                company_document_id,
+                str(revision_number),
+                retrieval_cache_key,
+            )
         if cached is not None:
             new_rag_chunks = cached
             cache_hit = True
@@ -824,24 +900,41 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                 revision_number=str(revision_number),
                 rag_mode=effective_rag_mode,
                 force_detailed=route_config["force_detailed"],
+                enable_hybrid_retrieval=feature_flags["enable_hybrid_retrieval"],
             )
-            set_cached_chunks(
-                company_document_id,
-                str(revision_number),
-                retrieval_cache_key,
-                new_rag_chunks,
-            )
+            if feature_flags["enable_cache"]:
+                set_cached_chunks(
+                    company_document_id,
+                    str(revision_number),
+                    retrieval_cache_key,
+                    new_rag_chunks,
+                )
 
 
 
     unique = {}
+    seen_content_signatures = set()
     rag_chunks = []
     for c in previous_context_chunks + new_rag_chunks:
-        if c["id"] not in unique:
-            unique[c["id"]] = True
-            rag_chunks.append(c)
+        chunk_id = str(c.get("id") or "").strip()
+        content_signature = " ".join(
+            re.findall(r"[a-z0-9]+", str(c.get("content") or "").lower())
+        )[:220]
+        if chunk_id and chunk_id in unique:
+            continue
+        if content_signature and content_signature in seen_content_signatures:
+            continue
+        if chunk_id:
+            unique[chunk_id] = True
+        if content_signature:
+            seen_content_signatures.add(content_signature)
+        rag_chunks.append(c)
 
-    if not disable_retrieval_policy and not rag_disabled:
+    if (
+        feature_flags["enable_learning"]
+        and not disable_retrieval_policy
+        and not rag_disabled
+    ):
         policy_result = apply_retrieval_policy(
             question=rewritten,
             rag_chunks=rag_chunks,
@@ -851,7 +944,7 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
 
         rag_chunks = policy_result.chunks
 
-    route_limit = max(1, int(route_config.get("limit", len(rag_chunks) or 1)))
+    route_limit = max(1, min(MAX_CONTEXT_CHUNKS, int(route_config.get("limit", len(rag_chunks) or 1))))
     if rag_chunks:
         rag_chunks = rag_chunks[:route_limit]
 
@@ -872,17 +965,18 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
 
     latency_ms = int((time.time() - start_time) * 1000)
 
-    record_retrieval_stats(
-        session_id=session_id,
-        job_id=None,
-        company_document_id=company_document_id,
-        revision_number=str(revision_number),
-        question=rewritten,
-        rag_chunks=rag_chunks,
-        confidence=confidence_payload.get("confidence"),
-        confidence_level=confidence_payload.get("level"),
-        latency_ms=latency_ms,
-    )
+    if feature_flags["enable_learning"]:
+        record_retrieval_stats(
+            session_id=session_id,
+            job_id=None,
+            company_document_id=company_document_id,
+            revision_number=str(revision_number),
+            question=rewritten,
+            rag_chunks=rag_chunks,
+            confidence=confidence_payload.get("confidence"),
+            confidence_level=confidence_payload.get("level"),
+            latency_ms=latency_ms,
+        )
 
     def stream():
         model_id = resolve_model_id(req.mode)
@@ -907,7 +1001,11 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
         if emit_model_stages and did_retrieve:
             yield emit_event(model_stage_event(
                 stage="intent",
-                message="Understanding your question…",
+                message=(
+                    "Understanding your question…"
+                    if feature_flags["enable_query_rewrite"]
+                    else "Using raw query for retrieval…"
+                ),
                 model=model_id,
             ))
 
@@ -922,17 +1020,19 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
             else:
                 yield emit_event(model_stage_event(
                     stage="retrieval",
-                    message="Searching relevant documents…",
+                    message=(
+                        "Searching relevant documents…"
+                        if feature_flags["enable_hybrid_retrieval"]
+                        else "Running vector similarity search…"
+                    ),
                 ))
 
-        # retrieval already happened — OK for now
-        # (next step: move retrieval here)
-
-        if emit_model_stages and did_retrieve:
+        if emit_model_stages and did_retrieve and feature_flags["enable_hybrid_retrieval"]:
             yield emit_event(model_stage_event(
                 stage="reranking",
                 message="Ranking the best passages…",
             ))
+        if emit_model_stages and did_retrieve:
             yield emit_event(model_stage_event(
                 stage="chunks",
                 message="Selected top chunks",
@@ -945,29 +1045,35 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                 model=model_id,
             ))
         
-        # =====================================================
-        # FEW-SHOT EXAMPLES (Phase 4) — prepended as context turns
-        # =====================================================
-        few_shot_hist = []
-        try:
-            fs_examples = get_few_shot_examples(
-                question=rewritten,
-                company_document_id=company_document_id,
-                revision_number=str(revision_number),
-            )
-            if fs_examples:
-                fs_block = format_few_shot_block(fs_examples)
-                if fs_block:
-                    few_shot_hist = [{"role": "system", "content": fs_block}]
-        except Exception:
+        combined_history = None
+        if feature_flags["enable_learning"]:
             few_shot_hist = []
+            try:
+                fs_examples = get_few_shot_examples(
+                    question=rewritten,
+                    company_document_id=company_document_id,
+                    revision_number=str(revision_number),
+                )
+                if fs_examples:
+                    fs_block = format_few_shot_block(fs_examples)
+                    if fs_block:
+                        few_shot_hist = [{"role": "system", "content": fs_block}]
+            except Exception:
+                few_shot_hist = []
 
-        # Summarized history (Phase 2) + few-shot (Phase 4)
-        try:
-            full_history = get_summarized_history(session_id, limit=50)
-        except Exception:
-            full_history = get_recent_user_messages(session_id)
-        combined_history = few_shot_hist + list(full_history)
+            try:
+                full_history = get_summarized_history(session_id, limit=50)
+            except Exception:
+                full_history = get_recent_user_messages(session_id)
+            combined_history = few_shot_hist + list(full_history)
+        elif feature_flags["enable_agent_pipeline"]:
+            try:
+                combined_history = list(get_summarized_history(session_id, limit=50))
+            except Exception:
+                combined_history = [
+                    {"role": "user", "content": msg}
+                    for msg in get_recent_user_messages(session_id)
+                ]
 
         final_answer = yield from safe_stream_response(
             generate_answer_stream(
@@ -1023,7 +1129,7 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
             clear_job_for_session(session_id)
 
         # =====================================================
-        # RAGAS EVALUATION + AUDIT LOG (Phase 3, non-blocking)
+        # OPTIONAL EVAL + AUDIT LOG
         # =====================================================
         try:
             # Collect the answer from memory (already stored by safe_stream_response)
@@ -1035,16 +1141,14 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
                     last_answer = m.get("content", "")
                     break
 
-            eval_scores = evaluate_answer(
-                question=rewritten,
-                answer=last_answer,
-                rag_chunks=answer_supported_chunks or rag_chunks,
-            )
+            eval_scores = None
+            if feature_flags["enable_eval_gate"]:
+                eval_scores = evaluate_answer(
+                    question=rewritten,
+                    answer=last_answer,
+                    rag_chunks=answer_supported_chunks or rag_chunks,
+                )
 
-            # Keep evaluation internal for audit/logging. The chat stream only
-            # emits events that are part of the frontend UI contract.
-
-            # Write to audit log
             log_rag_turn(
                 session_id=session_id,
                 company_document_id=company_document_id,

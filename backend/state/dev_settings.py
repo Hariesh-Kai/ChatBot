@@ -38,10 +38,20 @@ _SETTINGS: Dict[str, Any] = {
     "emit_model_stage_events": True,
     "emit_sources": True,
     "emit_answer_confidence": True,
+    # Minimal RAG debug controls (advanced features OFF by default)
+    "enable_query_rewrite": False,
+    "enable_agent_pipeline": False,
+    "enable_hybrid_retrieval": False,
+    "enable_learning": False,
+    "enable_eval_gate": False,
+    "enable_cache": False,
     # Retrieval behavior
     "force_detailed_retrieval": False,
     "disable_retrieval_policy": False,
     "disable_rag_globally": False,
+    # Document processing profile
+    # Off (default) => prioritize extraction quality over upload speed.
+    "enable_fast_document_processing": False,
     # RAG operating profiles
     "rag_ingest_mode": DEFAULT_RAG_MODE,  # fast | balanced | high_fidelity
     "rag_retrieval_mode": DEFAULT_RETRIEVAL_MODE_SETTING,  # auto | fast | balanced | high_fidelity
@@ -52,9 +62,40 @@ _SETTINGS: Dict[str, Any] = {
 }
 
 
+def _materialize_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    resolved = dict(settings or {})
+    fast_enabled = bool(resolved.get("enable_fast_document_processing", False))
+
+    if fast_enabled:
+        effective_rag_mode = normalize_rag_mode(DEFAULT_RAG_MODE)
+        effective_preprocessor = normalize_rag_preprocessor(DEFAULT_RAG_PREPROCESSOR)
+        preview_scope = "auto"
+        profile_label = "fast"
+    else:
+        effective_rag_mode = "high_fidelity"
+        effective_preprocessor = "unstructured"
+        preview_scope = "full"
+        profile_label = "high_accuracy"
+
+    resolved["rag_ingest_mode"] = effective_rag_mode
+    resolved["rag_preprocessor"] = effective_preprocessor
+    resolved["rag_mode"] = effective_rag_mode
+    resolved["document_processing_profile"] = {
+        "label": profile_label,
+        "fast_enabled": fast_enabled,
+        "rag_ingest_mode": effective_rag_mode,
+        "rag_preprocessor": effective_preprocessor,
+        "preview_scope": preview_scope,
+        "table_extraction": True,
+        "header_footer_cleanup": "strict" if not fast_enabled else "standard",
+        "image_classification": not fast_enabled,
+    }
+    return resolved
+
+
 def get_dev_settings() -> Dict[str, Any]:
     with _LOCK:
-        return dict(_SETTINGS)
+        return _materialize_settings(_SETTINGS)
 
 
 def update_dev_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
@@ -93,4 +134,4 @@ def update_dev_settings(patch: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 _SETTINGS[key] = value
 
-        return dict(_SETTINGS)
+        return _materialize_settings(_SETTINGS)

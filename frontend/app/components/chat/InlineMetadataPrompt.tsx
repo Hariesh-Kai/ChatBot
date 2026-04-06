@@ -4,17 +4,31 @@
 import { useEffect, useState } from "react";
 import { MetadataRequestField } from "@/app/lib/llm-ui-events";
 import { ArrowRight, Info } from "lucide-react"; // Optional icons
+import type { PreprocessingPreviewResponse } from "@/app/lib/api";
+import PreprocessingPreviewPanel from "./PreprocessingPreviewPanel";
 
 interface Props {
   fields: MetadataRequestField[];
   onSubmit: (values: Record<string, string>) => Promise<void> | void;
   disabled?: boolean;
+  previewJobId?: string | null;
+  preview?: PreprocessingPreviewResponse | null;
+  previewLoading?: boolean;
+  previewError?: string | null;
+  onRetryPreview?: () => void;
+  onLoadFullPreview?: () => void;
 }
 
 export default function InlineMetadataPrompt({
   fields,
   onSubmit,
   disabled = false,
+  previewJobId = null,
+  preview = null,
+  previewLoading = false,
+  previewError = null,
+  onRetryPreview,
+  onLoadFullPreview,
 }: Props) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -61,8 +75,7 @@ export default function InlineMetadataPrompt({
 
   const isBlocked =
     disabled ||
-    submitting ||
-    fields.some((f) => !values[f.key]?.trim());
+    submitting;
 
   /* =========================================================
      RENDER
@@ -85,6 +98,15 @@ export default function InlineMetadataPrompt({
         <p className="mb-4 text-xs text-blue-200/70">
             I need a few details to index this document correctly.
         </p>
+
+        <PreprocessingPreviewPanel
+          jobId={previewJobId}
+          preview={preview}
+          loading={previewLoading}
+          error={previewError}
+          onRetry={onRetryPreview}
+          onLoadFullPreview={onLoadFullPreview}
+        />
 
         {/* FORM */}
         <form onSubmit={handleSubmit} className="space-y-4">

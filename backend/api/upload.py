@@ -2,17 +2,26 @@
 
 import shutil
 import uuid
+import io
+import json
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Response
 from pydantic import BaseModel
+from pdf2image import convert_from_bytes
+from PIL import ImageDraw
 
 from backend.rag.pipeline import run_pipeline
+from backend.rag.preview import (
+    build_preprocessing_page_preview,
+    build_preprocessing_preview,
+)
 from backend.rag.collections import (
     DEFAULT_RAG_COLLECTION_NAME,
     normalize_collection_name,
 )
+from backend.rag.mode_profiles import normalize_rag_mode
 from backend.rag.preprocessor_registry import (
     DEFAULT_RAG_PREPROCESSOR,
     normalize_rag_preprocessor,
@@ -69,6 +78,157 @@ def resolve_next_revision_number(doc_dir: Path) -> int:
     return max(revisions) + 1 if revisions else 1
 
 
+def _resolve_job_payload(job_id: str):
+    job = get_job_state(job_id)
+    if job:
+        return job
+
+    persisted = get_job_run(job_id)
+    if persisted:
+        return type(
+            "PersistedJob",
+            (),
+            {
+                "job_id": str(persisted.get("job_id") or job_id),
+                "session_id": persisted.get("session_id"),
+                "status": str(persisted.get("status") or "PROCESSING"),
+                "metadata": dict(persisted.get("metadata") or {}),
+                "missing_fields": list(persisted.get("missing_fields") or []),
+            },
+        )()
+
+    return None
+
+
+def _get_preview_context(job_id: str):
+    job = _resolve_job_payload(job_id)
+    if not job:
+        raise HTTPException(404, "Invalid job_id")
+
+    metadata = dict(job.metadata or {})
+    pdf_path = str(metadata.get("pdf_path") or "").strip()
+    if not pdf_path:
+        raise HTTPException(500, "Upload job is missing local PDF path")
+
+    pdf_file = Path(pdf_path).resolve()
+    upload_root = UPLOAD_DIR.resolve()
+    try:
+        pdf_file.relative_to(upload_root)
+    except Exception as exc:
+        raise HTTPException(400, "Preview path is outside the upload workspace") from exc
+
+    if not pdf_file.exists():
+        raise HTTPException(404, "Local PDF file not found for preview")
+
+    company_document_id = str(metadata.get("company_document_id") or "").strip()
+    if not company_document_id:
+        raise HTTPException(500, "Upload job is missing company_document_id")
+
+    return job, metadata, pdf_file
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _parse_bbox_payload(raw_bbox: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not raw_bbox or raw_bbox in {"null", ""}:
+        return None
+
+    try:
+        payload = json.loads(raw_bbox)
+    except Exception:
+        return None
+
+    if isinstance(payload, list):
+        return {"points": payload}
+
+    if isinstance(payload, dict):
+        points = payload.get("points")
+        if isinstance(points, list):
+            return payload
+
+        bbox = payload.get("bbox")
+        if isinstance(bbox, list):
+            return {"points": bbox}
+
+    return None
+
+
+def _scale_bbox_points(
+    payload: Dict[str, Any],
+    *,
+    image_size: Tuple[int, int],
+    dpi: int,
+) -> List[Tuple[float, float]]:
+    raw_points = payload.get("points")
+    if not isinstance(raw_points, list):
+        return []
+
+    parsed_points: List[Tuple[float, float]] = []
+    for point in raw_points:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        x = _coerce_float(point[0])
+        y = _coerce_float(point[1])
+        if x is None or y is None:
+            continue
+        parsed_points.append((x, y))
+
+    if len(parsed_points) < 3:
+        return []
+
+    image_width, image_height = image_size
+    layout_width = _coerce_float(payload.get("layout_width"))
+    layout_height = _coerce_float(payload.get("layout_height"))
+
+    if layout_width and layout_height:
+        scale_x = image_width / layout_width
+        scale_y = image_height / layout_height
+    else:
+        max_x = max(x for x, _ in parsed_points)
+        max_y = max(y for _, y in parsed_points)
+        if max_x <= image_width * 1.2 and max_y <= image_height * 1.2:
+            scale_x = 1.0
+            scale_y = 1.0
+        else:
+            scale_x = dpi / 72.0
+            scale_y = dpi / 72.0
+
+    scaled_points: List[Tuple[float, float]] = []
+    for x, y in parsed_points:
+        scaled_x = min(max(x * scale_x, 0.0), float(image_width))
+        scaled_y = min(max(y * scale_y, 0.0), float(image_height))
+        scaled_points.append((scaled_x, scaled_y))
+    return scaled_points
+
+
+def _bbox_rect(
+    points: List[Tuple[float, float]],
+    *,
+    image_size: Tuple[int, int],
+    padding: int = 20,
+) -> Optional[Tuple[int, int, int, int]]:
+    if len(points) < 3:
+        return None
+
+    image_width, image_height = image_size
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+
+    left = max(int(min(xs)) - padding, 0)
+    top = max(int(min(ys)) - padding, 0)
+    right = min(int(max(xs)) + padding, image_width)
+    bottom = min(int(max(ys)) + padding, image_height)
+
+    if right <= left or bottom <= top:
+        return None
+    return (left, top, right, bottom)
+
+
 # ============================================================
 # API ROUTER
 # ============================================================
@@ -121,6 +281,20 @@ class UploadStatusResponse(BaseModel):
     active_document: Optional[Dict[str, str]] = None
 
 
+class PreprocessingPreviewResponse(BaseModel):
+    job_id: str
+    pdf_path: str
+    company_document_id: str
+    revision_number: str
+    source_file: str
+    metadata_candidates: Dict[str, Dict[str, object]]
+    metadata_evidence: List[Dict[str, object]]
+    tables: List[Dict[str, object]]
+    chunks: List[Dict[str, object]]
+    removed_elements: List[Dict[str, object]]
+    summary: Dict[str, object]
+
+
 CONFIDENCE_THRESHOLD = 0.6
 
 
@@ -152,6 +326,9 @@ def upload_pdf(
         settings = get_dev_settings()
     except Exception:
         settings = {}
+    resolved_rag_mode = normalize_rag_mode(
+        settings.get("rag_ingest_mode") or settings.get("rag_mode")
+    )
     resolved_rag_preprocessor = normalize_rag_preprocessor(
         rag_preprocessor or settings.get("rag_preprocessor") or DEFAULT_RAG_PREPROCESSOR
     )
@@ -201,8 +378,12 @@ def upload_pdf(
                 "company_document_id": company_document_id,
                 "revision_number": str(revision_number),
                 "source_file": file.filename,
+                "rag_ingest_mode": resolved_rag_mode,
                 "rag_preprocessor": resolved_rag_preprocessor,
                 "rag_collection_name": resolved_rag_collection_name,
+                "enable_fast_document_processing": bool(
+                    settings.get("enable_fast_document_processing", False)
+                ),
             },
             mode="metadata",
         ):
@@ -257,8 +438,12 @@ def upload_pdf(
             "source_file": file.filename,
             "pdf_path": str(pdf_path),
             "db_connection": db_connection,
+            "rag_ingest_mode": resolved_rag_mode,
             "rag_preprocessor": resolved_rag_preprocessor,
             "rag_collection_name": resolved_rag_collection_name,
+            "enable_fast_document_processing": bool(
+                settings.get("enable_fast_document_processing", False)
+            ),
         },
         missing_fields=missing,
     )
@@ -280,6 +465,122 @@ def upload_pdf(
         missing_metadata=missing,
         next_action=next_action,
     )
+
+
+@router.get("/preview")
+def get_preprocessing_preview(
+    *,
+    job_id: str = Query(..., description="Upload job id"),
+    scope: str = Query(default="auto", description="Preview scope: auto, quick, or full"),
+):
+    job, metadata, pdf_file = _get_preview_context(job_id)
+    job_dir = TMP_DIR / job.job_id
+
+    try:
+        preview = build_preprocessing_preview(
+            pdf_path=str(pdf_file),
+            job_dir=str(job_dir),
+            company_document_id=str(metadata.get("company_document_id") or ""),
+            extra_metadata=metadata,
+            preprocessor=metadata.get("rag_preprocessor"),
+            scope=str(scope or "auto").strip().lower() or "auto",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to build preprocessing preview: {exc}") from exc
+
+    return preview
+
+
+@router.get("/preview/page-data")
+def get_preprocessing_preview_page_data(
+    *,
+    job_id: str = Query(..., description="Upload job id"),
+    page: int = Query(..., ge=1, description="1-based page number"),
+    scope: str = Query(default="auto", description="Preview scope: auto, quick, or full"),
+):
+    job, metadata, pdf_file = _get_preview_context(job_id)
+    job_dir = TMP_DIR / job.job_id
+
+    try:
+        preview = build_preprocessing_page_preview(
+            pdf_path=str(pdf_file),
+            job_dir=str(job_dir),
+            company_document_id=str(metadata.get("company_document_id") or ""),
+            extra_metadata=metadata,
+            page_number=int(page),
+            preprocessor=metadata.get("rag_preprocessor"),
+            scope=str(scope or "auto").strip().lower() or "auto",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to build page preview: {exc}") from exc
+
+    return preview
+
+
+@router.get("/preview/page")
+def render_preprocessing_preview_page(
+    *,
+    job_id: str = Query(..., description="Upload job id"),
+    page: int = Query(1, ge=1, description="1-based page number"),
+    bbox: Optional[str] = Query(None, description="Optional JSON bbox polygon"),
+    crop: bool = Query(False, description="Crop image to the bbox instead of the full page"),
+):
+    _job, _metadata, pdf_file = _get_preview_context(job_id)
+    dpi = 150
+
+    try:
+        pdf_bytes = pdf_file.read_bytes()
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to read local preview PDF: {exc}") from exc
+
+    try:
+        images = convert_from_bytes(
+            pdf_bytes,
+            first_page=page,
+            last_page=page,
+            fmt="png",
+            dpi=dpi,
+        )
+        if not images:
+            raise ValueError("Page out of range")
+        image = images[0]
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to render preview page: {exc}") from exc
+
+    bbox_payload = _parse_bbox_payload(bbox)
+    scaled_points = (
+        _scale_bbox_points(bbox_payload, image_size=image.size, dpi=dpi)
+        if bbox_payload
+        else []
+    )
+
+    if scaled_points:
+        if crop:
+            rect = _bbox_rect(scaled_points, image_size=image.size)
+            if rect:
+                left, top, right, bottom = rect
+                image = image.crop((left, top, right, bottom))
+                scaled_points = [(x - left, y - top) for x, y in scaled_points]
+
+        try:
+            draw = ImageDraw.Draw(image, "RGBA")
+            draw.polygon(
+                scaled_points,
+                outline="red",
+                width=5,
+                fill=(255, 0, 0, 40),
+            )
+        except Exception:
+            pass
+
+    img_bytes = io.BytesIO()
+    image.save(img_bytes, format="PNG")
+    img_bytes.seek(0)
+    return Response(content=img_bytes.getvalue(), media_type="image/png")
 
 
 # ============================================================

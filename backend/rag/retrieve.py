@@ -850,9 +850,22 @@ def _fetch_metadata_anchor_docs(
               AND e.cmetadata->>'revision_number' = :revision_number
               AND (
                     e.cmetadata->>'page_number' IN ('1', '2')
+                 OR COALESCE(e.cmetadata->>'document_number', '') <> ''
+                 OR COALESCE(e.cmetadata->>'revision_code', '') <> ''
+                 OR COALESCE(e.cmetadata->>'document_type', '') <> ''
+                 OR COALESCE(e.cmetadata->>'document_title', '') <> ''
+                 OR COALESCE(e.cmetadata->>'project_name', '') <> ''
+                 OR COALESCE(e.cmetadata->>'document_validity', '') <> ''
                  OR e.document ILIKE '%Company Document ID%'
               )
               AND (
+                    COALESCE(e.cmetadata->>'document_number', '') <> ''
+                 OR COALESCE(e.cmetadata->>'revision_code', '') <> ''
+                 OR COALESCE(e.cmetadata->>'document_type', '') <> ''
+                 OR COALESCE(e.cmetadata->>'document_title', '') <> ''
+                 OR COALESCE(e.cmetadata->>'project_name', '') <> ''
+                 OR COALESCE(e.cmetadata->>'document_validity', '') <> ''
+                 OR
                     e.document ILIKE '%Company Document ID%'
                  OR e.document ILIKE '%Revision%'
                  OR e.document ILIKE '%Validity%'
@@ -860,8 +873,17 @@ def _fetch_metadata_anchor_docs(
                  OR e.document ILIKE '%File Name:%'
               )
             ORDER BY
+                CASE
+                    WHEN COALESCE(e.cmetadata->>'document_number', '') <> ''
+                      OR COALESCE(e.cmetadata->>'revision_code', '') <> ''
+                      OR COALESCE(e.cmetadata->>'document_type', '') <> ''
+                      OR COALESCE(e.cmetadata->>'document_title', '') <> ''
+                      OR COALESCE(e.cmetadata->>'project_name', '') <> ''
+                      OR COALESCE(e.cmetadata->>'document_validity', '') <> ''
+                    THEN 0 ELSE 1
+                END,
                 CASE WHEN e.cmetadata->>'page_number' = '1' THEN 0 ELSE 1 END,
-                CASE WHEN COALESCE(e.cmetadata->>'chunk_type', e.cmetadata->>'type', '') = 'parent' THEN 0 ELSE 1 END,
+                CASE WHEN COALESCE(e.cmetadata->>'chunk_type', e.cmetadata->>'type', '') = 'text' THEN 0 ELSE 1 END,
                 LENGTH(e.document) DESC
             LIMIT :limit
             """

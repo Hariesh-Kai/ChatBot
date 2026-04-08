@@ -26,6 +26,12 @@ interface Props {
   userLabel?: string;
   assistantModel?: ChatUIModelId;
   showConfidence?: boolean;
+  uploadCancelState?: {
+    phase: "metadata" | "preprocessing" | "ingestion";
+    label?: string;
+  } | null;
+  cancelUploadBusy?: boolean;
+  onCancelUpload?: () => Promise<void> | void;
 
   // 🔥 ADD THESE
   sessionId?: string | null;
@@ -75,6 +81,9 @@ export default function MessageBubble({
   userLabel,
   assistantModel,
   showConfidence = true,
+  uploadCancelState = null,
+  cancelUploadBusy = false,
+  onCancelUpload,
 }: Props) {
   const isAssistant = message.role === "assistant";
   const isUser = message.role === "user";
@@ -119,6 +128,10 @@ export default function MessageBubble({
         lower.includes("upload") || lower.includes("backing up")
           ? "uploading"
           : "processing";
+      const showStopAction =
+        Boolean(onCancelUpload) &&
+        Boolean(uploadCancelState) &&
+        uploadCancelState.phase !== "metadata";
 
       return (
         <div className="w-full py-2">
@@ -127,6 +140,17 @@ export default function MessageBubble({
                 type={indicatorType}
                 label={label} 
                 progress={message.progress}
+                action={
+                  showStopAction
+                    ? {
+                        label: "Stop upload",
+                        onClick: () => {
+                          void Promise.resolve(onCancelUpload?.());
+                        },
+                        disabled: cancelUploadBusy,
+                      }
+                    : undefined
+                }
             />
         </div>
       );

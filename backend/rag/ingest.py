@@ -2,7 +2,7 @@
 
 import os
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable, Optional
 
 import psycopg2
 
@@ -15,6 +15,7 @@ from backend.rag.collections import (
     DEFAULT_RAG_COLLECTION_NAME,
     normalize_collection_name,
 )
+from backend.rag.upload_cancellation import UploadCancellationError
 
 COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
 
@@ -215,6 +216,8 @@ def ingest_to_pgvector(
     revision_number: str, #  FIX: Changed to str for enterprise support
     collection_name: str = COLLECTION_NAME,
     replace_existing: bool = False,
+    should_cancel: Optional[Callable[[], bool]] = None,
+    batch_size: int = 48,
 ) -> None:
     """
     Ingest a document revision into PGVector.
@@ -265,7 +268,16 @@ def ingest_to_pgvector(
             f"collection={resolved_collection_name} deleted_rows={deleted_rows}"
         )
 
-    vector_store.add_documents(documents)
+    safe_batch_size = max(1, int(batch_size or 48))
+    for start in range(0, len(documents), safe_batch_size):
+        if should_cancel and should_cancel():
+            raise UploadCancellationError("Cancelled by user")
+
+        batch = documents[start : start + safe_batch_size]
+        vector_store.add_documents(batch)
+
+        if should_cancel and should_cancel():
+            raise UploadCancellationError("Cancelled by user")
 
     setup_keyword_search(connection_string)
 

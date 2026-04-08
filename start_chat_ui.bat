@@ -9,8 +9,7 @@ COLOR 0A
 :: The main folder where your code lives
 FOR %%I IN ("%~dp0.") DO SET "PROJECT_ROOT=%%~fI"
 
-:: Python Virtual Environment Name 
-:: (IMPORTANT: If your folder is named 'text_venv', change 'venv' to 'text_venv' below)
+:: Python Virtual Environment Name
 SET VENV_NAME=venv
 
 :: MinIO Configuration
@@ -26,7 +25,7 @@ FOR /F "delims=" %%I IN ('where minio 2^>nul') DO (
   IF NOT DEFINED MINIO_EXE SET "MINIO_EXE=%%I"
 )
 
-:: RabbitMQ / Celery defaults (required for Developer Dashboard to show "configured")
+:: RabbitMQ / Celery defaults
 IF "%CELERY_ENABLED%"=="" SET "CELERY_ENABLED=1"
 IF "%CELERY_BROKER_URL%"=="" IF NOT "%RABBITMQ_URL%"=="" SET "CELERY_BROKER_URL=%RABBITMQ_URL%"
 IF "%CELERY_BROKER_URL%"=="" SET "CELERY_BROKER_URL=amqp://guest:guest@127.0.0.1:5672//"
@@ -49,7 +48,6 @@ IF EXIST "%MINIO_EXE%" (
 )
 
 echo [2/5] Launching Backend (Uvicorn)...
-:: Goes to project root, activates python, runs your specific uvicorn command
 start "Chat UI Backend" cmd /k "cd /d %PROJECT_ROOT% && %VENV_NAME%\Scripts\activate && uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000"
 
 echo [3/5] Launching Celery Worker...
@@ -59,7 +57,6 @@ echo [4/5] Launching Celery Beat...
 start "Chat UI Celery Beat" cmd /k "cd /d %PROJECT_ROOT% && %VENV_NAME%\Scripts\activate && celery -A backend.queue.celery_app:celery_app beat --loglevel=info"
 
 echo [5/5] Launching Frontend (Next.js)...
-:: Goes to project root, then into 'frontend' folder, then runs npm
 start "Chat UI Frontend" cmd /k "cd /d %PROJECT_ROOT%\frontend && npm run dev"
 
 echo.
@@ -99,14 +96,12 @@ pause >nul
 echo.
 echo Shutting down...
 
-:: Force kills the windows by their specific titles
 taskkill /FI "WINDOWTITLE eq Chat UI Minio*" /F /T
 taskkill /FI "WINDOWTITLE eq Chat UI Backend*" /F /T
 taskkill /FI "WINDOWTITLE eq Chat UI Celery Worker*" /F /T
 taskkill /FI "WINDOWTITLE eq Chat UI Celery Beat*" /F /T
 taskkill /FI "WINDOWTITLE eq Chat UI Frontend*" /F /T
 
-:: Cleanup specific executables to ensure ports are freed
 taskkill /F /IM minio.exe >nul 2>&1
 taskkill /F /IM uvicorn.exe >nul 2>&1
 taskkill /F /IM celery.exe >nul 2>&1

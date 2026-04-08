@@ -10,6 +10,8 @@ import PreprocessingPreviewPanel from "./PreprocessingPreviewPanel";
 interface Props {
   fields: MetadataRequestField[];
   onSubmit: (values: Record<string, string>) => Promise<void> | void;
+  onCancel?: () => void;
+  cancelDisabled?: boolean;
   disabled?: boolean;
   previewJobId?: string | null;
   preview?: PreprocessingPreviewResponse | null;
@@ -22,6 +24,8 @@ interface Props {
 export default function InlineMetadataPrompt({
   fields,
   onSubmit,
+  onCancel,
+  cancelDisabled = false,
   disabled = false,
   previewJobId = null,
   preview = null,
@@ -140,7 +144,20 @@ export default function InlineMetadataPrompt({
           ))}
 
           {/* ACTIONS */}
-          <div className="flex justify-end pt-2">
+          <div className="flex justify-end gap-2 pt-2">
+            {onCancel && (
+              <button
+                type="button"
+                disabled={cancelDisabled || submitting}
+                onClick={onCancel}
+                className="
+                  rounded-lg border border-white/10 bg-black/30 px-4 py-2 text-sm font-medium text-gray-200 transition-all
+                  hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50
+                "
+              >
+                Cancel Upload
+              </button>
+            )}
             <button
               type="submit"
               disabled={isBlocked}

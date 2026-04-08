@@ -9,7 +9,10 @@ from psycopg2.extras import RealDictCursor
 
 from backend.memory.pg_memory import get_connection
 from backend.state.job_state import get_job_state
-from backend.storage.minio_client import upload_pdf as minio_upload_pdf
+from backend.storage.minio_client import (
+    delete_pdf as minio_delete_pdf,
+    upload_pdf as minio_upload_pdf,
+)
 
 _TABLE = "minio_upload_outbox"
 _UPLOAD_ROOT = (Path(__file__).resolve().parent / "uploads").resolve()
@@ -364,4 +367,87 @@ def cleanup_uploaded_local_copy(
 
     _delete_local_copy(local_path)
     return True
+
+
+def cancel_outbox_uploads(
+    *,
+    job_id: Optional[str] = None,
+    company_document_id: Optional[str] = None,
+    revision_number: Optional[str] = None,
+    source_file: Optional[str] = None,
+    delete_remote: bool = True,
+) -> Dict[str, int]:
+    init_outbox_table()
+
+    filters: List[str] = []
+    params: List[Any] = []
+
+    clean_job_id = (job_id or "").strip()
+    clean_company_document_id = (company_document_id or "").strip()
+    clean_revision_number = (revision_number or "").strip()
+    clean_source_file = (source_file or "").strip()
+
+    if clean_job_id:
+        filters.append("job_id = %s")
+        params.append(clean_job_id)
+    if clean_company_document_id:
+        filters.append("company_document_id = %s")
+        params.append(clean_company_document_id)
+    if clean_revision_number:
+        filters.append("revision_number = %s")
+        params.append(clean_revision_number)
+    if clean_source_file:
+        filters.append("source_file = %s")
+        params.append(clean_source_file)
+
+    if not filters:
+        return {"deleted": 0, "remote_deleted": 0, "local_deleted": 0}
+
+    where_sql = " AND ".join(filters)
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT id, job_id, company_document_id, revision_number, source_file, local_path, status
+                FROM {_TABLE}
+                WHERE {where_sql};
+                """,
+                tuple(params),
+            )
+            rows = list(cur.fetchall() or [])
+
+            cur.execute(
+                f"DELETE FROM {_TABLE} WHERE {where_sql};",
+                tuple(params),
+            )
+            deleted = int(cur.rowcount or 0)
+
+    remote_deleted = 0
+    local_deleted = 0
+    for row in rows:
+        local_path = str(row.get("local_path") or "").strip()
+        if local_path and Path(local_path).exists():
+            _delete_local_copy(local_path)
+            local_deleted += 1
+
+        if not delete_remote:
+            continue
+
+        revision_text = str(row.get("revision_number") or "").strip()
+        revision_int = int(revision_text) if revision_text.isdigit() else 1
+        try:
+            if minio_delete_pdf(
+                document_id=str(row.get("company_document_id") or ""),
+                revision=revision_int,
+                filename=str(row.get("source_file") or ""),
+            ):
+                remote_deleted += 1
+        except Exception as e:
+            print(f"[MINIO-OUTBOX] Remote delete failed for cancelled upload id={row.get('id')}: {e}")
+
+    return {
+        "deleted": deleted,
+        "remote_deleted": remote_deleted,
+        "local_deleted": local_deleted,
+    }
 

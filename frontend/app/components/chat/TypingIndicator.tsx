@@ -17,6 +17,13 @@ interface TypingIndicatorProps {
   
   /** "typing" | "uploading" | "searching" | "processing" | "error" */
   type?: "typing" | "uploading" | "searching" | "processing" | "error";
+
+  /** Optional compact action shown inside the bubble. */
+  action?: {
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+  };
 }
 
 /* ================= COMPONENT ================= */
@@ -26,6 +33,7 @@ export default function TypingIndicator({
   label = "is thinking...",
   progress,
   type = "typing",
+  action,
 }: TypingIndicatorProps) {
 
   // --- 1. Choose Icon based on Type ---
@@ -71,18 +79,31 @@ export default function TypingIndicator({
       <Avatar role="assistant" />
 
       {/* Content (Right) */}
-      <div className="flex flex-col justify-center pt-0.5">
+      <div className="min-w-0 rounded-xl border border-white/5 bg-[#1f1f1f] px-4 py-3 shadow-sm">
         <div className="flex items-center gap-2 text-xs">
           <span className="font-semibold text-gray-200">{modelLabel}</span>
           
-          <span className="text-gray-600">•</span>
+          <span className="text-gray-600">.</span>
           
-          <span className="flex items-center gap-2 text-gray-400">
+          <span className="flex min-w-0 items-center gap-2 text-gray-400">
             {renderIcon()}
             <span className={type === "error" ? "text-red-400" : "italic"}>
               {label}
             </span>
           </span>
+
+          {action && (
+            <button
+              type="button"
+              onClick={action.onClick}
+              disabled={action.disabled}
+              title={action.label}
+              aria-label={action.label}
+              className="ml-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-red-400/30 bg-red-500/10 text-red-100 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <span className="h-2.5 w-2.5 rounded-[2px] bg-current" />
+            </button>
+          )}
         </div>
 
         {/* Progress Bar (Optional) */}

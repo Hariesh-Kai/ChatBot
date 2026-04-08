@@ -5,6 +5,13 @@ from collections import Counter, defaultdict
 from io import StringIO
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from backend.rag.table_normalization import (
+    extract_explicit_table_signals,
+    filter_normalized_table_rows,
+    merge_normalized_tables,
+    normalize_html_table,
+)
+
 try:
     import pandas as pd
 except Exception:  # pragma: no cover - optional runtime guard
@@ -37,7 +44,7 @@ HEADER_ZONE_MAX_RATIO = 0.16
 FOOTER_ZONE_MIN_RATIO = 0.84
 TABLE_REPEAT_MAX_ROWS = 4
 TABLE_REPEAT_MAX_COLUMNS = 8
-FILTER_VERSION = 2
+FILTER_VERSION = 3
 
 _BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -73,6 +80,7 @@ _STRONG_DOCUMENT_CHROME_RE = re.compile(
     r"company document id|sheet of sheets|title block",
     re.IGNORECASE,
 )
+_TABLE_CONTINUATION_RE = re.compile(r"\b(?:continued|cont\.?|contd\.?)\b", re.IGNORECASE)
 
 
 def _normalize_category(raw_category: Any) -> str:
@@ -425,6 +433,187 @@ def _build_fragment_indexes(
     return fragment_pages, band_fragment_pages
 
 
+def _is_nearby_text_candidate(element: Dict[str, Any]) -> bool:
+    category = element_category(element)
+    if category == "Table":
+        return False
+
+    clean_text = _normalized_text(element_text(element))
+    if not clean_text:
+        return False
+    if len(clean_text) > 280:
+        return False
+    if category in DISCARD_CATEGORIES:
+        return False
+    if _looks_like_page_marker(clean_text):
+        return False
+    if _looks_like_signature_noise(clean_text):
+        return False
+    if _looks_like_legal_boilerplate(clean_text):
+        return False
+    if _looks_like_document_chrome(clean_text):
+        return False
+    if _looks_like_image_placeholder(clean_text):
+        return False
+    return True
+
+
+def _build_nearby_text_hints(elements: Sequence[Dict[str, Any]]) -> List[Dict[str, Optional[str]]]:
+    hints: List[Dict[str, Optional[str]]] = [
+        {"above": None, "below": None}
+        for _ in elements
+    ]
+
+    for index, element in enumerate(elements):
+        if element_category(element) != "Table":
+            continue
+
+        page_number = element_page(element)
+
+        above_text: Optional[str] = None
+        for cursor in range(index - 1, max(-1, index - 6), -1):
+            candidate = elements[cursor]
+            candidate_page = element_page(candidate)
+            if candidate_page != page_number:
+                if candidate_page < page_number:
+                    break
+                continue
+            if element_category(candidate) == "Table":
+                break
+            if _is_nearby_text_candidate(candidate):
+                above_text = _normalized_text(element_text(candidate))
+                break
+
+        below_text: Optional[str] = None
+        for cursor in range(index + 1, min(len(elements), index + 6)):
+            candidate = elements[cursor]
+            candidate_page = element_page(candidate)
+            if candidate_page != page_number:
+                if candidate_page > page_number:
+                    break
+                continue
+            if element_category(candidate) == "Table":
+                break
+            if _is_nearby_text_candidate(candidate):
+                below_text = _normalized_text(element_text(candidate))
+                break
+
+        hints[index] = {
+            "above": above_text,
+            "below": below_text,
+        }
+
+    return hints
+
+
+def _column_path_signature(normalized_table: Dict[str, Any]) -> Tuple[Tuple[str, ...], ...]:
+    ordered: List[Tuple[str, ...]] = []
+    seen: Set[Tuple[str, ...]] = set()
+    for cell in normalized_table.get("cells") if isinstance(normalized_table, dict) else []:
+        if not isinstance(cell, dict):
+            continue
+        path = tuple(str(part) for part in list(cell.get("column_path") or []) if str(part))
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        ordered.append(path)
+    return tuple(ordered)
+
+
+def _caption_merge_key(value: Any) -> str:
+    text = _normalized_text(str(value or "")).lower()
+    text = _TABLE_CONTINUATION_RE.sub(" ", text)
+    text = _MULTISPACE_RE.sub(" ", text)
+    return text.strip()
+
+
+def _element_continuation_signal(element: Dict[str, Any]) -> bool:
+    metadata = element.get("metadata") if isinstance(element, dict) else {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    normalized_table = metadata.get("normalized_table")
+    normalized_meta = dict(normalized_table.get("metadata") or {}) if isinstance(normalized_table, dict) else {}
+    signals = [
+        metadata.get("nearby_table_text_above"),
+        metadata.get("nearby_table_text_below"),
+        metadata.get("normalized_table_signals", {}).get("context") if isinstance(metadata.get("normalized_table_signals"), dict) else None,
+        normalized_table.get("caption") if isinstance(normalized_table, dict) else None,
+        normalized_meta.get("context"),
+        element_text(element),
+    ]
+    return any(_TABLE_CONTINUATION_RE.search(str(value or "")) for value in signals if value)
+
+
+def _merge_related_table_fragments(filtered_elements: Sequence[Dict[str, Any]]) -> int:
+    merge_count = 0
+    primary_index: Optional[int] = None
+
+    for current_index, element in enumerate(filtered_elements):
+        if element_category(element) != "Table":
+            continue
+
+        metadata = element.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        normalized_table = metadata.get("normalized_table")
+        if not isinstance(normalized_table, dict):
+            continue
+
+        if primary_index is None:
+            primary_index = current_index
+            metadata["normalized_table_is_primary"] = True
+            element["metadata"] = metadata
+            continue
+
+        primary_element = filtered_elements[primary_index]
+        primary_metadata = primary_element.get("metadata")
+        primary_metadata = dict(primary_metadata) if isinstance(primary_metadata, dict) else {}
+        primary_table = primary_metadata.get("normalized_table")
+        if not isinstance(primary_table, dict):
+            primary_index = current_index
+            metadata["normalized_table_is_primary"] = True
+            element["metadata"] = metadata
+            continue
+
+        same_headers = _column_path_signature(primary_table) == _column_path_signature(normalized_table)
+        page_gap = abs(element_page(element) - element_page(primary_element))
+        same_caption = False
+        primary_caption_key = _caption_merge_key(primary_table.get("caption"))
+        current_caption_key = _caption_merge_key(normalized_table.get("caption"))
+        if primary_caption_key and current_caption_key and primary_caption_key == current_caption_key:
+            same_caption = True
+        continuation_signal = _element_continuation_signal(primary_element) or _element_continuation_signal(element)
+
+        should_merge = bool(
+            same_headers
+            and _column_path_signature(primary_table)
+            and page_gap <= 1
+            and (same_caption or continuation_signal)
+        )
+
+        if not should_merge:
+            primary_index = current_index
+            metadata["normalized_table_is_primary"] = True
+            element["metadata"] = metadata
+            continue
+
+        merged_table = merge_normalized_tables(primary_table, normalized_table)
+        primary_metadata["normalized_table"] = merged_table
+        primary_metadata["normalized_table_is_primary"] = True
+        primary_metadata["normalized_table_fragment_count"] = int(
+            primary_metadata.get("normalized_table_fragment_count") or 1
+        ) + 1
+        primary_element["metadata"] = primary_metadata
+
+        metadata["normalized_table"] = merged_table
+        metadata["normalized_table_is_primary"] = False
+        metadata["normalized_table_merged_into"] = str(primary_element.get("element_id") or "")
+        element["metadata"] = metadata
+        merge_count += 1
+
+    return merge_count
+
+
 def _fragment_discard_reason(
     *,
     clean_text: str,
@@ -577,6 +766,7 @@ def _clean_element_content(
     fragment_repeat_index: Dict[str, Set[int]],
     band_fragment_index: Dict[str, Set[int]],
     vertical_ratio: Optional[float],
+    nearby_text: Optional[Dict[str, Optional[str]]],
     cleanup_stats: Counter,
 ) -> Dict[str, Any]:
     cleaned = dict(element)
@@ -586,19 +776,48 @@ def _clean_element_content(
     text = element_text(cleaned)
     if category == "Table":
         html = str(metadata.get("text_as_html") or "").strip()
+        original_html = html
         if html:
             cleaned_html, cleaned_text, table_cleanup = _clean_table_html(
                 html=html,
                 cleanup_stats=cleanup_stats,
             )
+            explicit_signals = extract_explicit_table_signals(
+                original_html,
+                nearby_text=nearby_text,
+            )
+            normalized_table = normalize_html_table(
+                html=original_html,
+                table_id=str(cleaned.get("element_id") or metadata.get("table_id") or ""),
+                nearby_text=nearby_text,
+            )
+            normalized_table, normalized_cleanup = filter_normalized_table_rows(
+                normalized_table,
+                row_noise_detector=lambda row_text: _table_row_noise_reason(_normalized_text(row_text)),
+                row_key_builder=_repeat_key,
+            )
+            metadata["normalized_table"] = normalized_table
+            metadata["normalized_table_signals"] = explicit_signals
+            if nearby_text:
+                metadata["nearby_table_text_above"] = nearby_text.get("above")
+                metadata["nearby_table_text_below"] = nearby_text.get("below")
+
+            cleanup_payload = dict(metadata.get("cleanup") or {})
+            changed = bool(table_cleanup.get("changed") or normalized_cleanup.get("changed"))
             if table_cleanup.get("changed"):
-                metadata["text_as_html"] = cleaned_html
                 cleaned["text"] = cleaned_text
-                metadata["cleanup"] = {
-                    **dict(metadata.get("cleanup") or {}),
-                    "table_rows_removed": int(table_cleanup.get("rows_removed") or 0),
-                }
-                cleaned["metadata"] = metadata
+                cleanup_payload["table_rows_removed"] = int(table_cleanup.get("rows_removed") or 0)
+            if normalized_cleanup.get("changed"):
+                cleanup_payload["normalized_table_rows_removed"] = int(
+                    normalized_cleanup.get("rows_removed") or 0
+                )
+                cleanup_stats["normalized_table_rows_removed"] += int(
+                    normalized_cleanup.get("rows_removed") or 0
+                )
+            if cleanup_payload:
+                metadata["cleanup"] = cleanup_payload
+            cleaned["metadata"] = metadata
+            if changed:
                 cleanup_stats["elements_cleaned"] += 1
             return cleaned
 
@@ -709,6 +928,7 @@ def filter_element_dicts(elements: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     source_elements = [item for item in elements or [] if isinstance(item, dict)]
     repeat_index = _build_repeat_index(source_elements)
     fragment_repeat_index, band_fragment_index = _build_fragment_indexes(source_elements)
+    nearby_text_hints = _build_nearby_text_hints(source_elements)
 
     filtered_elements: List[Dict[str, Any]] = []
     removed_elements: List[Dict[str, Any]] = []
@@ -717,7 +937,7 @@ def filter_element_dicts(elements: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     cleanup_stats = Counter()
     page_stats: Dict[int, Dict[str, int]] = {}
 
-    for raw_element in source_elements:
+    for raw_index, raw_element in enumerate(source_elements):
         category = element_category(raw_element)
         page_number = element_page(raw_element)
         vertical_ratio = _vertical_ratio(raw_element)
@@ -734,6 +954,7 @@ def filter_element_dicts(elements: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             fragment_repeat_index=fragment_repeat_index,
             band_fragment_index=band_fragment_index,
             vertical_ratio=vertical_ratio,
+            nearby_text=nearby_text_hints[raw_index] if raw_index < len(nearby_text_hints) else None,
             cleanup_stats=cleanup_stats,
         )
 
@@ -775,6 +996,8 @@ def filter_element_dicts(elements: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             }
         )
 
+    merged_table_fragments = _merge_related_table_fragments(filtered_elements)
+
     summary = {
         "filter_version": FILTER_VERSION,
         "raw_count": sum(item["raw"] for item in page_stats.values()),
@@ -786,6 +1009,10 @@ def filter_element_dicts(elements: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             "elements_cleaned": int(cleanup_stats.get("elements_cleaned", 0)),
             "text_fragments_removed": int(cleanup_stats.get("text_fragments_removed", 0)),
             "table_rows_removed": int(cleanup_stats.get("table_rows_removed", 0)),
+            "normalized_table_rows_removed": int(
+                cleanup_stats.get("normalized_table_rows_removed", 0)
+            ),
+            "merged_table_fragments": int(merged_table_fragments),
         },
         "page_stats": {
             str(page): stats

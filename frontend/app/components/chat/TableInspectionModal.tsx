@@ -41,6 +41,13 @@ export default function TableInspectionModal({
   const coordinates = (metadata.coordinates || {}) as Record<string, any>;
   const html = String(table?.html || metadata.text_as_html || "").trim();
   const ocrText = String(table?.text || "").trim();
+  const normalizedTable = (table?.normalized_table || metadata.normalized_table || null) as
+    | Record<string, any>
+    | null;
+  const normalizedMeta = (normalizedTable?.metadata || metadata.normalized_table_signals || null) as
+    | Record<string, any>
+    | null;
+  const normalizedJson = normalizedTable ? JSON.stringify(normalizedTable, null, 2) : "";
 
   const imageUrl = !jobId || !table?.bbox
     ? ""
@@ -217,6 +224,39 @@ export default function TableInspectionModal({
               </div>
               <pre className="mt-3 max-h-[32vh] overflow-auto rounded-lg border border-white/10 bg-black/55 p-3 text-[11px] leading-6 whitespace-pre-wrap text-gray-200">
                 {html || "No structured HTML was captured for this table."}
+              </pre>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-white/10 bg-black/40 p-4">
+              <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-blue-300/70">
+                <FileText className="h-3.5 w-3.5" />
+                Normalized Table JSON
+              </div>
+              <div className="mt-2 text-xs text-gray-400">
+                Hierarchical columns plus exact row-to-column mapping from the normalization engine.
+              </div>
+              {normalizedTable?.caption ? (
+                <div className="mt-3 rounded-lg border border-emerald-400/15 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                  Caption: {String(normalizedTable.caption)}
+                </div>
+              ) : null}
+              {normalizedMeta?.units
+              || normalizedMeta?.context
+              || typeof normalizedMeta?.confidence?.structure === "number"
+              || typeof normalizedMeta?.confidence?.headers === "number" ? (
+                <div className="mt-3 space-y-2 rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-xs text-gray-200">
+                  {normalizedMeta?.units ? <div>Units: {String(normalizedMeta.units)}</div> : null}
+                  {normalizedMeta?.context ? <div>Context: {String(normalizedMeta.context)}</div> : null}
+                  {typeof normalizedMeta?.confidence?.structure === "number" ? (
+                    <div>Structure confidence: {Number(normalizedMeta.confidence.structure).toFixed(3)}</div>
+                  ) : null}
+                  {typeof normalizedMeta?.confidence?.headers === "number" ? (
+                    <div>Header confidence: {Number(normalizedMeta.confidence.headers).toFixed(3)}</div>
+                  ) : null}
+                </div>
+              ) : null}
+              <pre className="mt-3 max-h-[32vh] overflow-auto rounded-lg border border-white/10 bg-black/55 p-3 text-[11px] leading-6 whitespace-pre-wrap text-gray-200">
+                {normalizedJson || "No normalized table JSON is available for this table."}
               </pre>
             </div>
           </aside>

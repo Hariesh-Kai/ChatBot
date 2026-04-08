@@ -16,7 +16,7 @@ import { ChatSession, Message } from "@/app/lib/types";
 import { ChatUIModelId } from "@/app/lib/chat-ui-models";
 import { loadChats, saveChats } from "@/app/lib/chat-store";
 import { loadPmlChats, savePmlChats } from "@/app/lib/pml-chat-store";
-import { authLogout, authMe, updateMetadata } from "@/app/lib/api";
+import { authLogout, authMe, cancelUploadJob, updateMetadata } from "@/app/lib/api";
 import type { AuthUser, UploadIngestionStatusResponse } from "@/app/lib/api";
 import {
   isProjectSystemTeamMessage,
@@ -53,6 +53,16 @@ import { getRoleLabel } from "@/app/lib/org-role-catalog";
 import type {
   WorkspaceDocumentRow,
 } from "@/app/components/workspace/types";
+
+type UploadCancelPhase = "metadata" | "preprocessing" | "ingestion";
+
+type UploadCancelState = {
+  chatId: string;
+  messageId: string;
+  jobId: string;
+  label: string;
+  phase: UploadCancelPhase;
+};
 
 /* =========================================================
    HELPER: UUID
@@ -400,6 +410,8 @@ function AuthedHome({
     fields: MetadataRequestField[];
     filename: string;
   } | null>(null);
+  const [uploadCancelState, setUploadCancelState] = useState<UploadCancelState | null>(null);
+  const [uploadCancelBusy, setUploadCancelBusy] = useState(false);
   const [pendingIngestion, setPendingIngestion] = useState<
     PendingIngestionPollItem[]
   >([]);
@@ -432,6 +444,7 @@ function AuthedHome({
   const uploadChatIdRef = useRef<string | null>(null);
   const uploadProgressMsgIdRef = useRef<string | null>(null);
   const uploadFileNameRef = useRef<string | null>(null);
+  const metadataSubmitControllerRef = useRef<AbortController | null>(null);
   
   
   const createNewChat = useCallback(() => {
@@ -1103,9 +1116,10 @@ function AuthedHome({
   );
   const isTyping = workspaceMode === "pml" ? pmlIsTyping : workspaceMode === "ai" ? aiIsTyping : false;
   /* ================= RESET UPLOAD ON CHAT CHANGE ================= */
-  useEffect(() => {
+useEffect(() => {
   if (!activeChat && !sidebarMetadataRequest) {
     setUploadPipeline(null);
+    setUploadCancelState(null);
     uploadSessionRef.current = null;
   }
 }, [activeChat, sidebarMetadataRequest]);
@@ -1468,6 +1482,9 @@ function AuthedHome({
     ) => {
       void _status;
       clearPendingById(item.id);
+      setUploadCancelState((prev) =>
+        prev && prev.jobId === (item.jobId || "") ? null : prev
+      );
       updateMessagesForChat(item.chatId, (prev) =>
         prev.map((m) =>
           m.id === item.messageId
@@ -1501,6 +1518,17 @@ function AuthedHome({
         (status.message || "").trim() ||
         DOC_PROCESSING_BACKGROUND_TEXT;
 
+      if (item.jobId) {
+        setUploadCancelState((prev) => {
+          if (!prev || prev.jobId !== item.jobId) return prev;
+          return {
+            ...prev,
+            phase: "ingestion",
+            label,
+          };
+        });
+      }
+
       updateMessagesForChat(item.chatId, (prev) =>
         prev.map((m) =>
           m.id === item.messageId
@@ -1524,6 +1552,9 @@ function AuthedHome({
       status: UploadIngestionStatusResponse
     ) => {
       clearPendingById(item.id);
+      setUploadCancelState((prev) =>
+        prev && prev.jobId === (item.jobId || "") ? null : prev
+      );
       const detail = (status.error || status.message || "").trim();
       const message = detail
         ? `${DOC_ERROR_TEXT_PREFIX}: ${detail}`
@@ -1575,9 +1606,116 @@ function AuthedHome({
     return Math.round(40 + (clamped / 100) * 60);
   };
 
+  const isUploadCancelError = (error: unknown) => {
+    const name = String((error as any)?.name || "").trim();
+    const message = String((error as any)?.message || "")
+      .trim()
+      .toLowerCase();
+    return (
+      name === "AbortError" ||
+      message.includes("cancelled by user") ||
+      message.includes("upload cancelled") ||
+      message.includes("aborted")
+    );
+  };
+
+  const clearUploadCancelState = useCallback(() => {
+    setUploadCancelState(null);
+    setUploadCancelBusy(false);
+  }, []);
+
+  const markUploadCancelledMessage = useCallback(
+    ({
+      chatId,
+      messageId,
+      text,
+    }: {
+      chatId: string | null;
+      messageId: string | null;
+      text: string;
+    }) => {
+      if (!chatId) return;
+      updateMessagesForChat(chatId, (prev) =>
+        prev.some((m) => m.id === messageId)
+          ? prev.map((m) =>
+              m.id === messageId
+                ? {
+                    ...m,
+                    role: "assistant",
+                    status: "done",
+                    content: text,
+                    progress: undefined,
+                    progressLabel: undefined,
+                  }
+                : m
+            )
+          : [
+              ...prev,
+              {
+                id: uuidv4(),
+                role: "assistant",
+                content: text,
+                createdAt: Date.now(),
+                status: "done",
+              },
+            ]
+      );
+    },
+    [updateMessagesForChat]
+  );
+
+  const handleCancelActiveUpload = useCallback(async () => {
+    if (!uploadCancelState || uploadCancelBusy) return;
+
+    setUploadCancelBusy(true);
+
+    metadataSubmitControllerRef.current?.abort();
+    metadataSubmitControllerRef.current = null;
+
+    try {
+      const response = await cancelUploadJob({
+        job_id: uploadCancelState.jobId,
+        session_id: uploadCancelState.chatId,
+        purge_saved_data: true,
+      });
+
+      clearPendingForMessage(uploadCancelState.chatId, uploadCancelState.messageId);
+      setSidebarMetadataRequest(null);
+      setUploadPipeline(null);
+      uploadSessionRef.current = null;
+      uploadChatIdRef.current = null;
+      uploadProgressMsgIdRef.current = null;
+      uploadFileNameRef.current = null;
+
+      markUploadCancelledMessage({
+        chatId: uploadCancelState.chatId,
+        messageId: uploadCancelState.messageId,
+        text:
+          response.message ||
+          "Upload cancelled. Partial preprocessing and ingestion data were removed.",
+      });
+      clearUploadCancelState();
+    } catch (err: any) {
+      setUploadCancelBusy(false);
+      const message = err?.message || "Failed to cancel upload";
+      markUploadCancelledMessage({
+        chatId: uploadCancelState.chatId,
+        messageId: uploadCancelState.messageId,
+        text: message,
+      });
+    }
+  }, [
+    clearPendingForMessage,
+    clearUploadCancelState,
+    markUploadCancelledMessage,
+    uploadCancelBusy,
+    uploadCancelState,
+  ]);
+
   const handleSidebarUploadStart = (file: File) => {
     if (!activeId) return;
 
+    clearUploadCancelState();
     uploadChatIdRef.current = activeId;
     uploadFileNameRef.current = file.name;
     uploadSessionRef.current = uuidv4();
@@ -1693,6 +1831,16 @@ function AuthedHome({
         filename: result.filename,
       });
 
+      if (chatId && msgId) {
+        setUploadCancelState({
+          chatId,
+          messageId: msgId,
+          jobId: result.job_id,
+          label: "Waiting for metadata details.",
+          phase: "metadata",
+        });
+      }
+
       return;
     }
 
@@ -1706,9 +1854,12 @@ function AuthedHome({
   };
 
   const handleSidebarUploadError = (errorMsg: string) => {
+    metadataSubmitControllerRef.current?.abort();
+    metadataSubmitControllerRef.current = null;
     uploadSessionRef.current = null;
     setUploadPipeline(null);
     setSidebarMetadataRequest(null);
+    clearUploadCancelState();
 
     const chatId = uploadChatIdRef.current ?? activeId;
     const msgId = uploadProgressMsgIdRef.current;
@@ -1749,115 +1900,140 @@ function AuthedHome({
 
 
   // New: handle submission of metadata from the metadata form
-const handleExternalMetadataSubmit = async (
-  jobId: string,
-  fields: MetadataRequestField[]
-) => {
-  if (!activeId) return;
-  // guard: ensure this is the current upload session
-  if (!uploadSessionRef.current) return;
+  const handleExternalMetadataSubmit = async (
+    jobId: string,
+    fields: MetadataRequestField[]
+  ) => {
+    if (!activeId) return;
+    if (!uploadSessionRef.current) return;
 
-  // Build metadata map expected by backend: { key: value, ... }
-  if (!Array.isArray(fields)) {
-  handleSidebarUploadError("Metadata fields missing. Please retry upload.");
-  console.error("[MetadataSubmit] fields is invalid:", fields);
-  return;
-}
+    if (!Array.isArray(fields)) {
+      handleSidebarUploadError("Metadata fields missing. Please retry upload.");
+      console.error("[MetadataSubmit] fields is invalid:", fields);
+      return;
+    }
 
-const metadata: Record<string, string> = fields.reduce((acc, f) => {
-  acc[f.key] =
-    typeof f.value === "string" ? f.value : String(f.value ?? "");
-  return acc;
-}, {} as Record<string, string>);
-  try {
+    const metadata: Record<string, string> = fields.reduce((acc, f) => {
+      acc[f.key] =
+        typeof f.value === "string" ? f.value : String(f.value ?? "");
+      return acc;
+    }, {} as Record<string, string>);
+
     const chatId = uploadChatIdRef.current ?? activeId;
     const msgId = uploadProgressMsgIdRef.current;
+    const controller = new AbortController();
 
-    // update UI
-    setUploadPipeline({ percent: 40, label: "Submitting metadata..." });
-    if (chatId && msgId) {
-      updateMessagesForChat(chatId, (prev) =>
-        prev.map((m) =>
-          m.id === msgId
-            ? {
-                ...m,
-                status: "progress",
-                progress: 40,
-                progressLabel: "Submitting metadata...",
-              }
-            : m
-        )
+    metadataSubmitControllerRef.current = controller;
+
+    try {
+      setUploadPipeline({ percent: 40, label: "Submitting metadata..." });
+      if (chatId && msgId) {
+        setUploadCancelState({
+          chatId,
+          messageId: msgId,
+          jobId,
+          label: "Submitting metadata...",
+          phase: "preprocessing",
+        });
+        updateMessagesForChat(chatId, (prev) =>
+          prev.map((m) =>
+            m.id === msgId
+              ? {
+                  ...m,
+                  status: "progress",
+                  progress: 40,
+                  progressLabel: "Submitting metadata...",
+                }
+              : m
+          )
+        );
+      }
+
+      await updateMetadata(
+        { job_id: jobId, metadata, force: true },
+        (evt) => {
+          if (!evt) return;
+          const raw = typeof evt.progress === "number" ? evt.progress : 50;
+          const pct = mapCommitProgress(raw);
+          const lbl = evt.message ?? "Processing document...";
+
+          setUploadPipeline({
+            percent: pct,
+            label: lbl,
+          });
+
+          if (chatId && msgId) {
+            setUploadCancelState({
+              chatId,
+              messageId: msgId,
+              jobId,
+              label: lbl,
+              phase: "preprocessing",
+            });
+            updateMessagesForChat(chatId, (prev) =>
+              prev.map((m) =>
+                m.id === msgId
+                  ? {
+                      ...m,
+                      status: "progress",
+                      progress: pct,
+                      progressLabel: lbl,
+                    }
+                  : m
+              )
+            );
+          }
+        },
+        controller.signal
       );
-    }
 
-    // Streaming commit: shows chunking / embedding / indexing progress
-    await updateMetadata(
-      { job_id: jobId, metadata, force: true },
-      (evt) => {
-        if (!evt) return;
-        const raw = typeof evt.progress === "number" ? evt.progress : 50;
-        const pct = mapCommitProgress(raw);
-        const lbl = evt.message ?? "Processing document...";
+      finalizeUploadSuccess();
 
-        setUploadPipeline({
-          percent: pct,
-          label: lbl,
+      setSidebarMetadataRequest(null);
+      uploadSessionRef.current = null;
+      setUploadPipeline(null);
+
+      if (chatId && msgId) {
+        updateMessagesForChat(chatId, (prev) =>
+          prev.map((m) =>
+            m.id === msgId
+              ? {
+                  ...m,
+                  status: "progress",
+                  content: "",
+                  progress: 45,
+                  progressLabel: "Queued for background processing...",
+                }
+              : m
+          )
+        );
+
+        setUploadCancelState({
+          chatId,
+          messageId: msgId,
+          jobId,
+          label: "Queued for background processing...",
+          phase: "ingestion",
         });
 
-        if (chatId && msgId) {
-          updateMessagesForChat(chatId, (prev) =>
-            prev.map((m) =>
-              m.id === msgId
-                ? {
-                    ...m,
-                    status: "progress",
-                    progress: pct,
-                    progressLabel: lbl,
-                  }
-                : m
-            )
-          );
-        }
+        addPendingIngestion({
+          jobId,
+          sessionId: chatId,
+          chatId,
+          messageId: msgId,
+        });
       }
-    );
-
-    // success flow: reuse your finalize helper
-    finalizeUploadSuccess();
-
-    // clear UI state
-    setSidebarMetadataRequest(null);
-    uploadSessionRef.current = null;
-    setUploadPipeline(null);
-
-    if (chatId && msgId) {
-      updateMessagesForChat(chatId, (prev) =>
-        prev.map((m) =>
-          m.id === msgId
-            ? {
-                ...m,
-                status: "progress",
-                content: "",
-                progress: 45,
-                progressLabel: "Queued for background processing...",
-              }
-            : m
-        )
-      );
-
-      addPendingIngestion({
-        jobId,
-        sessionId: chatId,
-        chatId,
-        messageId: msgId,
-      });
+    } catch (err: any) {
+      if (isUploadCancelError(err)) {
+        return;
+      }
+      setUploadPipeline(null);
+      uploadSessionRef.current = null;
+      handleSidebarUploadError(err?.message || "Failed to submit metadata");
+    } finally {
+      metadataSubmitControllerRef.current = null;
     }
-  } catch (err: any) {
-    // reuse existing error handler
-    setUploadPipeline(null);
-    uploadSessionRef.current = null;
-    handleSidebarUploadError(err?.message || "Failed to submit metadata");
-  }
-};
+  };
 
 
 
@@ -2100,6 +2276,16 @@ const metadata: Record<string, string> = fields.reduce((acc, f) => {
                 onUploadError={handleSidebarUploadError}
                 externalMetadataRequest={sidebarMetadataRequest}
                 metadataActive={!!sidebarMetadataRequest}
+                uploadCancelState={
+                  uploadCancelState && uploadCancelState.chatId === activeChat.id
+                    ? {
+                        label: uploadCancelState.label,
+                        phase: uploadCancelState.phase,
+                      }
+                    : null
+                }
+                cancelUploadBusy={uploadCancelBusy}
+                onCancelUpload={handleCancelActiveUpload}
                 onExternalMetadataSubmit={handleExternalMetadataSubmit}
                 inputRefExternal={chatInputRef}
                 emptyStateConfig={{ showPmlEntryCard: false, showSummaryCard: false }}

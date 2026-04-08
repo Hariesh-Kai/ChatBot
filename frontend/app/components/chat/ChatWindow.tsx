@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useMemo, useCallback, type RefObject } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback, type DragEvent, type RefObject } from "react";
 import MessageBubble from "./MessageBubble";
 import ChatInput from "./ChatInput";
 import EmptyState, { type EmptyPrompt } from "../EmptyState";
@@ -9,11 +9,13 @@ import SourceViewerModal from "./SourceViewerModal";
 import ChatHeader from "./ChatHeader";
 import ProcessingBubble from "./ProcessingBubble";
 import Disclaimer from "../ui/Disclaimer"; //  Imported
+import DeleteConfirmModal from "../ui/DeleteConfirmModal";
 
 import { Message, RagSource } from "@/app/lib/types";
 import { CHAT_UI_MODELS, ChatUIModelId } from "@/app/lib/chat-ui-models";
 import { LLMUIEvent, MetadataRequestField, UI_EVENT_PREFIX, parseLLMUIEvent } from "@/app/lib/llm-ui-events";
 import type { UploadStatus } from "@/app/hooks/useSmartUpload";
+import { useSmartUpload } from "@/app/hooks/useSmartUpload";
 import { StreamParser } from "@/app/lib/stream-parser";
 import {
   fetchUploadPreprocessingPreview,
@@ -25,6 +27,7 @@ import {
 
 import { startJob, abortJob, finishJob } from "@/app/lib/job-manager";
 import NetKeyModal from "@/app/components/net/NetKeyModal";
+import { getFirstPdfFile, validatePdfFile, MAX_PDF_SIZE_MB } from "@/app/lib/pdf-upload";
 
 /* ================= UTILS ================= */
 
@@ -132,6 +135,12 @@ interface ChatWindowProps {
   onRenameSession?: (title: string) => void;
   onModelChange?: (model: ChatUIModelId) => void;
   metadataActive?: boolean;
+  uploadCancelState?: {
+    label: string;
+    phase: "metadata" | "preprocessing" | "ingestion";
+  } | null;
+  cancelUploadBusy?: boolean;
+  onCancelUpload?: () => Promise<void> | void;
   uploadPipeline?: {
     percent: number;
     label: string;
@@ -191,12 +200,16 @@ export default function ChatWindow({
   totalChats = 0,
   unreadNotifications = 0,
   devSettings,
+  uploadCancelState = null,
+  cancelUploadBusy = false,
+  onCancelUpload,
   uploadPipeline,
   title = "New Chat",
   ingestionPollingActive = false,
   ingestionPollingCount = 0,
   onRenameSession,
   onModelChange,
+  metadataActive = false,
   onUploadStart,
   onUploadProgress,
   onUploadSuccess,
@@ -238,6 +251,9 @@ export default function ChatWindow({
   const [ragPanelOpen, setRagPanelOpen] = useState(false);
   const [saveTemplateBusy, setSaveTemplateBusy] = useState(false);
   const [saveTemplateStatus, setSaveTemplateStatus] = useState<string | null>(null);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
 
   
   const [pendingJobId, setPendingJobId] = useState<string | null>(null);
@@ -248,6 +264,7 @@ export default function ChatWindow({
 
   // --- Live Model Stage ---
   const [currentStage, setCurrentStage] = useState<string>("");
+  const { startUpload: startDroppedUpload } = useSmartUpload();
 
   // --- Refs ---
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -288,6 +305,38 @@ export default function ChatWindow({
 
   const isNetBlocked = model === "net" && netRateLimitedUntil !== null && Date.now() < netRateLimitedUntil;
   const isUIBlocked = Boolean(uploadPipeline)  || Boolean(inlineMetadataFields) || isNetBlocked;
+  const dropUploadEnabled = Boolean(showUpload && sessionId && !isUIBlocked);
+
+  const isAbortLikeError = useCallback((error: unknown) => {
+    const name = String((error as any)?.name || "").trim();
+    const message = String((error as any)?.message || "")
+      .trim()
+      .toLowerCase();
+    return (
+      name === "AbortError" ||
+      message.includes("cancelled by user") ||
+      message.includes("upload cancelled") ||
+      message.includes("aborted")
+    );
+  }, []);
+
+  const requestUploadCancel = useCallback(() => {
+    if (!uploadCancelState || !onCancelUpload || cancelUploadBusy) return;
+    if (uploadCancelState.phase === "metadata") {
+      void Promise.resolve(onCancelUpload());
+      return;
+    }
+    setCancelConfirmOpen(true);
+  }, [cancelUploadBusy, onCancelUpload, uploadCancelState]);
+
+  const confirmUploadCancel = useCallback(() => {
+    if (!onCancelUpload || cancelUploadBusy) {
+      setCancelConfirmOpen(false);
+      return;
+    }
+    setCancelConfirmOpen(false);
+    void Promise.resolve(onCancelUpload());
+  }, [cancelUploadBusy, onCancelUpload]);
 
 
 
@@ -306,6 +355,28 @@ export default function ChatWindow({
       setRagSteps([]);
     }
   }, [ragVisualizationEnabled]);
+
+  useEffect(() => {
+    if (!uploadCancelState) {
+      setCancelConfirmOpen(false);
+    }
+  }, [uploadCancelState]);
+
+  useEffect(() => {
+    if (disableMetadataWorkflow) return;
+    if (externalMetadataRequest || metadataActive) return;
+    if (!inlineMetadataFields && !pendingJobId) return;
+
+    setInlineMetadataFields(null);
+    setPendingJobId(null);
+    setCurrentStage("");
+  }, [
+    disableMetadataWorkflow,
+    externalMetadataRequest,
+    inlineMetadataFields,
+    metadataActive,
+    pendingJobId,
+  ]);
 
   useEffect(() => {
     if (lastModelRef.current === model) return;
@@ -434,6 +505,12 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
     }
     setPendingJobId(null);
   } catch (err: any) {
+    if (isAbortLikeError(err)) {
+      setPendingJobId(null);
+      setInlineMetadataFields(null);
+      return;
+    }
+
     // If submission fails, restore the form so the user can retry.
     setPendingJobId(jobId);
     setInlineMetadataFields(filledFields);
@@ -977,6 +1054,75 @@ useEffect(() => {
   return () => clearTimeout(timeout);
 }, [netRateLimitedUntil]);
 
+  function hasDraggedFiles(event: DragEvent<HTMLElement>) {
+    return Array.from(event.dataTransfer?.types || []).includes("Files");
+  }
+
+  function clearDragState() {
+    dragDepthRef.current = 0;
+    setDragActive(false);
+  }
+
+  async function handleDroppedFile(file: File) {
+    if (!sessionId) {
+      onUploadError?.("Initializing chat... please try again.");
+      return;
+    }
+
+    const validationError = validatePdfFile(file);
+    if (validationError) {
+      onUploadError?.(validationError);
+      return;
+    }
+
+    onUploadStart?.(file);
+    await startDroppedUpload(
+      file,
+      sessionId,
+      (status, pct, label) => onUploadProgress?.(status, pct, label),
+      (data) => onUploadSuccess?.(data),
+      (err) => onUploadError?.(err)
+    );
+  }
+
+  function handleDragEnter(event: DragEvent<HTMLDivElement>) {
+    if (!dropUploadEnabled || !hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current += 1;
+    setDragActive(true);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    if (!dropUploadEnabled || !hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+    if (!dragActive) setDragActive(true);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setDragActive(false);
+    }
+  }
+
+  async function handleDrop(event: DragEvent<HTMLDivElement>) {
+    if (!hasDraggedFiles(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    clearDragState();
+    if (!dropUploadEnabled) return;
+
+    const file = getFirstPdfFile(event.dataTransfer.files);
+    if (!file) return;
+    await handleDroppedFile(file);
+  }
+
 
   // ----------------------------------------------------------------------
   // 4. RENDER
@@ -1004,7 +1150,23 @@ useEffect(() => {
         />
 
 
-        <div className="relative flex-1 w-full overflow-hidden">
+        <div
+          className="relative flex-1 w-full overflow-hidden"
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+            {dragActive && dropUploadEnabled && (
+              <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                <div className="rounded-3xl border border-cyan-400/40 bg-cyan-500/10 px-6 py-5 text-center shadow-[0_16px_48px_rgba(6,182,212,0.18)]">
+                  <div className="text-base font-semibold text-white">Drop PDF to upload</div>
+                  <div className="mt-1 text-sm text-cyan-100/80">
+                    PDF only, up to {MAX_PDF_SIZE_MB}MB
+                  </div>
+                </div>
+              </div>
+            )}
             <div className={`absolute inset-0 flex items-center justify-center transition-all ${hasStarted ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
                 <EmptyState 
                   disabled={isUIBlocked}
@@ -1071,6 +1233,10 @@ useEffect(() => {
                             const assistantLabel =
                               SAFE_MODELS.find((item) => item.id === assistantModel)?.label ??
                               modelLabel;
+                            const uploadBubbleActive =
+                              Boolean(uploadCancelState) &&
+                              uploadCancelState.chatId === sessionId &&
+                              m.id === uploadProgressMsgIdRef.current;
                             return (
                                 <MessageBubble
                                   key={m.id}
@@ -1078,6 +1244,16 @@ useEffect(() => {
                                   modelLabel={assistantLabel}
                                   assistantModel={assistantModel}
                                   showConfidence={showConfidence}
+                                  uploadCancelState={
+                                    uploadBubbleActive && uploadCancelState
+                                      ? {
+                                          phase: uploadCancelState.phase,
+                                          label: uploadCancelState.label,
+                                        }
+                                      : null
+                                  }
+                                  cancelUploadBusy={cancelUploadBusy}
+                                  onCancelUpload={uploadBubbleActive ? requestUploadCancel : undefined}
                                   userLabel={userLabel}
                                   isLastAssistant={
                                     m.role === "assistant" &&
@@ -1102,6 +1278,14 @@ useEffect(() => {
                             <InlineMetadataPrompt
                                 fields={inlineMetadataFields}
                                 onSubmit={handleInlineMetadataSubmit}
+                                onCancel={
+                                  uploadCancelState?.phase === "metadata" && onCancelUpload
+                                    ? () => {
+                                        requestUploadCancel();
+                                      }
+                                    : undefined
+                                }
+                                cancelDisabled={cancelUploadBusy}
                                 previewJobId={pendingJobId}
                                 preview={preprocessingPreview}
                                 previewLoading={preprocessingPreviewLoading}
@@ -1170,6 +1354,15 @@ useEffect(() => {
             </div>
         </div>
       </div>
+
+      <DeleteConfirmModal
+        open={cancelConfirmOpen}
+        title="Cancel document processing?"
+        description="Continuing will cancel this upload and delete any preprocessing or ingestion data saved so far."
+        confirmLabel="Continue"
+        onCancel={() => setCancelConfirmOpen(false)}
+        onConfirm={confirmUploadCancel}
+      />
 
             <NetKeyModal
           open={netModalOpen}

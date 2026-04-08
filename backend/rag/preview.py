@@ -227,6 +227,7 @@ def _shape_element(element: Dict[str, Any]) -> Dict[str, Any]:
     metadata = element.get("metadata") if isinstance(element, dict) else {}
     if not isinstance(metadata, dict):
         metadata = {}
+    normalized_table = metadata.get("normalized_table")
 
     return {
         "id": str(element.get("element_id") or ""),
@@ -235,6 +236,7 @@ def _shape_element(element: Dict[str, Any]) -> Dict[str, Any]:
         "text": element_text(element),
         "bbox": _extract_bbox(element),
         "html": str(metadata.get("text_as_html") or ""),
+        "normalized_table": normalized_table if isinstance(normalized_table, dict) else None,
         "metadata": metadata,
         "discard_reason": str(element.get("_discard_reason") or ""),
     }

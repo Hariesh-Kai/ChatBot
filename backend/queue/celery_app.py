@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Dict
+
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 
 try:
     from celery import Celery

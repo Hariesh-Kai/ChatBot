@@ -15,6 +15,7 @@ from backend.state.job_state import (
 from backend.state.job_persistence import get_job_run, upsert_job_run
 from backend.rag.commit_worker import start_commit_job
 from backend.storage.minio_outbox import enqueue_minio_upload
+from backend.rag.upload_cancellation import is_upload_cancel_requested
 
 from backend.contracts.ui_events import (
     metadata_confirmed_event,
@@ -149,6 +150,10 @@ def update_metadata(payload: MetadataUpdateRequest):
                 job.missing_fields = []
                 if job.status == "WAIT_FOR_METADATA":
                     job.status = "PROCESSING"
+
+            if is_upload_cancel_requested(job_id=job.job_id, session_id=job.session_id):
+                yield emit_event(error_event("Cancelled by user"))
+                return
 
             # 4. Queue background work
             outbox_id, started = _queue_backup_and_start_commit(job)

@@ -8,6 +8,12 @@ from typing import Any, Dict, Optional, Tuple
 from backend.memory.pg_memory import save_active_document
 from backend.queue.celery_app import celery_app, is_celery_enabled
 from backend.rag.pipeline import run_pipeline
+from backend.rag.upload_cancellation import (
+    UploadCancellationError,
+    cleanup_cancelled_upload,
+    is_upload_cancel_requested,
+    raise_if_upload_cancel_requested,
+)
 from backend.rag.collections import (
     DEFAULT_RAG_COLLECTION_NAME,
     normalize_collection_name,
@@ -154,6 +160,7 @@ def run_commit_payload(
     session_id: Optional[str],
     final_metadata: Dict[str, Any],
 ) -> None:
+    raise_if_upload_cancel_requested(job_id=job_id, session_id=session_id)
     set_job_progress(
         job_id,
         value=42,
@@ -171,7 +178,7 @@ def run_commit_payload(
         job_dir=str(job_dir),
         company_document_id=final_metadata["company_document_id"],
         db_connection=final_metadata["db_connection"],
-        extra_metadata={**final_metadata, "session_id": session_id},
+        extra_metadata={**final_metadata, "session_id": session_id, "job_id": job_id},
         mode="commit",
     ):
         if isinstance(evt, dict) and evt.get("type") == "PROGRESS":
@@ -180,6 +187,8 @@ def run_commit_payload(
                 value=evt.get("value"),
                 label=evt.get("label"),
             )
+
+    raise_if_upload_cancel_requested(job_id=job_id, session_id=session_id)
 
     rev_text = str(final_metadata["revision_number"])
     try:
@@ -231,7 +240,19 @@ def _run_commit(
                 session_id=session_id,
                 final_metadata=final_metadata,
             )
+    except UploadCancellationError as e:
+        cleanup = cleanup_cancelled_upload(job_id=job_id, metadata=final_metadata)
+        mark_job_error(job_id, str(e))
+        print(f"[RAG-COMMIT] Cancelled job_id={job_id} cleanup={cleanup}")
     except Exception as e:
+        if is_upload_cancel_requested(job_id=job_id, session_id=session_id):
+            cleanup = cleanup_cancelled_upload(job_id=job_id, metadata=final_metadata)
+            mark_job_error(job_id, "Cancelled by user")
+            print(
+                f"[RAG-COMMIT] Cancelled job_id={job_id} after worker race "
+                f"cleanup={cleanup} error={e}"
+            )
+            return
         mark_job_error(job_id, f"Commit failed: {e}")
         print(f"[RAG-COMMIT] Failed job_id={job_id}: {e}")
     finally:

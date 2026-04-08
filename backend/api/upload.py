@@ -30,6 +30,7 @@ from backend.state.job_state import (
     create_job,
     get_job_state,
     get_active_document,
+    mark_job_error,
     set_job_progress,
 )
 from backend.state.dev_settings import get_dev_settings
@@ -38,6 +39,8 @@ from backend.state.job_persistence import (
     get_latest_job_run_for_session,
 )
 from backend.rag.commit_worker import start_commit_job
+from backend.rag.upload_cancellation import cleanup_cancelled_upload
+from backend.state.abort_signals import signal_abort
 from backend.storage.minio_outbox import enqueue_minio_upload
 
 #  Import duplicate checker
@@ -125,6 +128,41 @@ def _get_preview_context(job_id: str):
         raise HTTPException(500, "Upload job is missing company_document_id")
 
     return job, metadata, pdf_file
+
+
+def _resolve_cancel_job_payload(
+    *,
+    job_id: Optional[str],
+    session_id: Optional[str],
+):
+    clean_job_id = (job_id or "").strip()
+    clean_session_id = (session_id or "").strip()
+
+    if clean_job_id:
+        job = _resolve_job_payload(clean_job_id)
+        if job:
+            return job
+
+    if clean_session_id:
+        persisted = get_latest_job_run_for_session(clean_session_id)
+        if persisted:
+            return type(
+                "PersistedJob",
+                (),
+                {
+                    "job_id": str(persisted.get("job_id") or clean_job_id or ""),
+                    "session_id": persisted.get("session_id") or clean_session_id,
+                    "status": str(persisted.get("status") or "PROCESSING"),
+                    "metadata": dict(persisted.get("metadata") or {}),
+                    "missing_fields": list(persisted.get("missing_fields") or []),
+                },
+            )()
+
+        job = get_job_state(clean_session_id)
+        if job:
+            return job
+
+    return None
 
 
 def _coerce_float(value: Any) -> Optional[float]:
@@ -267,6 +305,21 @@ class CommitResponse(BaseModel):
     company_document_id: str
     revision_number: str 
     status: str
+
+
+class CancelUploadRequest(BaseModel):
+    job_id: Optional[str] = None
+    session_id: Optional[str] = None
+    purge_saved_data: bool = True
+
+
+class CancelUploadResponse(BaseModel):
+    ok: bool
+    job_id: Optional[str] = None
+    session_id: Optional[str] = None
+    status: str
+    message: str
+    cleanup: Dict[str, Any] = {}
 
 
 class UploadStatusResponse(BaseModel):
@@ -681,6 +734,53 @@ def commit_upload(payload: CommitRequest):
         company_document_id=final_metadata["company_document_id"],
         revision_number=str(final_metadata["revision_number"]),
         status="processing",
+    )
+
+
+@router.post("/cancel", response_model=CancelUploadResponse)
+def cancel_upload(payload: CancelUploadRequest):
+    job = _resolve_cancel_job_payload(
+        job_id=payload.job_id,
+        session_id=payload.session_id,
+    )
+    if not job:
+        raise HTTPException(404, "No active upload job found.")
+
+    clean_job_id = str(getattr(job, "job_id", "") or "").strip() or None
+    clean_session_id = str(getattr(job, "session_id", "") or "").strip() or None
+    status = str(getattr(job, "status", "") or "PROCESSING").strip().upper()
+    metadata = dict(getattr(job, "metadata", {}) or {})
+
+    if status == "READY":
+        raise HTTPException(400, "This document is already ready and cannot be cancelled.")
+
+    if clean_job_id:
+        signal_abort(clean_job_id)
+    elif clean_session_id:
+        signal_abort(clean_session_id)
+
+    if clean_job_id:
+        mark_job_error(clean_job_id, "Cancelled by user")
+        set_job_progress(
+            clean_job_id,
+            value=0,
+            label="Cancelled by user.",
+        )
+
+    cleanup: Dict[str, Any] = {}
+    if payload.purge_saved_data and clean_job_id:
+        cleanup = cleanup_cancelled_upload(
+            job_id=clean_job_id,
+            metadata=metadata,
+        )
+
+    return CancelUploadResponse(
+        ok=True,
+        job_id=clean_job_id,
+        session_id=clean_session_id,
+        status="ERROR",
+        message="Upload cancelled and partial preprocessing/ingestion data removed.",
+        cleanup=cleanup,
     )
 
 

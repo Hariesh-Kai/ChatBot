@@ -292,6 +292,9 @@ def enrich_chunks(
     revision_code = extra_metadata.get("revision_code")
     revision_date = extra_metadata.get("revision_date", int(time.time()))
     document_type = extra_metadata.get("document_type")
+    document_title = extra_metadata.get("document_title") or document_type
+    document_number = extra_metadata.get("document_number")
+    project_name = extra_metadata.get("project_name")
     source_file = extra_metadata.get("source_file")
 
     if not revision_number:
@@ -395,6 +398,9 @@ def enrich_chunks(
                     "revision_code": revision_code,
                     "revision_date": revision_date,
                     "document_type": document_type,
+                    "document_title": document_title,
+                    "document_number": document_number,
+                    "project_name": project_name,
                 },
 
                 # -----------------------------

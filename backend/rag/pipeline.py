@@ -27,6 +27,10 @@ from backend.rag.ingest import (
     ingest_to_pgvector,
     load_documents,
 )
+from backend.rag.upload_cancellation import (
+    is_upload_cancel_requested,
+    raise_if_upload_cancel_requested,
+)
 from backend.contracts.ui_events import progress_event
 from backend.state.dev_settings import get_dev_settings
 
@@ -81,6 +85,13 @@ def _filter_report_version(path: Path) -> int:
         return int(payload.get("filter_version") or 0)
     except Exception:
         return 0
+
+
+def _check_cancel(extra_metadata: Dict[str, Any]) -> None:
+    raise_if_upload_cancel_requested(
+        job_id=str(extra_metadata.get("job_id") or "").strip() or None,
+        session_id=str(extra_metadata.get("session_id") or "").strip() or None,
+    )
 
 
 # ============================================================
@@ -193,6 +204,7 @@ def run_pipeline(
     # --------------------------------------------------
 
     if not elements_path.exists():
+        _check_cancel(extra_metadata)
         print(f"Parsing PDF in Streaming Mode (Mode={mode})...")
         yield  progress_event(value=5, label="Reading PDF pages…")
         all_elements = []
@@ -206,6 +218,7 @@ def run_pipeline(
             pipeline_mode=mode,
             preprocessor=resolved_preprocessor,
         ):
+            _check_cancel(extra_metadata)
             print(f"[PIPELINE] Preprocess batch received | elements={len(batch)}")
             all_elements.extend(batch)
             
@@ -243,6 +256,7 @@ def run_pipeline(
         or not filter_report_path.exists()
         or existing_filter_version != FILTER_VERSION
     ):
+        _check_cancel(extra_metadata)
         try:
             raw_elements = json.loads(raw_elements_path.read_text(encoding="utf-8"))
         except Exception as exc:
@@ -253,6 +267,7 @@ def run_pipeline(
             label="Removing headers, footers, image placeholders, and boilerplateâ€¦",
         )
         filter_result = filter_element_dicts(raw_elements if isinstance(raw_elements, list) else [])
+        _check_cancel(extra_metadata)
         _write_json(filtered_elements_path, filter_result["filtered_elements"])
         _write_json(removed_elements_path, filter_result["removed_elements"])
         _write_json(filter_report_path, filter_result["summary"])
@@ -357,12 +372,14 @@ def run_pipeline(
         chunk_size=chunk_config.chunk_size,
         chunk_overlap=chunk_config.chunk_overlap,
     )
+    _check_cancel(extra_metadata)
     yield  progress_event(value=30, label="Chunking document…")
 
     chunker.process(
         input_file=str(elements_path),
         output_file=str(chunks_path),
     )
+    _check_cancel(extra_metadata)
 
     if not chunks_path.exists():
         raise RuntimeError("Chunking failed: chunks.json not created")
@@ -371,6 +388,7 @@ def run_pipeline(
     # 3️⃣ METADATA ENRICHMENT (AUTHORITATIVE)
     # --------------------------------------------------
     yield progress_event(value=45, label="Enriching chunks with metadata…")
+    _check_cancel(extra_metadata)
     enrich_chunks(
         chunks_file=str(chunks_path),
         output_file=str(enriched_path),
@@ -378,6 +396,7 @@ def run_pipeline(
         company_document_id=company_document_id,
         extra_metadata=extra_metadata,
     )
+    _check_cancel(extra_metadata)
 
     if not enriched_path.exists():
         raise RuntimeError("Metadata enrichment failed")
@@ -386,6 +405,7 @@ def run_pipeline(
     # 4️⃣ LOAD DOCUMENTS (STRICT)
     # --------------------------------------------------
     yield progress_event(value=60, label="Preparing chunks for indexing…")
+    _check_cancel(extra_metadata)
     documents: List[Document] = load_documents(
         json_path=str(enriched_path)
     )
@@ -405,6 +425,10 @@ def run_pipeline(
         revision_number=revision_number,
         collection_name=resolved_collection_name,
         replace_existing=bool(extra_metadata.get("replace_existing", False)),
+        should_cancel=lambda: is_upload_cancel_requested(
+            job_id=str(extra_metadata.get("job_id") or "").strip() or None,
+            session_id=str(extra_metadata.get("session_id") or "").strip() or None,
+        ),
     )
     
 

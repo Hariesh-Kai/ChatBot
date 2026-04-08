@@ -4,6 +4,8 @@ interface Props {
   open: boolean;
   title?: string;
   description?: string;
+  cancelLabel?: string;
+  confirmLabel?: string;
   onCancel: () => void;
   onConfirm: () => void;
 }
@@ -12,6 +14,8 @@ export default function DeleteConfirmModal({
   open,
   title = "Delete chat?",
   description = "This will delete all messages in this chat permanently.",
+  cancelLabel = "Cancel",
+  confirmLabel = "Delete",
   onCancel,
   onConfirm,
 }: Props) {
@@ -63,7 +67,7 @@ export default function DeleteConfirmModal({
               text-gray-300 hover:bg-white/5
             "
           >
-            Cancel
+            {cancelLabel}
           </button>
 
           <button
@@ -75,7 +79,7 @@ export default function DeleteConfirmModal({
               hover:bg-red-500
             "
           >
-            Delete
+            {confirmLabel}
           </button>
         </div>
       </div>

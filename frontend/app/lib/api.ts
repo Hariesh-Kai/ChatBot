@@ -126,6 +126,21 @@ export interface CommitUploadResponse {
   status: string;
 }
 
+export interface CancelUploadRequest {
+  job_id?: string | null;
+  session_id?: string | null;
+  purge_saved_data?: boolean;
+}
+
+export interface CancelUploadResponse {
+  ok: boolean;
+  job_id?: string | null;
+  session_id?: string | null;
+  status: string;
+  message: string;
+  cleanup?: Record<string, any>;
+}
+
 export interface UploadIngestionStatusResponse {
   job_id?: string | null;
   session_id?: string | null;
@@ -149,8 +164,35 @@ export interface PreprocessingPreviewElement {
   text: string;
   bbox?: string;
   html?: string;
+  normalized_table?: PreprocessingNormalizedTable | null;
   metadata?: Record<string, any>;
   discard_reason?: string;
+}
+
+export interface PreprocessingNormalizedTableColumn {
+  name: string;
+  children: PreprocessingNormalizedTableColumn[];
+}
+
+export interface PreprocessingNormalizedTableCell {
+  row_index: number;
+  column_path: string[];
+  value: string;
+}
+
+export interface PreprocessingNormalizedTable {
+  table_id: string;
+  caption: string | null;
+  columns: PreprocessingNormalizedTableColumn[];
+  cells: PreprocessingNormalizedTableCell[];
+  metadata: {
+    units: string | null;
+    context: string | null;
+    confidence: {
+      structure: number;
+      headers: number;
+    };
+  };
 }
 
 export interface PreprocessingPreviewChunk {
@@ -451,7 +493,8 @@ export async function fetchUploadPreprocessingPagePreview(
 
 export async function updateMetadata(
   payload: MetadataUpdateRequest,
-  onProgress?: (event: { message?: string; progress?: number }) => void
+  onProgress?: (event: { message?: string; progress?: number }) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   // Try canonical endpoints in order to avoid client/server mismatch
 let res: Response | null = null;
@@ -470,6 +513,7 @@ for (const url of attempts) {
       headers: { "Content-Type": "application/json" },
       credentials: "include",
       body: JSON.stringify(payload),
+      signal,
     });
 
     // if endpoint explicitly not found / not allowed, try the next option
@@ -551,6 +595,20 @@ if (!res.ok) throw new Error(await normalizeError(res));
   }
 
   logEvent("metadata_submitted", { sessionId: payload.job_id });
+}
+
+export async function cancelUploadJob(
+  payload: CancelUploadRequest
+): Promise<CancelUploadResponse> {
+  const res = await fetch(`${API_BASE}/upload/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) throw new Error(await normalizeError(res));
+  return res.json();
 }
 
 /* =========================================================

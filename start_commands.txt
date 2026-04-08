@@ -1,0 +1,27 @@
+Run each block in a separate terminal.
+
+RabbitMQ (only if not already running)
+Start-Service RabbitMQ
+
+MinIO
+cd /d d:\KavinBase
+cd D:\minio\ && minio.exe server d:\KavinBase\minio-data --console-address :9001
+
+Backend
+cd /d d:\KavinBase
+venv\Scripts\activate
+uvicorn backend.api.main:app --reload --host 0.0.0.0 --port 8000
+
+Celery Worker
+cd /d d:\KavinBase
+venv\Scripts\activate
+celery -A backend.queue.celery_app:celery_app worker --loglevel=info -Q chatui.default --pool=solo --concurrency=1
+
+Celery Beat
+cd /d d:\KavinBase
+venv\Scripts\activate
+celery -A backend.queue.celery_app:celery_app beat --loglevel=info
+
+Frontend
+cd /d d:\KavinBase\frontend
+npm run dev

@@ -229,3 +229,29 @@ def download_pdf(
         raise RuntimeError(
             f"Failed to download PDF (document_id={document_id}, revision={revision}): {e}"
         )
+
+
+def delete_pdf(
+    *,
+    document_id: str,
+    revision: int,
+    filename: str,
+) -> bool:
+    client = get_minio_client()
+    if not client:
+        return False
+
+    ensure_bucket()
+    conf = _get_config()
+    bucket = conf["bucket"]
+    object_name = _object_path(document_id, revision, filename)
+
+    try:
+        client.remove_object(bucket, object_name)
+        return True
+    except S3Error as e:
+        if e.code in ("NoSuchKey", "NoSuchObject"):
+            return False
+        raise
+    except Exception:
+        return False

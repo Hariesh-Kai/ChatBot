@@ -18,6 +18,7 @@ interface Props {
   open: boolean;
   jobId: string | null;
   table: PreprocessingPreviewElement | null;
+  sourcePageRenderingAvailable?: boolean;
   onClose: () => void;
 }
 
@@ -32,6 +33,7 @@ export default function TableInspectionModal({
   open,
   jobId,
   table,
+  sourcePageRenderingAvailable = true,
   onClose,
 }: Props) {
   const [loading, setLoading] = useState(true);
@@ -49,7 +51,7 @@ export default function TableInspectionModal({
     | null;
   const normalizedJson = normalizedTable ? JSON.stringify(normalizedTable, null, 2) : "";
 
-  const imageUrl = !jobId || !table?.bbox
+  const imageUrl = !sourcePageRenderingAvailable || !jobId || !table?.bbox
     ? ""
     : (() => {
         const query = new URLSearchParams({
@@ -155,8 +157,10 @@ export default function TableInspectionModal({
                     }}
                   />
                 ) : (
-                  <div className="flex min-h-[280px] items-center justify-center text-sm text-gray-500">
-                    No bbox was available for this table.
+                  <div className="flex min-h-[280px] items-center justify-center px-6 text-center text-sm text-gray-500">
+                    {sourcePageRenderingAvailable
+                      ? "No bbox was available for this table."
+                      : "The local PDF was cleaned up after ingestion, so the focused table image is no longer available. OCR text and structured table output are still available below."}
                   </div>
                 )}
               </div>

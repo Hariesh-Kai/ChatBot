@@ -131,6 +131,20 @@ _KNOWN_AUX_HF_REPOS: Dict[str, Dict[str, str]] = {
 }
 
 logger = logging.getLogger("chatui.devtools")
+_JOB_ARTIFACT_ROOT = Path(__file__).resolve().parents[1] / "tmp" / "jobs"
+
+
+def _job_has_cached_preview_artifacts(job_id: str) -> bool:
+    job_dir = _JOB_ARTIFACT_ROOT / str(job_id or "").strip()
+    required = (
+        "raw_elements.json",
+        "filtered_elements.json",
+        "removed_elements.json",
+        "filter_report.json",
+        "chunks.json",
+        "enriched_chunks.json",
+    )
+    return all((job_dir / name).exists() for name in required)
 
 
 def _raise_http(detail: str, status_code: int = 500, exc: Optional[Exception] = None) -> None:
@@ -1373,7 +1387,9 @@ def recent_upload_jobs(
         metadata = dict(row.get("metadata") or {})
         missing_fields = list(row.get("missing_fields") or [])
         pdf_path = str(metadata.get("pdf_path") or "").strip()
-        preview_available = bool(pdf_path and Path(pdf_path).exists())
+        pdf_available = bool(pdf_path and Path(pdf_path).exists())
+        cached_preview_available = _job_has_cached_preview_artifacts(str(row.get("job_id") or ""))
+        preview_available = bool(pdf_available or cached_preview_available)
 
         jobs.append(
             {
@@ -1392,10 +1408,11 @@ def recent_upload_jobs(
                 "rag_ingest_mode": str(metadata.get("rag_ingest_mode") or "") or None,
                 "rag_collection_name": str(metadata.get("rag_collection_name") or "") or None,
                 "preview_available": preview_available,
+                "artifact_only_preview": bool(cached_preview_available and not pdf_available),
                 "preview_unavailable_reason": (
                     None
                     if preview_available
-                    else "Local PDF copy is no longer available for preview."
+                    else "Neither the local PDF nor cached preprocessing artifacts are available for preview."
                 ),
                 "missing_fields": missing_fields,
             }

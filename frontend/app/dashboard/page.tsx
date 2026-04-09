@@ -53,6 +53,7 @@ interface RecentUploadJob {
   rag_ingest_mode?: string | null;
   rag_collection_name?: string | null;
   preview_available?: boolean;
+  artifact_only_preview?: boolean;
   preview_unavailable_reason?: string | null;
   missing_fields?: string[] | null;
 }
@@ -1864,6 +1865,11 @@ export default function DashboardPage() {
                           ) : null}
                           {!job.preview_available && job.preview_unavailable_reason ? (
                             <div className="text-amber-300">{job.preview_unavailable_reason}</div>
+                          ) : null}
+                          {job.artifact_only_preview ? (
+                            <div className="text-cyan-300">
+                              Cached preview only. Source page images are unavailable because the local PDF was cleaned up after ingestion.
+                            </div>
                           ) : null}
                           {job.error ? (
                             <div className="text-red-300">{job.error}</div>

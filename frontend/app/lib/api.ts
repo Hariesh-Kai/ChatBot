@@ -212,6 +212,9 @@ export interface PreprocessingPreviewResponse {
   company_document_id: string;
   revision_number: string;
   source_file: string;
+  pdf_available?: boolean;
+  artifact_only?: boolean;
+  source_page_rendering_available?: boolean;
   preview_mode?: "quick" | "full";
   requested_scope?: "auto" | "quick" | "full";
   can_load_full?: boolean;
@@ -233,6 +236,9 @@ export interface PreprocessingPreviewResponse {
 export interface PreprocessingPreviewPageResponse {
   job_id: string;
   page: number;
+  pdf_available?: boolean;
+  artifact_only?: boolean;
+  source_page_rendering_available?: boolean;
   requested_scope?: "auto" | "quick" | "full";
   preview_mode?: "quick" | "full";
   source_scope?: "quick" | "full" | "page";

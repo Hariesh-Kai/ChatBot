@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from backend.rag.block_builder import build_grouped_blocks
 from backend.rag.chunk import ContextAwareChunker
 from backend.rag.table_normalization import normalize_html_table
 
@@ -22,14 +23,22 @@ TABLE_HTML = """
 """.strip()
 
 
-def _run_chunker(payload, *, chunk_size: int = 3000, chunk_overlap: int = 400):
+def _run_chunker(payload, *, chunk_size: int = 3000, chunk_overlap: int = 400, grouped_blocks=None):
     with tempfile.TemporaryDirectory() as temp_dir:
         input_path = Path(temp_dir) / "filtered_elements.json"
         output_path = Path(temp_dir) / "chunks.json"
         input_path.write_text(json.dumps(payload), encoding="utf-8")
+        grouped_blocks_path = None
+        if grouped_blocks is not None:
+            grouped_blocks_path = Path(temp_dir) / "grouped_blocks.json"
+            grouped_blocks_path.write_text(json.dumps(grouped_blocks), encoding="utf-8")
 
         chunker = ContextAwareChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        chunker.process(str(input_path), str(output_path))
+        chunker.process(
+            str(input_path),
+            str(output_path),
+            grouped_blocks_file=str(grouped_blocks_path) if grouped_blocks_path else None,
+        )
 
         return json.loads(output_path.read_text(encoding="utf-8"))
 
@@ -307,6 +316,103 @@ class ChunkingTests(unittest.TestCase):
         self.assertIn("metadata", parent_chunks[0])
         self.assertIn("section", parent_chunks[0])
         self.assertIn("page_number", parent_chunks[0])
+
+    def test_grouped_blocks_become_text_source_when_provided(self) -> None:
+        payload = [
+            {
+                "type": "NarrativeText",
+                "text": "Company Document ID\nPage 1\nRaw OCR text that should not survive.",
+                "metadata": {"page_number": 1, "section": "Overview"},
+            }
+        ]
+        grouped = build_grouped_blocks(payload)["blocks"]
+        self.assertEqual(len(grouped), 1)
+
+        chunks = _run_chunker(payload, grouped_blocks=grouped)
+        text_chunk = _text_chunks(chunks)[0]
+        self.assertNotIn("Company Document ID", text_chunk["content"])
+        self.assertNotIn("Page 1", text_chunk["content"])
+        self.assertIn("Raw OCR text that should not survive.", text_chunk["content"])
+
+    def test_grouped_blocks_are_not_recleaned_or_reparsed_for_metadata(self) -> None:
+        payload = [
+            {
+                "type": "NarrativeText",
+                "text": "Placeholder text from the raw OCR path.",
+                "metadata": {"page_number": 1, "section": "Overview"},
+            }
+        ]
+        grouped_blocks = [
+            {
+                "block_id": "block-1",
+                "page_number": 1,
+                "section": "Overview",
+                "heading": "Overview",
+                "content": "### Overview\n\nCompany Document ID: CD-FE-12345\n\nUseful narrative body.",
+                "source_element_ids": ["idx:0"],
+                "source_categories": ["NarrativeText"],
+                "bbox": "",
+            }
+        ]
+
+        chunks = _run_chunker(payload, grouped_blocks=grouped_blocks)
+        text_chunk = _text_chunks(chunks)[0]
+        self.assertIn("Company Document ID: CD-FE-12345", text_chunk["content"])
+        self.assertNotIn("document_number", text_chunk["metadata"])
+
+    def test_grouped_blocks_keep_table_chunks_and_semantic_chunking(self) -> None:
+        long_grouped_text = "\n\n".join(
+            [
+                _paragraph("lead", words=140),
+                _paragraph("middle", words=140),
+                "The separator design pressure is 45 bar and the operating temperature is 65 deg C for the gas dehydration train.",
+                _paragraph("close", words=140),
+            ]
+        )
+        normalized = normalize_html_table(html=TABLE_HTML, table_id="table-1")
+        payload = [
+            {"type": "Title", "text": "Operating Data", "metadata": {"page_number": 1}},
+            {
+                "type": "NarrativeText",
+                "text": "Placeholder text that grouped blocks will replace.",
+                "metadata": {"page_number": 1, "section": "Operating Data"},
+            },
+            {
+                "type": "Table",
+                "element_id": "table-1",
+                "text": "Table text",
+                "metadata": {
+                    "page_number": 1,
+                    "section": "Operating Data",
+                    "text_as_html": TABLE_HTML,
+                    "normalized_table": normalized,
+                },
+            },
+        ]
+        grouped_blocks = [
+            {
+                "block_id": "block-1",
+                "page_number": 1,
+                "section": "Operating Data",
+                "heading": "Operating Data",
+                "content": f"### Operating Data\n\n{long_grouped_text}",
+                "source_element_ids": ["idx:0", "idx:1"],
+                "source_categories": ["Title", "NarrativeText"],
+                "bbox": "",
+            }
+        ]
+
+        chunks = _run_chunker(payload, grouped_blocks=grouped_blocks)
+        text_chunks = _text_chunks(chunks)
+        parent_chunks = [item for item in chunks if (item.get("metadata") or {}).get("type") == "parent"]
+        child_chunks = [item for item in chunks if (item.get("metadata") or {}).get("type") == "child"]
+
+        self.assertGreaterEqual(len(text_chunks), 2)
+        self.assertEqual(len(parent_chunks), 1)
+        self.assertEqual(len(child_chunks), 2)
+        protected_chunks = [chunk for chunk in text_chunks if "design pressure" in chunk["content"]]
+        self.assertTrue(protected_chunks)
+        self.assertTrue(all(chunk["metadata"]["protected_sentence_count"] >= 1 for chunk in protected_chunks))
 
 
 if __name__ == "__main__":

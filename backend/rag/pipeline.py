@@ -16,6 +16,7 @@ from backend.rag.collections import (
     normalize_collection_name,
 )
 from backend.rag.preprocessor_registry import DEFAULT_RAG_PREPROCESSOR, normalize_rag_preprocessor
+from backend.rag.block_builder import GROUPING_VERSION, build_grouped_blocks
 from backend.rag.chunk import ContextAwareChunker
 from backend.rag.chunk_strategy import get_chunk_config
 from backend.rag.filtering import FILTER_VERSION, filter_element_dicts
@@ -83,6 +84,21 @@ def _filter_report_version(path: Path) -> int:
 
     try:
         return int(payload.get("filter_version") or 0)
+    except Exception:
+        return 0
+
+
+def _grouping_report_version(path: Path) -> int:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+
+    if not isinstance(payload, dict):
+        return 0
+
+    try:
+        return int(payload.get("grouping_version") or 0)
     except Exception:
         return 0
 
@@ -191,6 +207,8 @@ def run_pipeline(
     filtered_elements_path = job_dir / "filtered_elements.json"
     removed_elements_path = job_dir / "removed_elements.json"
     filter_report_path = job_dir / "filter_report.json"
+    grouped_blocks_path = job_dir / "grouped_blocks.json"
+    grouping_report_path = job_dir / "grouping_report.json"
     chunks_path = job_dir / "chunks.json"
     enriched_path = job_dir / "enriched_chunks.json"
 
@@ -250,6 +268,7 @@ def run_pipeline(
         raise RuntimeError(f"Preprocess failed: {elements_path.name} not created")
 
     existing_filter_version = _filter_report_version(filter_report_path)
+    filters_refreshed = False
     if mode != "metadata" and (
         not filtered_elements_path.exists()
         or not removed_elements_path.exists()
@@ -271,6 +290,7 @@ def run_pipeline(
         _write_json(filtered_elements_path, filter_result["filtered_elements"])
         _write_json(removed_elements_path, filter_result["removed_elements"])
         _write_json(filter_report_path, filter_result["summary"])
+        filters_refreshed = True
         print(
             "[PIPELINE] Filtering complete | "
             f"kept={len(filter_result['filtered_elements'])} "
@@ -281,6 +301,30 @@ def run_pipeline(
         elements_path = filtered_elements_path
         if not elements_path.exists():
             raise RuntimeError(f"Preprocess failed: {elements_path.name} not created")
+        grouping_version = _grouping_report_version(grouping_report_path)
+        if (
+            filters_refreshed
+            or not grouped_blocks_path.exists()
+            or not grouping_report_path.exists()
+            or grouping_version != GROUPING_VERSION
+        ):
+            try:
+                raw_elements = json.loads(raw_elements_path.read_text(encoding="utf-8"))
+                filtered_elements = json.loads(filtered_elements_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise RuntimeError(f"Failed to read grouping inputs: {exc}") from exc
+
+            yield progress_event(value=26, label="Grouping OCR text into clean blocks…")
+            grouping_result = build_grouped_blocks(
+                filtered_elements if isinstance(filtered_elements, list) else [],
+                raw_elements=raw_elements if isinstance(raw_elements, list) else [],
+            )
+            _write_json(grouped_blocks_path, grouping_result["blocks"])
+            _write_json(grouping_report_path, grouping_result["summary"])
+            print(
+                "[PIPELINE] Grouping complete | "
+                f"blocks={len(grouping_result['blocks'])}"
+            )
 
     # ==================================================
     # 🔹 MODE: METADATA ONLY (NO CHUNKS, NO DB)
@@ -353,6 +397,7 @@ def run_pipeline(
     # 2️⃣ CONTEXT-AWARE CHUNKING
     # --------------------------------------------------
 
+    text_sample_path = grouped_blocks_path if grouped_blocks_path.exists() else elements_path
     chunk_config = get_chunk_config(
         filename=str(source_file or pdf_path),
         document_title=str(
@@ -360,7 +405,7 @@ def run_pipeline(
             or extra_metadata.get("document_type")
             or ""
         ),
-        content_sample=_load_chunk_content_sample(elements_path),
+        content_sample=_load_chunk_content_sample(text_sample_path),
         metadata=extra_metadata,
     )
     print(
@@ -378,6 +423,7 @@ def run_pipeline(
     chunker.process(
         input_file=str(elements_path),
         output_file=str(chunks_path),
+        grouped_blocks_file=str(grouped_blocks_path) if grouped_blocks_path.exists() else None,
     )
     _check_cancel(extra_metadata)
 

@@ -228,7 +228,7 @@ def run_commit_payload(
     print(f"[RAG-COMMIT] Completed job_id={job_id}")
 
 
-def _run_commit(
+def run_commit_payload_safe(
     job_id: str,
     session_id: Optional[str],
     final_metadata: Dict[str, Any],
@@ -258,6 +258,18 @@ def _run_commit(
     finally:
         with _LOCK:
             _ACTIVE_JOBS.pop(job_id, None)
+
+
+def _run_commit(
+    job_id: str,
+    session_id: Optional[str],
+    final_metadata: Dict[str, Any],
+) -> None:
+    run_commit_payload_safe(
+        job_id=job_id,
+        session_id=session_id,
+        final_metadata=final_metadata,
+    )
 
 
 def get_active_commit_jobs() -> Dict[str, str]:

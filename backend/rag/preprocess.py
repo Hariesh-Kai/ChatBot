@@ -4,6 +4,7 @@ import gc
 import json
 import os
 import re
+import traceback
 import uuid
 from pathlib import Path
 from typing import Generator, List, Optional
@@ -216,7 +217,10 @@ def _stream_unstructured_elements(
         page_writer = PdfWriter()
         page_writer.add_page(reader.pages[i])
         
-        temp_filename = pdf_path.parent / f"temp_processing_{pdf_path.stem}_page_{i+1}.pdf"
+        temp_filename = (
+            pdf_path.parent
+            / f"temp_processing_page_{i+1}_{uuid.uuid4().hex}.pdf"
+        )
         
         try:
             with open(temp_filename, "wb") as f:
@@ -267,7 +271,11 @@ def _stream_unstructured_elements(
             gc.collect()
 
         except Exception as e:
-            print(f"Error processing page {i+1}: {e}")
+            print(
+                "[PREPROCESS][unstructured] Error processing page "
+                f"{i+1} temp_file={temp_filename}: {type(e).__name__}: {e}"
+            )
+            traceback.print_exc()
             # Don't crash the whole job for one bad page
             failed_pages += 1
             continue

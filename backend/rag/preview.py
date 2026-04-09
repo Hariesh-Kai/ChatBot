@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pypdf import PdfReader, PdfWriter
 
+from backend.rag.block_builder import GROUPING_VERSION, build_grouped_blocks
 from backend.rag.chunk import ContextAwareChunker
 from backend.rag.chunk_strategy import get_chunk_config
 from backend.rag.filtering import (
@@ -39,6 +40,8 @@ PREVIEW_FILES = {
     "filtered_elements": "filtered_elements.json",
     "removed_elements": "removed_elements.json",
     "filter_report": "filter_report.json",
+    "grouped_blocks": "grouped_blocks.json",
+    "grouping_report": "grouping_report.json",
     "chunks": "chunks.json",
     "enriched_chunks": "enriched_chunks.json",
 }
@@ -48,9 +51,101 @@ QUICK_PREVIEW_FILES = {
     "filtered_elements": "quick_filtered_elements.json",
     "removed_elements": "quick_removed_elements.json",
     "filter_report": "quick_filter_report.json",
+    "grouped_blocks": "quick_grouped_blocks.json",
+    "grouping_report": "quick_grouping_report.json",
     "chunks": "quick_chunks.json",
     "enriched_chunks": "quick_enriched_chunks.json",
 }
+
+
+def _scope_artifacts_exist(paths: Dict[str, Path]) -> bool:
+    required = (
+        "raw_elements",
+        "filtered_elements",
+        "removed_elements",
+        "filter_report",
+        "chunks",
+        "enriched_chunks",
+    )
+    return all(paths.get(name) and paths[name].exists() for name in required)
+
+
+def _collect_pages_from_payload(payload: Any) -> List[int]:
+    pages = set()
+    if isinstance(payload, list):
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            page = 0
+            if "page" in item:
+                try:
+                    page = int(item.get("page") or 0)
+                except Exception:
+                    page = 0
+            if not page:
+                page = element_page(item)
+            if page > 0:
+                pages.add(page)
+    return sorted(pages)
+
+
+def _artifact_page_numbers(paths: Dict[str, Path]) -> List[int]:
+    pages = set()
+    for key in ("raw_elements", "filtered_elements", "removed_elements", "chunks", "enriched_chunks"):
+        path = paths.get(key)
+        if not path or not path.exists():
+            continue
+        payload = _load_json(path, [])
+        for page in _collect_pages_from_payload(payload):
+            if page > 0:
+                pages.add(page)
+    return sorted(pages)
+
+
+def _document_stats_from_artifacts(
+    *,
+    pdf_path: str,
+    paths: Dict[str, Path],
+) -> Dict[str, Any]:
+    page_numbers = _artifact_page_numbers(paths)
+    pdf_file = Path(str(pdf_path or "")).expanduser() if pdf_path else None
+    size_mb = None
+    if pdf_file and pdf_file.exists():
+        try:
+            size_mb = round((pdf_file.stat().st_size / (1024 * 1024)), 2)
+        except Exception:
+            size_mb = None
+
+    page_count = max(page_numbers) if page_numbers else 0
+    is_large = bool(
+        page_count > LARGE_PDF_PAGE_THRESHOLD
+        or (size_mb is not None and size_mb > LARGE_PDF_SIZE_MB_THRESHOLD)
+    )
+    return {
+        "page_count": page_count,
+        "file_size_mb": size_mb,
+        "is_large": is_large,
+        "large_page_threshold": LARGE_PDF_PAGE_THRESHOLD,
+        "large_size_mb_threshold": LARGE_PDF_SIZE_MB_THRESHOLD,
+        "quick_page_limit": QUICK_PREVIEW_PAGE_LIMIT,
+    }
+
+
+def _resolve_cached_scope(job_path: Path, requested_scope: PreviewScope) -> ResolvedPreviewScope:
+    full_paths = _artifact_paths(job_path, quick=False)
+    quick_paths = _artifact_paths(job_path, quick=True)
+    full_ready = _scope_artifacts_exist(full_paths)
+    quick_ready = _scope_artifacts_exist(quick_paths)
+
+    if requested_scope == "full" and full_ready:
+        return "full"
+    if requested_scope == "quick" and quick_ready:
+        return "quick"
+    if full_ready:
+        return "full"
+    if quick_ready:
+        return "quick"
+    return "full" if requested_scope != "quick" else "quick"
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -78,11 +173,41 @@ def _filter_report_version(path: Path) -> int:
         return 0
 
 
+def _grouping_report_version(path: Path) -> int:
+    payload = _load_json(path, {})
+    if not isinstance(payload, dict):
+        return 0
+
+    try:
+        return int(payload.get("grouping_version") or 0)
+    except Exception:
+        return 0
+
+
 def _artifact_paths(job_dir: Path, *, quick: bool = False) -> Dict[str, Path]:
     base = QUICK_PREVIEW_FILES if quick else PREVIEW_FILES
     paths = {name: job_dir / filename for name, filename in base.items()}
     paths["page1_preview"] = job_dir / PREVIEW_FILES["page1_preview"]
     return paths
+
+
+def _ensure_grouped_block_artifacts(paths: Dict[str, Path]) -> bool:
+    if (
+        paths["grouped_blocks"].exists()
+        and paths["grouping_report"].exists()
+        and _grouping_report_version(paths["grouping_report"]) == GROUPING_VERSION
+    ):
+        return False
+
+    raw_elements = _load_json(paths["raw_elements"], [])
+    filtered_elements = _load_json(paths["filtered_elements"], [])
+    if not isinstance(raw_elements, list) or not isinstance(filtered_elements, list):
+        raise RuntimeError("Grouping inputs are missing or invalid.")
+
+    grouping_result = build_grouped_blocks(filtered_elements, raw_elements=raw_elements)
+    _write_json(paths["grouped_blocks"], grouping_result["blocks"])
+    _write_json(paths["grouping_report"], grouping_result["summary"])
+    return True
 
 
 def _resolve_settings(
@@ -395,7 +520,11 @@ def _ensure_scope_artifacts(
         _write_json(paths["filter_report"], filter_result["summary"])
         filters_refreshed = True
 
-    if not paths["chunks"].exists() or filters_refreshed:
+    grouped_blocks_refreshed = False
+    if filters_refreshed or _grouping_report_version(paths["grouping_report"]) != GROUPING_VERSION or not paths["grouped_blocks"].exists():
+        grouped_blocks_refreshed = _ensure_grouped_block_artifacts(paths)
+
+    if not paths["chunks"].exists() or filters_refreshed or grouped_blocks_refreshed:
         chunk_config = get_chunk_config(
             filename=str(extra_metadata.get("source_file") or pdf_path),
             document_title=str(
@@ -403,7 +532,7 @@ def _ensure_scope_artifacts(
                 or extra_metadata.get("document_type")
                 or ""
             ),
-            content_sample=_load_chunk_content_sample(paths["filtered_elements"]),
+            content_sample=_load_chunk_content_sample(paths["grouped_blocks"] if paths["grouped_blocks"].exists() else paths["filtered_elements"]),
             metadata=extra_metadata,
         )
         chunker = ContextAwareChunker(
@@ -413,9 +542,10 @@ def _ensure_scope_artifacts(
         chunker.process(
             input_file=str(paths["filtered_elements"]),
             output_file=str(paths["chunks"]),
+            grouped_blocks_file=str(paths["grouped_blocks"]) if paths["grouped_blocks"].exists() else None,
         )
 
-    if not paths["enriched_chunks"].exists() or filters_refreshed:
+    if not paths["enriched_chunks"].exists() or filters_refreshed or grouped_blocks_refreshed:
         enrich_chunks(
             chunks_file=str(paths["chunks"]),
             output_file=str(paths["enriched_chunks"]),
@@ -480,6 +610,8 @@ def ensure_page_preview_artifacts(
         "filtered_elements": page_dir / "filtered_elements.json",
         "removed_elements": page_dir / "removed_elements.json",
         "filter_report": page_dir / "filter_report.json",
+        "grouped_blocks": page_dir / "grouped_blocks.json",
+        "grouping_report": page_dir / "grouping_report.json",
         "chunks": page_dir / "chunks.json",
         "enriched_chunks": page_dir / "enriched_chunks.json",
     }
@@ -529,7 +661,11 @@ def ensure_page_preview_artifacts(
         _write_json(paths["filter_report"], filter_result["summary"])
         filters_refreshed = True
 
-    if not paths["chunks"].exists() or filters_refreshed:
+    grouped_blocks_refreshed = False
+    if filters_refreshed or _grouping_report_version(paths["grouping_report"]) != GROUPING_VERSION or not paths["grouped_blocks"].exists():
+        grouped_blocks_refreshed = _ensure_grouped_block_artifacts(paths)
+
+    if not paths["chunks"].exists() or filters_refreshed or grouped_blocks_refreshed:
         chunk_config = get_chunk_config(
             filename=str(extra_metadata.get("source_file") or pdf_path),
             document_title=str(
@@ -537,7 +673,7 @@ def ensure_page_preview_artifacts(
                 or extra_metadata.get("document_type")
                 or ""
             ),
-            content_sample=_load_chunk_content_sample(paths["filtered_elements"]),
+            content_sample=_load_chunk_content_sample(paths["grouped_blocks"] if paths["grouped_blocks"].exists() else paths["filtered_elements"]),
             metadata=extra_metadata,
         )
         chunker = ContextAwareChunker(
@@ -547,9 +683,10 @@ def ensure_page_preview_artifacts(
         chunker.process(
             input_file=str(paths["filtered_elements"]),
             output_file=str(paths["chunks"]),
+            grouped_blocks_file=str(paths["grouped_blocks"]) if paths["grouped_blocks"].exists() else None,
         )
 
-    if not paths["enriched_chunks"].exists() or filters_refreshed:
+    if not paths["enriched_chunks"].exists() or filters_refreshed or grouped_blocks_refreshed:
         enrich_chunks(
             chunks_file=str(paths["chunks"]),
             output_file=str(paths["enriched_chunks"]),
@@ -578,32 +715,50 @@ def ensure_preview_artifacts(
         rag_mode=rag_mode,
         preprocessor=preprocessor,
     )
-    stats = _document_stats(pdf_path)
-    resolved_scope = _resolve_scope(
-        scope,
-        stats,
-        fast_document_processing=bool(settings.get("fast_document_processing", False)),
-    )
-    page1_preview = _ensure_metadata_preview(
-        pdf_path=pdf_path,
-        job_path=job_path,
-        rag_mode=settings["rag_mode"],
-        preprocessor=settings["preprocessor"],
-    )
-    paths = _ensure_scope_artifacts(
-        pdf_path=pdf_path,
-        job_path=job_path,
-        company_document_id=company_document_id,
-        extra_metadata=extra_metadata,
-        rag_mode=settings["rag_mode"],
-        preprocessor=settings["preprocessor"],
-        resolved_scope=resolved_scope,
-    )
+    pdf_available = bool(pdf_path and Path(pdf_path).exists())
+
+    if pdf_available:
+        stats = _document_stats(pdf_path)
+        resolved_scope = _resolve_scope(
+            scope,
+            stats,
+            fast_document_processing=bool(settings.get("fast_document_processing", False)),
+        )
+        page1_preview: Optional[Path] = _ensure_metadata_preview(
+            pdf_path=pdf_path,
+            job_path=job_path,
+            rag_mode=settings["rag_mode"],
+            preprocessor=settings["preprocessor"],
+        )
+        paths = _ensure_scope_artifacts(
+            pdf_path=pdf_path,
+            job_path=job_path,
+            company_document_id=company_document_id,
+            extra_metadata=extra_metadata,
+            rag_mode=settings["rag_mode"],
+            preprocessor=settings["preprocessor"],
+            resolved_scope=resolved_scope,
+        )
+    else:
+        resolved_scope = _resolve_cached_scope(job_path, scope)
+        paths = _artifact_paths(job_path, quick=resolved_scope == "quick")
+        if not _scope_artifacts_exist(paths):
+            raise RuntimeError(
+                "Preprocessing preview is unavailable because the original PDF was cleaned up "
+                "and cached artifacts are missing."
+            )
+        stats = _document_stats_from_artifacts(pdf_path=pdf_path, paths=paths)
+        page1_candidate = job_path / PREVIEW_FILES["page1_preview"]
+        page1_preview = page1_candidate if page1_candidate.exists() else None
+        _ensure_grouped_block_artifacts(paths)
+
     return {
         "paths": paths,
         "page1_preview": page1_preview,
         "scope": resolved_scope,
         "document_stats": stats,
+        "pdf_available": pdf_available,
+        "artifact_only": not pdf_available,
     }
 
 
@@ -629,20 +784,28 @@ def build_preprocessing_preview(
     paths = artifact_bundle["paths"]
     resolved_scope = artifact_bundle["scope"]
     document_stats = artifact_bundle["document_stats"]
+    pdf_available = bool(artifact_bundle.get("pdf_available"))
 
-    metadata = extract_document_metadata(
-        elements_file=str(artifact_bundle["page1_preview"]),
-        pdf_path=pdf_path,
-        company_document_id=company_document_id,
-        extra_metadata=extra_metadata,
-    )
-    metadata_evidence_raw = _load_json(artifact_bundle["page1_preview"], [])
+    metadata_preview_path = artifact_bundle.get("page1_preview")
+    if metadata_preview_path and Path(metadata_preview_path).exists():
+        metadata = extract_document_metadata(
+            elements_file=str(metadata_preview_path),
+            pdf_path=pdf_path,
+            company_document_id=company_document_id,
+            extra_metadata=extra_metadata,
+        )
+        metadata_evidence_raw = _load_json(metadata_preview_path, [])
+    else:
+        metadata = {}
+        metadata_evidence_raw = []
     raw_elements = _load_json(paths["raw_elements"], [])
     filtered_elements = _load_json(paths["filtered_elements"], [])
     removed_elements = _load_json(paths["removed_elements"], [])
     filter_report = _load_json(paths["filter_report"], {})
     chunks = _load_json(paths["chunks"], [])
     enriched_chunks = _load_json(paths["enriched_chunks"], [])
+    grouped_blocks = _load_json(paths["grouped_blocks"], [])
+    grouping_report = _load_json(paths["grouping_report"], {})
 
     tables = [
         _shape_element(item)
@@ -661,6 +824,9 @@ def build_preprocessing_preview(
         "preview_mode": resolved_scope,
         "requested_scope": scope,
         "can_load_full": resolved_scope == "quick" and bool(document_stats.get("is_large")),
+        "pdf_available": pdf_available,
+        "artifact_only": not pdf_available,
+        "source_page_rendering_available": pdf_available,
         "document_stats": document_stats,
         "indexed_pages": indexed_pages,
         "metadata_candidates": metadata,
@@ -680,9 +846,11 @@ def build_preprocessing_preview(
             "raw_elements": len(raw_elements) if isinstance(raw_elements, list) else 0,
             "filtered_elements": len(filtered_elements) if isinstance(filtered_elements, list) else 0,
             "removed_elements": len(removed_elements) if isinstance(removed_elements, list) else 0,
+            "grouped_blocks": len(grouped_blocks) if isinstance(grouped_blocks, list) else 0,
             "tables": len(tables),
             "chunks": len(shaped_chunks),
             "filter_report": filter_report if isinstance(filter_report, dict) else {},
+            "grouping_report": grouping_report if isinstance(grouping_report, dict) else {},
             "indexed_page_count": len(indexed_pages),
             "remaining_page_count": max(int(document_stats.get("page_count") or 0) - len(indexed_pages), 0),
         },
@@ -712,15 +880,17 @@ def build_preprocessing_page_preview(
     paths = artifact_bundle["paths"]
     resolved_scope = artifact_bundle["scope"]
     document_stats = artifact_bundle["document_stats"]
+    pdf_available = bool(artifact_bundle.get("pdf_available"))
 
     page_count = int(document_stats.get("page_count") or 0)
-    if page_number < 1 or page_number > page_count:
+    if page_number < 1 or (page_count > 0 and page_number > page_count):
         raise RuntimeError(f"Requested page {page_number} is out of range.")
 
     filtered_elements = _load_json(paths["filtered_elements"], [])
     removed_elements = _load_json(paths["removed_elements"], [])
     chunks = _load_json(paths["chunks"], [])
     enriched_chunks = _load_json(paths["enriched_chunks"], [])
+    grouped_blocks = _load_json(paths["grouped_blocks"], [])
 
     page_filtered = (
         [
@@ -740,6 +910,15 @@ def build_preprocessing_page_preview(
         if isinstance(removed_elements, list)
         else []
     )
+    page_grouped_blocks = (
+        [
+            item
+            for item in grouped_blocks
+            if isinstance(item, dict) and int(item.get("page_number") or 0) == page_number
+        ]
+        if isinstance(grouped_blocks, list)
+        else []
+    )
     page_chunks = [
         item for item in _shape_chunks(chunks, enriched_chunks)
         if int(item.get("page") or 0) == page_number
@@ -749,6 +928,11 @@ def build_preprocessing_page_preview(
     source_scope = resolved_scope
 
     if not available_in_scope:
+        if not pdf_available:
+            raise RuntimeError(
+                "This page is not available in cached preview artifacts because the "
+                "original PDF was cleaned up after ingestion."
+            )
         page_paths = ensure_page_preview_artifacts(
             pdf_path=pdf_path,
             job_dir=job_dir,
@@ -779,6 +963,9 @@ def build_preprocessing_page_preview(
         "preview_mode": resolved_scope,
         "source_scope": source_scope,
         "available_in_scope": available_in_scope,
+        "pdf_available": pdf_available,
+        "artifact_only": not pdf_available,
+        "source_page_rendering_available": pdf_available,
         "elements": [
             _shape_element(item)
             for item in page_filtered
@@ -793,6 +980,7 @@ def build_preprocessing_page_preview(
         ],
         "summary": {
             "elements": len(page_filtered),
+            "grouped_blocks": len(page_grouped_blocks),
             "tables": len(page_tables),
             "chunks": len(page_chunks),
             "removed_elements": len(page_removed),

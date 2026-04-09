@@ -5,7 +5,7 @@ Start-Service RabbitMQ
 
 MinIO
 cd /d d:\KavinBase
-cd D:\minio\ && minio.exe server d:\KavinBase\minio-data --console-address :9001
+cd D:\KavinBase\minio\ && minio.exe server d:\KavinBase\minio-data --console-address :9001
 
 Backend
 cd /d d:\KavinBase

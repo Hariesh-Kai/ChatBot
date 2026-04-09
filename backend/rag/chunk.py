@@ -5,7 +5,7 @@ import sys
 import re
 import uuid
 from io import StringIO
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from langchain_core.documents import Document
@@ -427,6 +427,45 @@ class ContextAwareChunker:
             blocks.append({"kind": "paragraph", "text": current_paragraph})
 
         return [block for block in blocks if str(block.get("text") or "").strip()], extracted_metadata
+
+    def _blocks_from_grouped_text(self, raw_text: str) -> List[Dict[str, str]]:
+        normalized = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not normalized:
+            return []
+
+        blocks: List[Dict[str, str]] = []
+        for segment in re.split(r"\n\s*\n+", normalized):
+            stripped_segment = str(segment or "").strip()
+            if not stripped_segment:
+                continue
+
+            lines = [
+                self._normalize_section_label(line)
+                for line in stripped_segment.splitlines()
+                if self._normalize_section_label(line)
+            ]
+            if not lines:
+                continue
+
+            if all(self._looks_like_list_line(line) for line in lines):
+                for line in lines:
+                    blocks.append({"kind": "list", "text": line})
+                continue
+
+            paragraph_lines: List[str] = []
+            for line in lines:
+                if self._looks_like_list_line(line):
+                    if paragraph_lines:
+                        blocks.append({"kind": "paragraph", "text": " ".join(paragraph_lines).strip()})
+                        paragraph_lines = []
+                    blocks.append({"kind": "list", "text": line})
+                    continue
+                paragraph_lines.append(line)
+
+            if paragraph_lines:
+                blocks.append({"kind": "paragraph", "text": " ".join(paragraph_lines).strip()})
+
+        return [block for block in blocks if str(block.get("text") or "").strip()]
 
     def _reset_text_group(self) -> None:
         self.current_text_group: List[Dict[str, str]] = []
@@ -1003,58 +1042,199 @@ class ContextAwareChunker:
 
         return chunk_entries
 
-    def _flush_text_group(self, docs_list: List[Document]) -> None:
-        if not self.current_text_group:
-            self._reset_text_group()
-            return
-
-        expanded_blocks = self._expand_large_blocks(self.current_text_group)
+    def _emit_text_documents_from_blocks(
+        self,
+        *,
+        blocks: List[Dict[str, str]],
+        section: str,
+        page_num: int,
+        meta,
+        bbox_json: str,
+        element_type: str,
+        heading: str,
+        structured_metadata: Optional[Dict[str, Any]],
+        docs_list: List[Document],
+    ) -> None:
+        expanded_blocks = self._expand_large_blocks(blocks)
         semantic_units = self._build_semantic_units(expanded_blocks)
         chunk_entries = self._chunk_semantic_units(semantic_units)
-        resolved_element_type = self._resolve_group_element_type()
 
         for chunk_index, chunk_entry in enumerate(chunk_entries):
             chunk_text = self._with_optional_heading(
                 str(chunk_entry.get("text") or "").strip(),
-                heading=self.current_group_heading,
+                heading=heading,
                 include_heading=chunk_index == 0,
             )
             doc = Document(
                 page_content=chunk_text,
                 metadata={
                     "type": "text",
-                    "section": self.current_group_section,
+                    "section": section,
                     "is_parent": False,
                     "chunk_index": chunk_index,
                     "has_semantic_overlap": bool(chunk_entry.get("has_semantic_overlap", False)),
                     "semantic_overlap_words": int(chunk_entry.get("semantic_overlap_words") or 0),
                     "protected_sentence_count": int(chunk_entry.get("protected_sentence_count") or 0),
                     **self._shared_element_metadata(
-                        meta=self.current_group_meta,
-                        element_type=resolved_element_type,
-                        page_num=self.current_group_page,
-                        bbox_json=self.current_group_bbox_json,
+                        meta=meta,
+                        element_type=element_type,
+                        page_num=page_num,
+                        bbox_json=bbox_json,
                     ),
-                    **dict(self.current_group_structured_metadata or {}),
+                    **dict(structured_metadata or {}),
                 },
             )
             docs_list.append(doc)
             self._debug_chunk(doc)
 
+    def _flush_text_group(self, docs_list: List[Document]) -> None:
+        if not self.current_text_group:
+            self._reset_text_group()
+            return
+
+        resolved_element_type = self._resolve_group_element_type()
+        self._emit_text_documents_from_blocks(
+            blocks=list(self.current_text_group),
+            section=self.current_group_section,
+            page_num=self.current_group_page,
+            meta=self.current_group_meta,
+            bbox_json=self.current_group_bbox_json,
+            element_type=resolved_element_type,
+            heading=self.current_group_heading,
+            structured_metadata=dict(self.current_group_structured_metadata or {}),
+            docs_list=docs_list,
+        )
+
         self._reset_text_group()
+
+    def _load_grouped_blocks(self, grouped_blocks_file: Optional[str]) -> List[Dict[str, Any]]:
+        if not grouped_blocks_file:
+            return []
+        try:
+            with open(grouped_blocks_file, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception as exc:
+            print(f"[CHUNK] Failed to load grouped blocks from {grouped_blocks_file}: {exc}")
+            return []
+
+        return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+    def _resolve_grouped_block_source_indexes(
+        self,
+        *,
+        block: Dict[str, Any],
+        element_index_by_id: Dict[str, int],
+    ) -> List[int]:
+        indexes: List[int] = []
+        for source_id in block.get("source_element_ids") or []:
+            value = str(source_id or "").strip()
+            if not value:
+                continue
+            if value.startswith("idx:"):
+                try:
+                    indexes.append(int(value.split(":", 1)[1]))
+                except Exception:
+                    continue
+                continue
+            mapped_index = element_index_by_id.get(value)
+            if mapped_index is not None:
+                indexes.append(int(mapped_index))
+        return sorted(set(indexes))
+
+    def _resolve_element_type_from_categories(self, categories: List[Any]) -> str:
+        if not categories:
+            return "NarrativeText"
+
+        priority_order = {
+            "NarrativeText": 4,
+            "ListItem": 3,
+            "UncategorizedText": 2,
+            "Title": 1,
+        }
+        counts: Dict[str, int] = {}
+        for category in categories:
+            normalized = str(category or "").strip() or "NarrativeText"
+            counts[normalized] = counts.get(normalized, 0) + 1
+
+        return max(
+            counts.keys(),
+            key=lambda key: (counts.get(key, 0), priority_order.get(key, 0)),
+        )
+
+    def _emit_grouped_block(self, *, block: Dict[str, Any], docs_list: List[Document]) -> None:
+        page_num = int(block.get("page_number") or 1)
+        section = self._normalize_section_label(block.get("section") or DEFAULT_SECTION) or DEFAULT_SECTION
+        heading = self._normalize_section_label(block.get("heading") or "")
+        content = str(block.get("content") or "").strip()
+        if not content:
+            return
+        if self._is_valid_section_label(section):
+            self.last_stable_section_by_page[page_num] = section
+        if heading and self._normalize_section_label(self.pending_title_heading) == heading:
+            self.pending_title_heading = ""
+
+        body_text = content
+        heading_prefix = f"### {heading}"
+        if heading and body_text.startswith(heading_prefix):
+            body_text = body_text[len(heading_prefix):].lstrip()
+        if body_text.startswith("\n\n"):
+            body_text = body_text[2:].lstrip()
+
+        element_type = self._resolve_element_type_from_categories(
+            list(block.get("source_categories") or [])
+        )
+        blocks = self._blocks_from_grouped_text(body_text)
+        if not blocks:
+            return
+
+        self._emit_text_documents_from_blocks(
+            blocks=blocks,
+            section=section,
+            page_num=page_num,
+            meta=None,
+            bbox_json=str(block.get("bbox") or ""),
+            element_type=element_type,
+            heading=heading,
+            structured_metadata={},
+            docs_list=docs_list,
+        )
 
     # --------------------------------------------------------
     # MAIN PROCESSOR
     # --------------------------------------------------------
 
-    def process(self, input_file: str, output_file: str):
+    def process(self, input_file: str, output_file: str, grouped_blocks_file: Optional[str] = None):
         print(f"[CHUNK] Loading filtered elements from: {input_file}")
+        with open(input_file, "r", encoding="utf-8") as handle:
+            input_payload = json.load(handle)
         elements = elements_from_json(filename=input_file)
+        grouped_blocks = self._load_grouped_blocks(grouped_blocks_file)
+
+        element_index_by_id: Dict[str, int] = {}
+        if isinstance(input_payload, list):
+            for index, item in enumerate(input_payload):
+                if not isinstance(item, dict):
+                    continue
+                element_id = str(item.get("element_id") or "").strip()
+                if element_id and element_id not in element_index_by_id:
+                    element_index_by_id[element_id] = index
+
+        grouped_blocks_by_start_index: Dict[int, List[Dict[str, Any]]] = {}
+        grouped_block_covered_indexes: set[int] = set()
+        for block in grouped_blocks:
+            source_indexes = self._resolve_grouped_block_source_indexes(
+                block=block,
+                element_index_by_id=element_index_by_id,
+            )
+            if not source_indexes:
+                continue
+            grouped_blocks_by_start_index.setdefault(min(source_indexes), []).append(block)
+            grouped_block_covered_indexes.update(source_indexes)
 
         final_documents: List[Document] = []
         print("[CHUNK] Processing elements with structure-aware chunking...")
 
-        for element in elements:
+        for index, element in enumerate(elements):
             category = str(getattr(element, "category", "") or "").strip() or "NarrativeText"
             raw_text = element.text or ""
             text = raw_text if category == "Table" else normalize_numbers(raw_text)
@@ -1084,6 +1264,9 @@ class ContextAwareChunker:
                     self.current_title_section = title_text
                     self.pending_title_heading = title_text
                     self.last_stable_section_by_page[page_num] = title_text
+                if grouped_blocks_by_start_index.get(index):
+                    for block in grouped_blocks_by_start_index.get(index, []):
+                        self._emit_grouped_block(block=block, docs_list=final_documents)
                 continue
 
             # ------------------------------------------------
@@ -1168,6 +1351,13 @@ class ContextAwareChunker:
             # 3️⃣ NARRATIVE / LIST TEXT
             # ------------------------------------------------
             if category in ("NarrativeText", "UncategorizedText", "ListItem"):
+                if grouped_blocks_by_start_index.get(index):
+                    self._flush_text_group(final_documents)
+                    for block in grouped_blocks_by_start_index.get(index, []):
+                        self._emit_grouped_block(block=block, docs_list=final_documents)
+                    continue
+                if index in grouped_block_covered_indexes:
+                    continue
                 self._add_text_element(
                     category=category,
                     text=text,

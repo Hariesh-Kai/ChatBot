@@ -103,7 +103,20 @@ def _resolve_job_payload(job_id: str):
     return None
 
 
-def _get_preview_context(job_id: str):
+def _job_has_cached_preview_artifacts(job_id: str) -> bool:
+    job_dir = TMP_DIR / job_id
+    required = (
+        "raw_elements.json",
+        "filtered_elements.json",
+        "removed_elements.json",
+        "filter_report.json",
+        "chunks.json",
+        "enriched_chunks.json",
+    )
+    return all((job_dir / name).exists() for name in required)
+
+
+def _get_preview_context(job_id: str, *, allow_cached_artifacts: bool = False):
     job = _resolve_job_payload(job_id)
     if not job:
         raise HTTPException(404, "Invalid job_id")
@@ -120,7 +133,9 @@ def _get_preview_context(job_id: str):
     except Exception as exc:
         raise HTTPException(400, "Preview path is outside the upload workspace") from exc
 
-    if not pdf_file.exists():
+    if not pdf_file.exists() and not (
+        allow_cached_artifacts and _job_has_cached_preview_artifacts(job.job_id)
+    ):
         raise HTTPException(404, "Local PDF file not found for preview")
 
     company_document_id = str(metadata.get("company_document_id") or "").strip()
@@ -526,7 +541,7 @@ def get_preprocessing_preview(
     job_id: str = Query(..., description="Upload job id"),
     scope: str = Query(default="auto", description="Preview scope: auto, quick, or full"),
 ):
-    job, metadata, pdf_file = _get_preview_context(job_id)
+    job, metadata, pdf_file = _get_preview_context(job_id, allow_cached_artifacts=True)
     job_dir = TMP_DIR / job.job_id
 
     try:
@@ -553,7 +568,7 @@ def get_preprocessing_preview_page_data(
     page: int = Query(..., ge=1, description="1-based page number"),
     scope: str = Query(default="auto", description="Preview scope: auto, quick, or full"),
 ):
-    job, metadata, pdf_file = _get_preview_context(job_id)
+    job, metadata, pdf_file = _get_preview_context(job_id, allow_cached_artifacts=True)
     job_dir = TMP_DIR / job.job_id
 
     try:

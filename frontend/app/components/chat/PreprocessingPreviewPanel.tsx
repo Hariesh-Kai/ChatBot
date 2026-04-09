@@ -96,6 +96,10 @@ export default function PreprocessingPreviewPanel({
   const activeTables = pagePreview ? pagePreview.tables : preview?.tables || [];
   const activeChunks = pagePreview ? pagePreview.chunks : preview?.chunks || [];
   const activeRemoved = pagePreview ? pagePreview.removed_elements : preview?.removed_elements || [];
+  const sourcePageRenderingAvailable =
+    pagePreview?.source_page_rendering_available ??
+    preview?.source_page_rendering_available ??
+    true;
   const totalPages = Number(preview?.document_stats?.page_count || 0);
   const parsedLookupPage = Number(pageLookup);
   const currentInspectorPage =
@@ -167,7 +171,7 @@ export default function PreprocessingPreviewPanel({
   function renderElementRows(
     elements: PreprocessingPreviewElement[],
     emptyLabel: string,
-    options?: { inspectTables?: boolean }
+    options?: { inspectTables?: boolean; sourcePageRenderingAvailable?: boolean }
   ) {
     if (!elements.length) {
       return (
@@ -209,22 +213,24 @@ export default function PreprocessingPreviewPanel({
                   Inspect table
                 </button>
               ) : null}
-              <button
-                type="button"
-                onClick={() =>
-                  openViewer({
-                    page: item.page || 1,
-                    bbox: item.bbox,
-                    title: item.type,
-                    subtitle: `Page ${item.page}`,
-                    excerpt: item.text,
-                  })
-                }
-                className="inline-flex items-center gap-2 rounded-md border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-gray-200 transition hover:bg-white/10 hover:text-white"
-              >
-                <Eye className="h-3.5 w-3.5" />
-                View source
-              </button>
+              {options?.sourcePageRenderingAvailable !== false ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    openViewer({
+                      page: item.page || 1,
+                      bbox: item.bbox,
+                      title: item.type,
+                      subtitle: `Page ${item.page}`,
+                      excerpt: item.text,
+                    })
+                  }
+                  className="inline-flex items-center gap-2 rounded-md border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-gray-200 transition hover:bg-white/10 hover:text-white"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  View source
+                </button>
+              ) : null}
             </div>
           </div>
         ))}
@@ -262,24 +268,26 @@ export default function PreprocessingPreviewPanel({
             <pre className="mt-3 overflow-auto whitespace-pre-wrap rounded-md border border-white/10 bg-black/50 p-3 text-xs leading-6 text-gray-200">
               {chunk.content || "No chunk content"}
             </pre>
-            <div className="mt-3 flex justify-end">
-              <button
-                type="button"
-                onClick={() =>
-                  openViewer({
-                    page: chunk.page || 1,
-                    bbox: chunk.bbox,
-                    title: "Chunk Source",
-                    subtitle: chunk.section || chunk.chunk_type || "Chunk",
-                    excerpt: chunk.content,
-                  })
-                }
-                className="inline-flex items-center gap-2 rounded-md border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-gray-200 transition hover:bg-white/10 hover:text-white"
-              >
-                <Eye className="h-3.5 w-3.5" />
-                Map to page
-              </button>
-            </div>
+            {sourcePageRenderingAvailable ? (
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() =>
+                    openViewer({
+                      page: chunk.page || 1,
+                      bbox: chunk.bbox,
+                      title: "Chunk Source",
+                      subtitle: chunk.section || chunk.chunk_type || "Chunk",
+                      excerpt: chunk.content,
+                    })
+                  }
+                  className="inline-flex items-center gap-2 rounded-md border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-gray-200 transition hover:bg-white/10 hover:text-white"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  Map to page
+                </button>
+              </div>
+            ) : null}
           </div>
         ))}
       </div>
@@ -338,7 +346,7 @@ export default function PreprocessingPreviewPanel({
               className="inline-flex items-center gap-2 rounded-md border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-gray-200 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
               <RefreshCcw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-              Refresh preview
+              {preview ? "Refresh preview" : "Load preview"}
             </button>
           ) : null}
         </div>
@@ -354,6 +362,12 @@ export default function PreprocessingPreviewPanel({
         <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-4 text-sm text-red-100">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{error}</span>
+        </div>
+      ) : null}
+
+      {!loading && !error && !preview ? (
+        <div className="mt-4 rounded-lg border border-white/10 bg-black/30 px-4 py-5 text-sm text-gray-300">
+          Load the preprocessing preview on demand if you want to inspect OCR elements, tables, and chunks before commit.
         </div>
       ) : null}
 
@@ -437,6 +451,11 @@ export default function PreprocessingPreviewPanel({
             {pagePreviewError ? (
               <div className="mt-3 text-xs text-red-300">{pagePreviewError}</div>
             ) : null}
+            {!sourcePageRenderingAvailable ? (
+              <div className="mt-3 text-xs text-amber-300">
+                Source page rendering is unavailable for this job because the local PDF was cleaned up after ingestion. Cached OCR elements, tables, and chunks are still available.
+              </div>
+            ) : null}
             {pagePreview ? (
               <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-gray-300">
                 <span className="rounded bg-blue-500/10 px-2 py-1 text-blue-200">
@@ -514,7 +533,8 @@ export default function PreprocessingPreviewPanel({
                   activeElements,
                   pagePreview
                     ? "No OCR elements were captured for this page."
-                    : "No metadata OCR evidence was captured."
+                    : "No metadata OCR evidence was captured.",
+                  { sourcePageRenderingAvailable }
                 )}
               </div>
             ) : null}
@@ -525,7 +545,10 @@ export default function PreprocessingPreviewPanel({
                 pagePreview
                   ? "No tables were extracted for this page."
                   : "No tables were extracted from this document.",
-                { inspectTables: true }
+                {
+                  inspectTables: true,
+                  sourcePageRenderingAvailable,
+                }
               )
             ) : null}
 
@@ -560,7 +583,8 @@ export default function PreprocessingPreviewPanel({
                   activeRemoved,
                   pagePreview
                     ? "No removed elements were recorded for this page."
-                    : "No removed elements recorded. If you expected header/footer filtering, this PDF may not have been labeled clearly by OCR."
+                    : "No removed elements recorded. If you expected header/footer filtering, this PDF may not have been labeled clearly by OCR.",
+                  { sourcePageRenderingAvailable }
                 )}
               </div>
             ) : null}
@@ -583,6 +607,7 @@ export default function PreprocessingPreviewPanel({
         open={Boolean(tableInspector)}
         jobId={jobId}
         table={tableInspector}
+        sourcePageRenderingAvailable={sourcePageRenderingAvailable}
         onClose={() => setTableInspector(null)}
       />
     </div>

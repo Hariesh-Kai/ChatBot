@@ -16,9 +16,9 @@ def rag_commit_task(
     session_id: Optional[str] = None,
     final_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    from backend.rag.commit_worker import run_commit_payload
+    from backend.rag.commit_worker import run_commit_payload_safe
 
-    run_commit_payload(
+    run_commit_payload_safe(
         job_id=str(job_id),
         session_id=(session_id or "").strip() or None,
         final_metadata=dict(final_metadata or {}),

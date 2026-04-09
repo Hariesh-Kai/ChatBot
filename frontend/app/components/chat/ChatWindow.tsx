@@ -436,29 +436,9 @@ export default function ChatWindow({
       return;
     }
 
-    let canceled = false;
-    setPreprocessingPreviewLoading(true);
+    setPreprocessingPreview(null);
     setPreprocessingPreviewError(null);
-
-    fetchUploadPreprocessingPreview(pendingJobId, "auto")
-      .then((preview) => {
-        if (canceled) return;
-        setPreprocessingPreview(preview);
-      })
-      .catch((err: any) => {
-        if (canceled) return;
-        setPreprocessingPreviewError(
-          err?.message || "Failed to load preprocessing preview."
-        );
-      })
-      .finally(() => {
-        if (canceled) return;
-        setPreprocessingPreviewLoading(false);
-      });
-
-    return () => {
-      canceled = true;
-    };
+    setPreprocessingPreviewLoading(false);
   }, [pendingJobId, inlineMetadataFields, disableMetadataWorkflow]);
 
   // ----------------------------------------------------------------------

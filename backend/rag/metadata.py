@@ -8,7 +8,9 @@ import logging
 import time
 import re  #  Added for Regex patterns
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Sequence, Tuple
+
+from backend.rag.filtering import element_category, element_page
 
 # ============================================================
 # TOKENIZER (STATS ONLY — NO MODEL USE)
@@ -163,6 +165,277 @@ def _score_chunk_quality(content: str) -> Dict[str, Any]:
 # METADATA EXTRACTION (PHASE 1 — SMART HEURISTICS)
 # ============================================================
 
+_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_MULTISPACE_RE = re.compile(r"\s+")
+_TITLE_HINT_RE = re.compile(r"\b(?:basis of design|design basis)\b", re.IGNORECASE)
+_LABEL_ONLY_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
+    (
+        "document_number",
+        re.compile(
+            r"^\s*(?:company\s+document\s+id|document\s+(?:id|number)|doc(?:ument)?\s+(?:id|number)|file\s+no\.?|drawing\s+number)\b\s*$",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "revision_code",
+        re.compile(r"^\s*(?:revision|rev(?:ision)?\.?)\b\s*$", re.IGNORECASE),
+    ),
+    (
+        "project_name",
+        re.compile(r"^\s*(?:project(?:\s+name)?|development|field)\b\s*$", re.IGNORECASE),
+    ),
+    (
+        "document_title",
+        re.compile(r"^\s*(?:document\s+title|title)\b\s*$", re.IGNORECASE),
+    ),
+)
+_INLINE_FIELD_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
+    (
+        "document_number",
+        re.compile(
+            r"^\s*(?:company\s+document\s+id|document\s+(?:id|number)|doc(?:ument)?\s+(?:id|number)|file\s+no\.?|drawing\s+number)\b\s*(?:[:\-]\s*)?(.+?)\s*$",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "revision_code",
+        re.compile(r"^\s*(?:revision|rev(?:ision)?\.?)\b\s*(?:[:\-]\s*)?([A-Za-z0-9._/-]+)\s*$", re.IGNORECASE),
+    ),
+    (
+        "project_name",
+        re.compile(r"^\s*(?:project(?:\s+name)?|development|field)\b\s*(?:[:\-]\s*)?(.+?)\s*$", re.IGNORECASE),
+    ),
+    (
+        "document_title",
+        re.compile(r"^\s*(?:document\s+title|title)\b\s*(?:[:\-]\s*)?(.+?)\s*$", re.IGNORECASE),
+    ),
+)
+_STANDALONE_DOCUMENT_NUMBER_RE = re.compile(r"^(?=.*\d)[A-Z0-9][A-Z0-9/_\\-]{7,}$")
+_HEADER_ZONE_MAX_RATIO = 0.24
+_FOOTER_ZONE_MIN_RATIO = 0.68
+
+
+def _normalized_metadata_text(value: Any) -> str:
+    text = _BREAK_RE.sub("\n", str(value or ""))
+    text = text.replace("\x00", " ").replace("\r\n", "\n").replace("\r", "\n")
+    return text
+
+
+def _compact_text(value: Any) -> str:
+    return _MULTISPACE_RE.sub(" ", str(value or "")).strip()
+
+
+def _candidate_lines(text: Any) -> List[str]:
+    lines: List[str] = []
+    for raw_line in _normalized_metadata_text(text).split("\n"):
+        normalized_line = _compact_text(raw_line.strip(" |"))
+        if not normalized_line:
+            continue
+        if "|" in normalized_line:
+            cells = [_compact_text(cell) for cell in normalized_line.split("|") if _compact_text(cell)]
+            if len(cells) >= 2:
+                lines.extend(cells)
+                continue
+        lines.append(normalized_line)
+    return lines
+
+
+def _extract_points(metadata: Dict[str, Any]) -> List[Tuple[float, float]]:
+    candidates: List[Any] = []
+    coordinates = metadata.get("coordinates")
+    if isinstance(coordinates, dict):
+        candidates.append(coordinates.get("points"))
+    bbox = metadata.get("bbox")
+    if isinstance(bbox, dict):
+        candidates.append(bbox.get("points"))
+        candidates.append(bbox.get("bbox"))
+    elif isinstance(bbox, list):
+        candidates.append(bbox)
+
+    for candidate in candidates:
+        if not isinstance(candidate, list):
+            continue
+        parsed: List[Tuple[float, float]] = []
+        for point in candidate:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            try:
+                parsed.append((float(point[0]), float(point[1])))
+            except Exception:
+                continue
+        if parsed:
+            return parsed
+    return []
+
+
+def _layout_height(metadata: Dict[str, Any], points: Sequence[Tuple[float, float]]) -> Optional[float]:
+    candidates = [metadata.get("layout_height")]
+    coordinates = metadata.get("coordinates")
+    if isinstance(coordinates, dict):
+        candidates.append(coordinates.get("layout_height"))
+    bbox = metadata.get("bbox")
+    if isinstance(bbox, dict):
+        candidates.append(bbox.get("layout_height"))
+
+    for candidate in candidates:
+        try:
+            value = float(candidate)
+            if value > 0:
+                return value
+        except Exception:
+            continue
+
+    if points:
+        max_y = max(point[1] for point in points)
+        if max_y > 0:
+            return max_y
+    return None
+
+
+def _vertical_ratio(element: Dict[str, Any]) -> Optional[float]:
+    metadata = element.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    points = _extract_points(metadata)
+    if not points:
+        return None
+    layout_height = _layout_height(metadata, points)
+    if not layout_height:
+        return None
+    avg_y = sum(point[1] for point in points) / len(points)
+    ratio = avg_y / layout_height
+    if 0 <= ratio <= 1.5:
+        return ratio
+    return None
+
+
+def _title_block_zone(element: Dict[str, Any]) -> bool:
+    ratio = _vertical_ratio(element)
+    if ratio is None:
+        return False
+    return ratio <= _HEADER_ZONE_MAX_RATIO or ratio >= _FOOTER_ZONE_MIN_RATIO
+
+
+def _field_label_key(line: str) -> Optional[str]:
+    normalized = _compact_text(line)
+    if not normalized:
+        return None
+    for key, pattern in _LABEL_ONLY_PATTERNS:
+        if pattern.match(normalized):
+            return key
+    return None
+
+
+def _contains_explicit_field_label(lines: Sequence[str]) -> bool:
+    for line in lines:
+        if _field_label_key(line):
+            return True
+        for _, pattern in _INLINE_FIELD_PATTERNS:
+            if pattern.match(line):
+                return True
+    return False
+
+
+def _apply_metadata_value(metadata: Dict[str, Dict[str, Any]], key: str, value: Any, confidence: float) -> None:
+    normalized = _compact_text(value)
+    if not normalized:
+        return
+    if float(metadata.get(key, {}).get("confidence") or 0.0) >= confidence:
+        return
+    metadata[key] = {"value": normalized, "confidence": confidence}
+
+
+def _extract_explicit_fields(lines: Sequence[str]) -> Dict[str, str]:
+    extracted: Dict[str, str] = {}
+
+    for index, line in enumerate(lines):
+        for key, pattern in _INLINE_FIELD_PATTERNS:
+            match = pattern.match(line)
+            if not match:
+                continue
+            value = _compact_text(match.group(1))
+            if value:
+                extracted.setdefault(key, value)
+
+        label_key = _field_label_key(line)
+        if not label_key:
+            continue
+
+        next_index = index + 1
+        while next_index < len(lines):
+            candidate = _compact_text(lines[next_index])
+            if not candidate:
+                next_index += 1
+                continue
+            if _field_label_key(candidate):
+                break
+            extracted.setdefault(label_key, candidate)
+            break
+
+    return extracted
+
+
+def _candidate_title_text(element: Dict[str, Any], lines: Sequence[str]) -> Optional[str]:
+    category = element_category(element)
+    if category == "Title":
+        title_text = _compact_text(" ".join(lines))
+        return title_text or None
+
+    joined = _compact_text(" ".join(lines))
+    if _TITLE_HINT_RE.search(joined):
+        return joined
+    return None
+
+
+def _extract_title_block_metadata_from_page(elements: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    metadata = {
+        "document_type": {"value": None, "confidence": 0.0},
+        "document_title": {"value": None, "confidence": 0.0},
+        "revision_code": {"value": None, "confidence": 0.0},
+        "project_name": {"value": None, "confidence": 0.0},
+        "document_number": {"value": None, "confidence": 0.0},
+    }
+
+    for element in elements:
+        if element_page(element) != 1:
+            continue
+
+        raw_text = element.get("text") or element.get("content") or ""
+        lines = _candidate_lines(raw_text)
+        if not lines:
+            continue
+
+        candidate_title = _candidate_title_text(element, lines)
+        if candidate_title:
+            confidence = 0.9 if element_category(element) == "Title" else 0.75
+            _apply_metadata_value(metadata, "document_title", candidate_title, confidence)
+            _apply_metadata_value(metadata, "document_type", candidate_title, confidence)
+
+        title_block_candidate = _title_block_zone(element) or (
+            element_category(element) == "Table" and _contains_explicit_field_label(lines)
+        )
+        if not title_block_candidate:
+            continue
+
+        explicit_fields = _extract_explicit_fields(lines)
+        for key, value in explicit_fields.items():
+            confidence = 0.95 if key in {"document_number", "revision_code"} else 0.9
+            _apply_metadata_value(metadata, key, value, confidence)
+            if key == "document_title":
+                _apply_metadata_value(metadata, "document_type", value, confidence)
+
+        if metadata["document_number"]["value"]:
+            continue
+
+        for line in lines:
+            if _field_label_key(line):
+                continue
+            if _STANDALONE_DOCUMENT_NUMBER_RE.match(line) and any(ch.isdigit() for ch in line):
+                _apply_metadata_value(metadata, "document_number", line, 0.82)
+                break
+
+    return metadata
+
 def extract_document_metadata(
     *,
     elements_file: str,
@@ -170,76 +443,12 @@ def extract_document_metadata(
     company_document_id: str,
     extra_metadata: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    Extract document-level metadata ONLY FROM THE FIRST PAGE.
-
-     UPDATED: Uses Regex to distinguish Document ID vs Project Name.
-    """
-
     with open(elements_file, "r", encoding="utf-8") as f:
         elements: List[Dict[str, Any]] = json.load(f)
 
-    # Initialize with default confidence
-    metadata = {
-        # Keep both keys for backward compatibility.
-        # `document_type` is what upload/pipeline contracts expect.
-        "document_type": {"value": None, "confidence": 0.0},
-        "document_title": {"value": None, "confidence": 0.0},
-        "revision_code": {"value": None, "confidence": 0.0},
-        "project_name":  {"value": None, "confidence": 0.0}, #  New field
-        "document_number": {"value": None, "confidence": 0.0} #  New field
-    }
-
-    # --------------------------------------------------------
-    #  SMART HEURISTICS (Page 1 Only)
-    # --------------------------------------------------------
-
-    for el in elements:
-        # Check Page Number (Stop scanning after page 1 to save time/errors)
-        page_number = el.get("metadata", {}).get("page_number", 1)
-        if page_number > 1:
-            break
-
-        text = (el.get("text") or el.get("content") or "").strip()
-        if not text:
-            continue
-
-        lower = text.lower()
-
-        # --- 1. Detect Document Number (Technical ID) ---
-        # Pattern: Long alphanumeric string (e.g., 363010BGRB00508 or with dashes)
-        # Rule: Must contain digits, >8 chars, no spaces
-        if len(text) > 8 and len(text) < 40 and any(c.isdigit() for c in text):
-            # Check for ID-like structure (no spaces, mix of letters/numbers)
-            if " " not in text and re.search(r'[A-Z0-9]+', text):
-                if metadata["document_number"]["confidence"] < 0.8:
-                    metadata["document_number"] = {"value": text, "confidence": 0.9}
-                    continue # If it is an ID, it is not a title
-
-        # --- 2. Detect Document Title ---
-        # Capture the FULL text line if it contains title keywords
-        if "basis of design" in lower:
-            clean_title = text.replace("\n", " ").strip()
-            if len(clean_title) > 10 and metadata["document_title"]["confidence"] < 0.9:
-                metadata["document_title"] = {"value": clean_title, "confidence": 0.9}
-                metadata["document_type"] = {"value": clean_title, "confidence": 0.9}
-        
-        elif "design basis" in lower and metadata["document_title"]["confidence"] < 0.8:
-            clean_title = text.replace("\n", " ").strip()
-            metadata["document_title"] = {"value": clean_title, "confidence": 0.8}
-            metadata["document_type"] = {"value": clean_title, "confidence": 0.8}
-
-        # --- 3. Detect Revision Code (Rev 01, Rev A) ---
-        # Regex: Starts with 'Rev' followed by short alphanumeric
-        rev_match = re.search(r'\brev\.?\s*([a-zA-Z0-9]{1,3})\b', lower)
-        if rev_match:
-            metadata["revision_code"] = {"value": rev_match.group(1).upper(), "confidence": 0.8}
-
-        # --- 4. Detect Project Name ---
-        # Rule: Contains "Project" or "Development", isn't an ID, isn't a whole paragraph
-        if "project" in lower or "development" in lower or "field" in lower:
-            if 10 < len(text) < 100:
-                metadata["project_name"] = {"value": text, "confidence": 0.6}
+    metadata = _extract_title_block_metadata_from_page(
+        [item for item in elements if isinstance(item, dict)]
+    )
 
     # --------------------------------------------------------
     # AUTHORITATIVE OVERRIDES (NON-IDENTITY ONLY)

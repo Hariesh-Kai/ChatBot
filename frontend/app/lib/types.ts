@@ -33,7 +33,7 @@ export interface RagSource {
   page: number;
 
   bbox?: any;
-  chunk_type?: "text" | "parent" | "child";
+  chunk_type?: "text" | "parent" | "child" | "image";
   section?: string;
 
   company_document_id?: string;

@@ -17,7 +17,7 @@ _ranker_unavailable = False
 
 def _normalize_chunk_type(metadata: Optional[Dict]) -> str:
     raw = str((metadata or {}).get("chunk_type") or (metadata or {}).get("type") or "text").strip().lower()
-    if raw in {"parent", "text", "child"}:
+    if raw in {"parent", "text", "child", "image"}:
         return raw
     return "text"
 

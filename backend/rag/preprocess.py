@@ -38,6 +38,9 @@ def _resolve_extraction_metadata(
     if resolved_preprocessor == "pymupdf4llm":
         source_weight_key = "pymupdf"
         ocr_used = bool(resolved_rag_mode == "high_fidelity")
+    elif resolved_preprocessor == "table_preprocessor":
+        source_weight_key = "table_preprocessor"
+        ocr_used = True
     elif resolved_preprocessor == "docling":
         source_weight_key = "docling"
         ocr_used = False
@@ -544,6 +547,42 @@ def _stream_docling_elements(
     )
 
 
+def _stream_table_preprocessor_elements(
+    pdf_path: str,
+    output_json: str,
+    *,
+    rag_mode: str = "balanced",
+    pipeline_mode: str = "commit",
+) -> Generator[List[dict], None, None]:
+    del rag_mode, pipeline_mode
+
+    try:
+        from backend.rag.table_preprocessor import TablePreprocessor
+    except Exception as exc:
+        raise RuntimeError(
+            "Table preprocessor could not be imported. Check backend.rag.table_preprocessor."
+        ) from exc
+
+    output_dir = Path(output_json).resolve().parent / "table_preprocessor"
+    print(f"[PREPROCESS][table_preprocessor] Starting PDF parse: {pdf_path}")
+
+    extractor = TablePreprocessor(output_dir=output_dir)
+    extracted_pages = 0
+    empty_pages = 0
+
+    for batch in extractor.iter_page_elements(pdf_path):
+        if not batch:
+            empty_pages += 1
+            continue
+        extracted_pages += 1
+        yield batch
+
+    print(
+        "[PREPROCESS][table_preprocessor] Streaming complete | "
+        f"processed_pages={extracted_pages} empty_pages={empty_pages}"
+    )
+
+
 def stream_pdf_to_elements(
     pdf_path: str,
     output_json: str,
@@ -560,6 +599,7 @@ def stream_pdf_to_elements(
     - pypdf_text: lightweight text-only baseline for side-by-side benchmarking
     - pymupdf4llm: layout-aware markdown extraction with optional OCR support
     - docling: Docling conversion with page-wise markdown export
+    - table_preprocessor: Docling-backed table-focused extraction and cleanup
     """
     resolved_preprocessor = normalize_rag_preprocessor(preprocessor)
     print(f"[PREPROCESS] Selected preprocessor: {resolved_preprocessor}")
@@ -585,6 +625,13 @@ def stream_pdf_to_elements(
         )
     elif resolved_preprocessor == "docling":
         source_stream = _stream_docling_elements(
+            pdf_path,
+            output_json,
+            rag_mode=rag_mode,
+            pipeline_mode=pipeline_mode,
+        )
+    elif resolved_preprocessor == "table_preprocessor":
+        source_stream = _stream_table_preprocessor_elements(
             pdf_path,
             output_json,
             rag_mode=rag_mode,

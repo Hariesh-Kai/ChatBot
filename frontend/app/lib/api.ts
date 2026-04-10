@@ -228,6 +228,7 @@ export interface PreprocessingPreviewResponse {
   metadata_candidates: Record<string, { value?: string | null; confidence?: number | null }>;
   metadata_evidence: PreprocessingPreviewElement[];
   tables: PreprocessingPreviewElement[];
+  images: PreprocessingPreviewElement[];
   chunks: PreprocessingPreviewChunk[];
   removed_elements: PreprocessingPreviewElement[];
   summary: Record<string, any>;
@@ -245,6 +246,7 @@ export interface PreprocessingPreviewPageResponse {
   available_in_scope?: boolean;
   elements: PreprocessingPreviewElement[];
   tables: PreprocessingPreviewElement[];
+  images: PreprocessingPreviewElement[];
   chunks: PreprocessingPreviewChunk[];
   removed_elements: PreprocessingPreviewElement[];
   summary: Record<string, any>;

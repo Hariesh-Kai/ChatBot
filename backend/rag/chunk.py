@@ -11,6 +11,7 @@ import pandas as pd
 from langchain_core.documents import Document
 from unstructured.staging.base import elements_from_json
 
+from backend.rag.filtering import element_category, element_page, element_text
 from backend.rag.table_normalization import normalized_table_to_text
 
 
@@ -95,6 +96,8 @@ _PROTECTED_PROCESS_TERMS = (
     "treating",
     "inversion point",
 )
+_IMAGE_ELEMENT_CATEGORIES = {"Image", "Picture"}
+_IMAGE_CAPTION_CATEGORIES = {"FigureCaption"}
 _PROTECTED_UNIT_RE = re.compile(
     "(?i)(?:\\b\\d+(?:\\.\\d+)?\\s*(?:bar|kpa|psi|pa|deg\\s*c|m3/h|kg/h|ppm|bpd|mmscfd|nm3/h)\\b|\\b\\d+(?:\\.\\d+)?\\s*%|\u00b0\\s*c|\\b(?:deg\\s*c|m3/h|kg/h|ppm|bpd|mmscfd|nm3/h)\\b)"
 )
@@ -211,6 +214,8 @@ class ContextAwareChunker:
             return "table"
         if normalized == "child":
             return "table_row"
+        if normalized == "image":
+            return "image"
         return "text"
 
     def _debug_chunk(self, doc: Document) -> None:
@@ -810,6 +815,149 @@ class ContextAwareChunker:
         for block in blocks:
             self._append_group_block(block)
 
+    def _resolve_bbox_json(self, meta) -> str:
+        bbox = self._metadata_attr(meta, "bbox", None)
+        if isinstance(bbox, str) and bbox.strip():
+            return bbox.strip()
+        if isinstance(bbox, list):
+            try:
+                return json.dumps(bbox)
+            except Exception:
+                return ""
+        if isinstance(bbox, dict):
+            points = bbox.get("points") or bbox.get("bbox")
+            if isinstance(points, list):
+                try:
+                    return json.dumps(points)
+                except Exception:
+                    return ""
+            try:
+                return json.dumps(bbox)
+            except Exception:
+                return ""
+
+        coordinates = self._metadata_attr(meta, "coordinates", None)
+        if isinstance(coordinates, dict):
+            points = coordinates.get("points")
+            if isinstance(points, list):
+                try:
+                    return json.dumps(points)
+                except Exception:
+                    return ""
+        elif coordinates:
+            try:
+                points = list(coordinates.points)
+                if points:
+                    return json.dumps(points)
+            except Exception:
+                return ""
+
+        return ""
+
+    def _build_image_caption_hints(
+        self,
+        payload: Any,
+    ) -> tuple[Dict[int, Dict[str, Any]], set[int]]:
+        if not isinstance(payload, list):
+            return {}, set()
+
+        hints: Dict[int, Dict[str, Any]] = {}
+        attached_caption_indexes: set[int] = set()
+
+        for index, item in enumerate(payload):
+            if not isinstance(item, dict):
+                continue
+            if element_category(item) not in _IMAGE_ELEMENT_CATEGORIES:
+                continue
+
+            page_number = element_page(item)
+            best_match: Optional[tuple[int, int, str]] = None
+
+            for cursor in range(max(0, index - 3), min(len(payload), index + 4)):
+                if cursor == index or cursor in attached_caption_indexes:
+                    continue
+
+                candidate = payload[cursor]
+                if not isinstance(candidate, dict):
+                    continue
+                if element_page(candidate) != page_number:
+                    continue
+                if element_category(candidate) not in _IMAGE_CAPTION_CATEGORIES:
+                    continue
+
+                caption_text = self._normalize_section_label(element_text(candidate))
+                if not caption_text:
+                    continue
+
+                distance = abs(cursor - index)
+                if best_match is None or distance < best_match[0]:
+                    best_match = (distance, cursor, caption_text)
+
+            if best_match is None:
+                continue
+
+            attached_caption_indexes.add(best_match[1])
+            hints[index] = {
+                "caption": best_match[2],
+                "caption_index": best_match[1],
+            }
+
+        return hints, attached_caption_indexes
+
+    def _build_image_document(
+        self,
+        *,
+        category: str,
+        text: str,
+        meta,
+        page_num: int,
+        bbox_json: str,
+        section: str,
+        image_hint: Optional[Dict[str, Any]] = None,
+    ) -> Document:
+        image_doc_id = str(uuid.uuid4())
+        caption_text = self._normalize_section_label((image_hint or {}).get("caption") or "")
+        ocr_text = self._normalize_section_label(text)
+
+        if str(category or "").strip() == "FigureCaption" and not caption_text and ocr_text:
+            caption_text = ocr_text
+            ocr_text = ""
+
+        if caption_text and ocr_text.lower() == caption_text.lower():
+            ocr_text = ""
+
+        descriptor = "Figure" if str(category or "").strip() in _IMAGE_ELEMENT_CATEGORIES else "Figure Caption"
+        body_lines = [
+            f"{descriptor} detected in section {section} on page {page_num}.",
+        ]
+        if caption_text:
+            body_lines.append(f"Caption: {caption_text}")
+        if ocr_text:
+            body_lines.append(f"OCR Text: {ocr_text}")
+
+        return Document(
+            page_content="\n".join(
+                [
+                    f"### {descriptor}: {section}",
+                    *body_lines,
+                ]
+            ).strip(),
+            metadata={
+                "type": "image",
+                "section": section,
+                "doc_id": image_doc_id,
+                "is_parent": False,
+                "image_category": str(category or "Image").strip() or "Image",
+                "image_caption": caption_text or None,
+                **self._shared_element_metadata(
+                    meta=meta,
+                    element_type="Image",
+                    page_num=page_num,
+                    bbox_json=bbox_json,
+                ),
+            },
+        )
+
     def _split_text_with_pattern(self, text: str, pattern: re.Pattern[str]) -> List[str]:
         return [part.strip() for part in pattern.split(str(text or "").strip()) if part.strip()]
 
@@ -1219,6 +1367,8 @@ class ContextAwareChunker:
                 if element_id and element_id not in element_index_by_id:
                     element_index_by_id[element_id] = index
 
+        image_caption_hints, attached_image_caption_indexes = self._build_image_caption_hints(input_payload)
+
         grouped_blocks_by_start_index: Dict[int, List[Dict[str, Any]]] = {}
         grouped_block_covered_indexes: set[int] = set()
         for block in grouped_blocks:
@@ -1245,14 +1395,7 @@ class ContextAwareChunker:
             except Exception:
                 page_num = 1
 
-            bbox_json = ""
-            coordinates = self._metadata_attr(meta, "coordinates", None)
-            if coordinates:
-                try:
-                    points = list(coordinates.points)
-                    bbox_json = json.dumps(points)
-                except Exception:
-                    bbox_json = ""
+            bbox_json = self._resolve_bbox_json(meta)
 
             # ------------------------------------------------
             # 1️⃣ SECTION TITLES
@@ -1267,6 +1410,32 @@ class ContextAwareChunker:
                 if grouped_blocks_by_start_index.get(index):
                     for block in grouped_blocks_by_start_index.get(index, []):
                         self._emit_grouped_block(block=block, docs_list=final_documents)
+                continue
+
+            if category in _IMAGE_CAPTION_CATEGORIES and index in attached_image_caption_indexes:
+                continue
+
+            if category in _IMAGE_ELEMENT_CATEGORIES or category in _IMAGE_CAPTION_CATEGORIES:
+                self._flush_text_group(final_documents)
+
+                section = self._resolve_effective_section(meta=meta, page_num=page_num)
+                if (
+                    self._is_valid_section_label(self.pending_title_heading)
+                    and self._normalize_section_label(self.pending_title_heading) == section
+                ):
+                    self.pending_title_heading = ""
+
+                image_doc = self._build_image_document(
+                    category=category,
+                    text=text,
+                    meta=meta,
+                    page_num=page_num,
+                    bbox_json=bbox_json,
+                    section=section,
+                    image_hint=image_caption_hints.get(index),
+                )
+                final_documents.append(image_doc)
+                self._debug_chunk(image_doc)
                 continue
 
             # ------------------------------------------------
@@ -1369,7 +1538,7 @@ class ContextAwareChunker:
 
         self._flush_text_group(final_documents)
 
-        print(f"[CHUNK] Created {len(final_documents)} chunks (parents + children + text).")
+        print(f"[CHUNK] Created {len(final_documents)} chunks (parents + children + text + image).")
 
         output_data = []
         for doc in final_documents:

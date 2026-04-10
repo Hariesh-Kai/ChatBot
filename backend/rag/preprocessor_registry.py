@@ -4,7 +4,7 @@ import importlib.util
 from typing import Any, Literal
 
 
-RagPreprocessor = Literal["unstructured", "pypdf_text", "pymupdf4llm", "docling"]
+RagPreprocessor = Literal["unstructured", "pypdf_text", "pymupdf4llm", "docling", "table_preprocessor"]
 
 
 def _detect_default_rag_preprocessor() -> RagPreprocessor:
@@ -21,7 +21,7 @@ def _detect_default_rag_preprocessor() -> RagPreprocessor:
 
 
 DEFAULT_RAG_PREPROCESSOR: RagPreprocessor = _detect_default_rag_preprocessor()
-ALLOWED_RAG_PREPROCESSORS = {"unstructured", "pypdf_text", "pymupdf4llm", "docling"}
+ALLOWED_RAG_PREPROCESSORS = {"unstructured", "pypdf_text", "pymupdf4llm", "docling", "table_preprocessor"}
 
 
 def normalize_rag_preprocessor(value: Any) -> RagPreprocessor:
@@ -37,6 +37,9 @@ def normalize_rag_preprocessor(value: Any) -> RagPreprocessor:
         "pymupdf_4_llm": "pymupdf4llm",
         "fitz4llm": "pymupdf4llm",
         "ibm_docling": "docling",
+        "docling_table": "table_preprocessor",
+        "docling_tables": "table_preprocessor",
+        "tablepreprocessor": "table_preprocessor",
     }
     resolved = aliases.get(raw, raw)
 
@@ -52,4 +55,5 @@ def get_rag_preprocessor_options() -> dict[str, str]:
         "pypdf_text": "Lightweight text-only extraction using pypdf.",
         "pymupdf4llm": "PyMuPDF4LLM markdown extraction with layout-aware OCR support.",
         "docling": "Docling document conversion with page-wise markdown export.",
+        "table_preprocessor": "Docling-backed table-focused extraction with caption-aware markdown/HTML output.",
     }

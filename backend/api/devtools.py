@@ -147,6 +147,18 @@ def _job_has_cached_preview_artifacts(job_id: str) -> bool:
     return all((job_dir / name).exists() for name in required)
 
 
+def _job_filter_report(job_id: str) -> Dict[str, Any]:
+    job_dir = _JOB_ARTIFACT_ROOT / str(job_id or "").strip()
+    path = job_dir / "filter_report.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _raise_http(detail: str, status_code: int = 500, exc: Optional[Exception] = None) -> None:
     if exc:
         logger.exception(detail)
@@ -1390,6 +1402,12 @@ def recent_upload_jobs(
         pdf_available = bool(pdf_path and Path(pdf_path).exists())
         cached_preview_available = _job_has_cached_preview_artifacts(str(row.get("job_id") or ""))
         preview_available = bool(pdf_available or cached_preview_available)
+        filter_report = _job_filter_report(str(row.get("job_id") or ""))
+        element_groups = (
+            filter_report.get("element_groups")
+            if isinstance(filter_report, dict)
+            else None
+        )
 
         jobs.append(
             {
@@ -1407,6 +1425,7 @@ def recent_upload_jobs(
                 "rag_preprocessor": str(metadata.get("rag_preprocessor") or "") or None,
                 "rag_ingest_mode": str(metadata.get("rag_ingest_mode") or "") or None,
                 "rag_collection_name": str(metadata.get("rag_collection_name") or "") or None,
+                "segregation_summary": element_groups if isinstance(element_groups, dict) else None,
                 "preview_available": preview_available,
                 "artifact_only_preview": bool(cached_preview_available and not pdf_available),
                 "preview_unavailable_reason": (

@@ -29,11 +29,13 @@ ELEMENT_WEIGHTS = {
     "NarrativeText": 0.9,
     "ListItem": 0.7,
     "Table": 0.6,
+    "Image": 0.75,
     "UncategorizedText": 0.3,
 }
 
 SOURCE_WEIGHTS = {
     "pymupdf": 1.0,
+    "table_preprocessor": 0.95,
     "docling": 0.9,
     "unstructured_hi_res": 0.8,
     "unstructured_fast": 0.6,
@@ -67,6 +69,21 @@ _TABLE_QUERY_TERMS = (
     "tag",
     "factor",
     "design pressure",
+)
+
+_IMAGE_QUERY_TERMS = (
+    "image",
+    "figure",
+    "diagram",
+    "schematic",
+    "drawing",
+    "plot",
+    "chart",
+    "graphic",
+    "p&id",
+    "pid",
+    "pfd",
+    "flow diagram",
 )
 
 _SUMMARY_QUERY_TERMS = (
@@ -117,7 +134,7 @@ _SECTION_STOPWORDS = {
 
 def _normalize_chunk_type(metadata: Optional[Dict[str, Any]]) -> str:
     raw = str((metadata or {}).get("chunk_type") or (metadata or {}).get("type") or "text").strip().lower()
-    if raw in {"parent", "text", "child"}:
+    if raw in {"parent", "text", "child", "image"}:
         return raw
     return "text"
 
@@ -130,6 +147,8 @@ def _normalize_element_type(metadata: Optional[Dict[str, Any]]) -> str:
     chunk_type = _normalize_chunk_type(metadata)
     if chunk_type in {"parent", "child"}:
         return "Table"
+    if chunk_type == "image":
+        return "Image"
     return "NarrativeText"
 
 
@@ -151,6 +170,8 @@ def _normalize_source_weight_key(metadata: Optional[Dict[str, Any]]) -> str:
 
     if raw in {"pymupdf4llm", "pymupdf"}:
         return "pymupdf"
+    if raw in {"table_preprocessor"}:
+        return "table_preprocessor"
     if raw in {"docling"}:
         return "docling"
     if raw in {"unstructured", "unstructured_hi_res"}:
@@ -179,7 +200,7 @@ def classify_query_profile(question: str) -> Dict[str, Any]:
             "exclude_element_types": set(),
             "exclude_ocr": False,
             "element_multipliers": {},
-            "lane_multipliers": {"parent": 1.0, "text": 1.0, "child": 0.8},
+            "lane_multipliers": {"parent": 1.0, "text": 1.0, "image": 0.95, "child": 0.8},
             "top_k": MAX_CONTEXT_CHUNKS,
         }
 
@@ -194,9 +215,28 @@ def classify_query_profile(question: str) -> Dict[str, Any]:
                 "NarrativeText": 1.2,
                 "ListItem": 0.2,
                 "Table": 0.05,
+                "Image": 0.2,
                 "UncategorizedText": 0.1,
             },
-            "lane_multipliers": {"parent": 0.1, "text": 1.2, "child": 0.1},
+            "lane_multipliers": {"parent": 0.1, "text": 1.2, "image": 0.1, "child": 0.1},
+            "top_k": MAX_CONTEXT_CHUNKS,
+        }
+
+    if any(term in q for term in _IMAGE_QUERY_TERMS):
+        return {
+            "name": "image_reference",
+            "allow_element_types": {"Image", "NarrativeText", "Title"},
+            "exclude_element_types": {"Table", "UncategorizedText"},
+            "exclude_ocr": False,
+            "element_multipliers": {
+                "Title": 0.9,
+                "NarrativeText": 1.0,
+                "ListItem": 0.45,
+                "Table": 0.2,
+                "Image": 1.3,
+                "UncategorizedText": 0.1,
+            },
+            "lane_multipliers": {"parent": 0.2, "text": 0.95, "image": 1.35, "child": 0.1},
             "top_k": MAX_CONTEXT_CHUNKS,
         }
 
@@ -211,9 +251,10 @@ def classify_query_profile(question: str) -> Dict[str, Any]:
                 "NarrativeText": 1.0,
                 "ListItem": 0.6,
                 "Table": 1.15,
+                "Image": 0.35,
                 "UncategorizedText": 0.4,
             },
-            "lane_multipliers": {"parent": 1.25, "text": 0.95, "child": 0.75},
+            "lane_multipliers": {"parent": 1.25, "text": 0.95, "image": 0.45, "child": 0.75},
             "top_k": MAX_CONTEXT_CHUNKS,
         }
 
@@ -228,9 +269,10 @@ def classify_query_profile(question: str) -> Dict[str, Any]:
                 "NarrativeText": 1.25,
                 "ListItem": 0.85,
                 "Table": 0.55,
+                "Image": 0.8,
                 "UncategorizedText": 0.2,
             },
-            "lane_multipliers": {"parent": 0.7, "text": 1.2, "child": 0.4},
+            "lane_multipliers": {"parent": 0.7, "text": 1.2, "image": 0.9, "child": 0.4},
             "top_k": MAX_CONTEXT_CHUNKS,
         }
 
@@ -245,9 +287,10 @@ def classify_query_profile(question: str) -> Dict[str, Any]:
                 "NarrativeText": 1.1,
                 "ListItem": 0.9,
                 "Table": 0.85,
+                "Image": 0.8,
                 "UncategorizedText": 0.35,
             },
-            "lane_multipliers": {"parent": 0.95, "text": 1.1, "child": 0.5},
+            "lane_multipliers": {"parent": 0.95, "text": 1.1, "image": 0.8, "child": 0.5},
             "top_k": MAX_CONTEXT_CHUNKS,
         }
 
@@ -262,9 +305,10 @@ def classify_query_profile(question: str) -> Dict[str, Any]:
             "NarrativeText": 1.0,
             "ListItem": 0.85,
             "Table": 0.8,
+            "Image": 0.9,
             "UncategorizedText": 0.35,
         },
-        "lane_multipliers": {"parent": 0.95, "text": 1.05, "child": 0.6},
+        "lane_multipliers": {"parent": 0.95, "text": 1.05, "image": 0.9, "child": 0.6},
         "top_k": MAX_CONTEXT_CHUNKS,
     }
 
@@ -381,7 +425,7 @@ def _doc_score(doc: Document) -> float:
 
 def _doc_sort_key(doc: Document) -> tuple:
     chunk_type = _normalize_chunk_type(doc.metadata)
-    type_order = {"parent": 3, "text": 2, "child": 1}.get(chunk_type, 0)
+    type_order = {"parent": 4, "image": 3, "text": 2, "child": 1}.get(chunk_type, 0)
     return (_doc_score(doc), type_order, len(doc.page_content or ""))
 
 
@@ -529,6 +573,15 @@ def _get_retrieval_mix(
         return {
             "parent": 0,
             "text": max(final_k + 4, int(base * 0.75)),
+            "image": 0,
+            "child": 0,
+        }
+
+    if query_name == "image_reference":
+        return {
+            "parent": 0,
+            "text": max(3, int(base * 0.30)),
+            "image": max(final_k + 4, int(base * 0.55)),
             "child": 0,
         }
 
@@ -536,6 +589,7 @@ def _get_retrieval_mix(
         return {
             "parent": max(final_k + 4, int(base * 0.55)),
             "text": max(4, int(base * 0.30)),
+            "image": max(1, int(base * 0.05)),
             "child": max(2, int(base * 0.15)),
         }
 
@@ -543,6 +597,7 @@ def _get_retrieval_mix(
         return {
             "parent": max(4, int(base * 0.35)),
             "text": max(final_k + 2, int(base * 0.55)),
+            "image": max(1, int(base * 0.10)),
             "child": 0,
         }
 
@@ -550,6 +605,7 @@ def _get_retrieval_mix(
         return {
             "parent": max(2, int(base * 0.15)),
             "text": max(final_k + 4, int(base * 0.65)),
+            "image": max(1, int(base * 0.12)),
             "child": 0,
         }
 
@@ -557,12 +613,14 @@ def _get_retrieval_mix(
         return {
             "parent": max(3, int(base * 0.30)),
             "text": max(final_k + 2, int(base * 0.50)),
+            "image": max(1, int(base * 0.08)),
             "child": max(2, int(base * 0.12)),
         }
 
     return {
         "parent": max(4, int(base * 0.40)),
         "text": max(final_k + 2, int(base * 0.45)),
+        "image": max(1, int(base * 0.10)),
         "child": max(0, int(base * 0.08)),
     }
 
@@ -1093,6 +1151,17 @@ def retrieve_rag_context(
         rrf_k=rrf_k,
         query_profile=query_profile,
     )
+    image_docs = _search_chunk_lane(
+        question=question,
+        vector_store=vector_store,
+        metadata_filter=metadata_filter,
+        chunk_type="image",
+        vector_k=int(retrieval_mix.get("image", 0)),
+        keyword_k=min(keyword_limit, max(0, int(retrieval_mix.get("image", 0)))),
+        use_keyword=use_keyword,
+        rrf_k=rrf_k,
+        query_profile=query_profile,
+    )
 
     child_docs: List[Document] = []
     child_budget = int(retrieval_mix.get("child", 0))
@@ -1109,7 +1178,7 @@ def retrieve_rag_context(
             query_profile=query_profile,
         )
 
-    candidates = _merge_candidate_streams(parent_docs, text_docs, child_docs)
+    candidates = _merge_candidate_streams(parent_docs, text_docs, image_docs, child_docs)
 
     # Compatibility fallback: older revisions may not have chunk_type populated.
     if not candidates:

@@ -11,6 +11,7 @@ from pypdf import PdfReader, PdfWriter
 from backend.rag.block_builder import GROUPING_VERSION, build_grouped_blocks
 from backend.rag.chunk import ContextAwareChunker
 from backend.rag.chunk_strategy import get_chunk_config
+from backend.rag.element_segmentation import build_stage_segregation_summary
 from backend.rag.filtering import (
     FILTER_VERSION,
     element_category,
@@ -56,6 +57,8 @@ QUICK_PREVIEW_FILES = {
     "chunks": "quick_chunks.json",
     "enriched_chunks": "quick_enriched_chunks.json",
 }
+
+IMAGE_PREVIEW_CATEGORIES = {"Image", "Picture", "FigureCaption"}
 
 
 def _scope_artifacts_exist(paths: Dict[str, Path]) -> bool:
@@ -365,6 +368,26 @@ def _shape_element(element: Dict[str, Any]) -> Dict[str, Any]:
         "metadata": metadata,
         "discard_reason": str(element.get("_discard_reason") or ""),
     }
+
+
+def _segregation_summary(
+    *,
+    raw_elements: Any,
+    filtered_elements: Any,
+    removed_elements: Any,
+    filter_report: Any,
+    prefer_filter_report: bool = True,
+) -> Dict[str, Any]:
+    if prefer_filter_report and isinstance(filter_report, dict):
+        existing = filter_report.get("element_groups")
+        if isinstance(existing, dict) and existing:
+            return existing
+
+    return build_stage_segregation_summary(
+        raw_elements=raw_elements if isinstance(raw_elements, list) else [],
+        filtered_elements=filtered_elements if isinstance(filtered_elements, list) else [],
+        removed_elements=removed_elements if isinstance(removed_elements, list) else [],
+    )
 
 
 def _shape_chunks(chunks: Any, enriched_chunks: Any) -> List[Dict[str, Any]]:
@@ -812,8 +835,19 @@ def build_preprocessing_preview(
         for item in filtered_elements
         if isinstance(item, dict) and element_category(item) == "Table"
     ]
+    images = [
+        _shape_element(item)
+        for item in filtered_elements
+        if isinstance(item, dict) and element_category(item) in IMAGE_PREVIEW_CATEGORIES
+    ]
     shaped_chunks = _shape_chunks(chunks, enriched_chunks)
     indexed_pages = _page_numbers(filtered_elements)
+    element_groups = _segregation_summary(
+        raw_elements=raw_elements,
+        filtered_elements=filtered_elements,
+        removed_elements=removed_elements,
+        filter_report=filter_report,
+    )
 
     return {
         "job_id": str(Path(job_dir).name),
@@ -836,6 +870,7 @@ def build_preprocessing_preview(
             if isinstance(item, dict)
         ],
         "tables": tables,
+        "images": images,
         "chunks": shaped_chunks,
         "removed_elements": [
             _shape_element(item)
@@ -848,7 +883,9 @@ def build_preprocessing_preview(
             "removed_elements": len(removed_elements) if isinstance(removed_elements, list) else 0,
             "grouped_blocks": len(grouped_blocks) if isinstance(grouped_blocks, list) else 0,
             "tables": len(tables),
+            "images": len(images),
             "chunks": len(shaped_chunks),
+            "element_groups": element_groups,
             "filter_report": filter_report if isinstance(filter_report, dict) else {},
             "grouping_report": grouping_report if isinstance(grouping_report, dict) else {},
             "indexed_page_count": len(indexed_pages),
@@ -888,9 +925,11 @@ def build_preprocessing_page_preview(
 
     filtered_elements = _load_json(paths["filtered_elements"], [])
     removed_elements = _load_json(paths["removed_elements"], [])
+    raw_elements = _load_json(paths["raw_elements"], [])
     chunks = _load_json(paths["chunks"], [])
     enriched_chunks = _load_json(paths["enriched_chunks"], [])
     grouped_blocks = _load_json(paths["grouped_blocks"], [])
+    filter_report = _load_json(paths["filter_report"], {})
 
     page_filtered = (
         [
@@ -908,6 +947,15 @@ def build_preprocessing_page_preview(
             if isinstance(item, dict) and element_page(item) == page_number
         ]
         if isinstance(removed_elements, list)
+        else []
+    )
+    page_raw = (
+        [
+            item
+            for item in raw_elements
+            if isinstance(item, dict) and element_page(item) == page_number
+        ]
+        if isinstance(raw_elements, list)
         else []
     )
     page_grouped_blocks = (
@@ -955,6 +1003,18 @@ def build_preprocessing_page_preview(
         for item in page_filtered
         if isinstance(item, dict) and element_category(item) == "Table"
     ]
+    page_images = [
+        _shape_element(item)
+        for item in page_filtered
+        if isinstance(item, dict) and element_category(item) in IMAGE_PREVIEW_CATEGORIES
+    ]
+    page_element_groups = _segregation_summary(
+        raw_elements=page_raw,
+        filtered_elements=page_filtered,
+        removed_elements=page_removed,
+        filter_report=filter_report,
+        prefer_filter_report=False,
+    )
 
     return {
         "job_id": str(Path(job_dir).name),
@@ -972,6 +1032,7 @@ def build_preprocessing_page_preview(
             if isinstance(item, dict)
         ],
         "tables": page_tables,
+        "images": page_images,
         "chunks": page_chunks,
         "removed_elements": [
             _shape_element(item)
@@ -979,11 +1040,14 @@ def build_preprocessing_page_preview(
             if isinstance(item, dict)
         ],
         "summary": {
+            "raw_elements": len(page_raw),
             "elements": len(page_filtered),
             "grouped_blocks": len(page_grouped_blocks),
             "tables": len(page_tables),
+            "images": len(page_images),
             "chunks": len(page_chunks),
             "removed_elements": len(page_removed),
             "page_count": page_count,
+            "element_groups": page_element_groups,
         },
     }

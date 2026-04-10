@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Eye,
   FileSearch,
+  ImageIcon,
   LayoutGrid,
   Loader2,
   RefreshCcw,
@@ -27,7 +28,7 @@ import type {
 import PreprocessingSourceViewerModal from "./PreprocessingSourceViewerModal";
 import TableInspectionModal from "./TableInspectionModal";
 
-type PreviewTab = "metadata" | "tables" | "chunks" | "removed";
+type PreviewTab = "metadata" | "tables" | "images" | "chunks" | "removed";
 
 interface Props {
   jobId: string | null;
@@ -54,6 +55,11 @@ function SummaryCard({
       <div className="mt-2 text-lg font-semibold text-white">{value}</div>
     </div>
   );
+}
+
+function formatSegmentationSummary(stage: Record<string, any> | null | undefined) {
+  const safe = stage && typeof stage === "object" ? stage : {};
+  return `Table ${Number(safe.table || 0)} | Text ${Number(safe.text || 0)} | Image ${Number(safe.image || 0)} | Other ${Number(safe.other || 0)}`;
 }
 
 export default function PreprocessingPreviewPanel({
@@ -89,11 +95,28 @@ export default function PreprocessingPreviewPanel({
     return Object.entries(breakdown) as Array<[string, number]>;
   }, [pagePreview, preview]);
 
+  const segregationSummary = useMemo(() => {
+    const raw =
+      (pagePreview?.summary?.element_groups?.raw as Record<string, any> | undefined) ||
+      (preview?.summary?.element_groups?.raw as Record<string, any> | undefined) ||
+      null;
+    const filtered =
+      (pagePreview?.summary?.element_groups?.filtered as Record<string, any> | undefined) ||
+      (preview?.summary?.element_groups?.filtered as Record<string, any> | undefined) ||
+      null;
+    const removed =
+      (pagePreview?.summary?.element_groups?.removed as Record<string, any> | undefined) ||
+      (preview?.summary?.element_groups?.removed as Record<string, any> | undefined) ||
+      null;
+    return { raw, filtered, removed };
+  }, [pagePreview, preview]);
+
   const activeElements =
     pagePreview && activeTab === "metadata"
       ? pagePreview.elements
       : preview?.metadata_evidence || [];
   const activeTables = pagePreview ? pagePreview.tables : preview?.tables || [];
+  const activeImages = pagePreview ? pagePreview.images : preview?.images || [];
   const activeChunks = pagePreview ? pagePreview.chunks : preview?.chunks || [];
   const activeRemoved = pagePreview ? pagePreview.removed_elements : preview?.removed_elements || [];
   const sourcePageRenderingAvailable =
@@ -117,6 +140,7 @@ export default function PreprocessingPreviewPanel({
   const tabs: Array<{ id: PreviewTab; label: string; icon: any }> = [
     { id: "metadata", label: "OCR Metadata", icon: ScanSearch },
     { id: "tables", label: "Tables", icon: TableProperties },
+    { id: "images", label: "Images", icon: ImageIcon },
     { id: "chunks", label: "Chunks", icon: Rows4 },
     { id: "removed", label: "Removed", icon: LayoutGrid },
   ];
@@ -303,7 +327,7 @@ export default function PreprocessingPreviewPanel({
             Preprocessing Preview
           </div>
           <p className="mt-1 text-xs text-blue-200/70">
-            Review what OCR, table extraction, filtering, and chunking produced before commit.
+            Review what OCR, table and figure extraction, filtering, and chunking produced before commit.
           </p>
           {preview ? (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
@@ -367,19 +391,42 @@ export default function PreprocessingPreviewPanel({
 
       {!loading && !error && !preview ? (
         <div className="mt-4 rounded-lg border border-white/10 bg-black/30 px-4 py-5 text-sm text-gray-300">
-          Load the preprocessing preview on demand if you want to inspect OCR elements, tables, and chunks before commit.
+          Load the preprocessing preview on demand if you want to inspect OCR elements, tables, images, and chunks before commit.
         </div>
       ) : null}
 
       {preview ? (
         <>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
             <SummaryCard label="Raw OCR Elements" value={preview.summary.raw_elements ?? 0} />
             <SummaryCard label="Filtered Elements" value={preview.summary.filtered_elements ?? 0} />
             <SummaryCard label="Removed Elements" value={preview.summary.removed_elements ?? 0} />
             <SummaryCard label="Tables" value={preview.summary.tables ?? 0} />
+            <SummaryCard label="Images" value={preview.summary.images ?? 0} />
             <SummaryCard label="Chunks" value={preview.summary.chunks ?? 0} />
           </div>
+
+          {(segregationSummary.raw || segregationSummary.filtered || segregationSummary.removed) ? (
+        <div className="mt-4 rounded-lg border border-white/10 bg-black/40 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-blue-300/60">
+                Element Segregation
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-3 text-xs text-gray-300">
+                <div className="rounded-md border border-white/10 bg-black/40 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500">Raw</div>
+                  <div className="mt-2 leading-6">{formatSegmentationSummary(segregationSummary.raw)}</div>
+                </div>
+                <div className="rounded-md border border-white/10 bg-black/40 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500">Filtered</div>
+                  <div className="mt-2 leading-6">{formatSegmentationSummary(segregationSummary.filtered)}</div>
+                </div>
+                <div className="rounded-md border border-white/10 bg-black/40 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500">Removed</div>
+                  <div className="mt-2 leading-6">{formatSegmentationSummary(segregationSummary.removed)}</div>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-4 rounded-lg border border-white/10 bg-black/40 p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -453,7 +500,7 @@ export default function PreprocessingPreviewPanel({
             ) : null}
             {!sourcePageRenderingAvailable ? (
               <div className="mt-3 text-xs text-amber-300">
-                Source page rendering is unavailable for this job because the local PDF was cleaned up after ingestion. Cached OCR elements, tables, and chunks are still available.
+                Source page rendering is unavailable for this job because the local PDF was cleaned up after ingestion. Cached OCR elements, tables, images, and chunks are still available.
               </div>
             ) : null}
             {pagePreview ? (
@@ -549,6 +596,16 @@ export default function PreprocessingPreviewPanel({
                   inspectTables: true,
                   sourcePageRenderingAvailable,
                 }
+              )
+            ) : null}
+
+            {activeTab === "images" ? (
+              renderElementRows(
+                activeImages,
+                pagePreview
+                  ? "No images or figure captions were retained for this page."
+                  : "No images or figure captions were retained from this document.",
+                { sourcePageRenderingAvailable }
               )
             ) : null}
 

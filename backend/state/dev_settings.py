@@ -55,7 +55,7 @@ _SETTINGS: Dict[str, Any] = {
     # RAG operating profiles
     "rag_ingest_mode": DEFAULT_RAG_MODE,  # fast | balanced | high_fidelity
     "rag_retrieval_mode": DEFAULT_RETRIEVAL_MODE_SETTING,  # auto | fast | balanced | high_fidelity
-    "rag_preprocessor": DEFAULT_RAG_PREPROCESSOR,  # unstructured | pypdf_text | pymupdf4llm | docling
+    "rag_preprocessor": DEFAULT_RAG_PREPROCESSOR,  # unstructured | pypdf_text | pymupdf4llm | docling | table_preprocessor
     "rag_collection_name": DEFAULT_RAG_COLLECTION_NAME,
     # Legacy key retained for backward compatibility with older UI builds.
     "rag_mode": DEFAULT_RAG_MODE,  # deprecated

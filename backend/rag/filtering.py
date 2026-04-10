@@ -5,6 +5,7 @@ from collections import Counter, defaultdict
 from io import StringIO
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from backend.rag.element_segmentation import build_stage_segregation_summary
 from backend.rag.table_normalization import (
     extract_explicit_table_signals,
     filter_normalized_table_rows,
@@ -24,18 +25,20 @@ KEEP_CATEGORIES = [
     "Table",
     "ListItem",
     "UncategorizedText",
+    "Image",
+    "Picture",
+    "FigureCaption",
 ]
 
 DISCARD_CATEGORIES = [
     "Header",
     "Footer",
-    "Image",
-    "Picture",
-    "FigureCaption",
     "Caption",
     "PageBreak",
     "PageNumber",
 ]
+
+IMAGE_CATEGORIES = {"Image", "Picture", "FigureCaption"}
 
 MIN_TEXT_LENGTH = 3
 HEADER_FOOTER_REPEAT_MIN_PAGES = 3
@@ -58,7 +61,7 @@ _PAGE_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 _IMAGE_PLACEHOLDER_RE = re.compile(
-    r"(?:picture|image)\s*\[\d+\s*x\s*\d+\].*?(?:omitted|placeholder)|"
+    r"(?:picture|image)\s*\[?\d+\s*x\s*\d+\]?.*?(?:omitted|placeholder)|"
     r"start of picture text|end of picture text",
     re.IGNORECASE,
 )
@@ -253,6 +256,10 @@ def _is_layout_band(vertical_ratio: Optional[float]) -> bool:
     )
 
 
+def _is_image_category(category: str) -> bool:
+    return str(category or "").strip() in IMAGE_CATEGORIES
+
+
 def _looks_like_page_marker(clean_text: str) -> bool:
     return bool(_PAGE_MARKER_RE.search(clean_text))
 
@@ -286,6 +293,28 @@ def _safe_text(value: Any) -> str:
     except Exception:
         pass
     return str(value).strip()
+
+
+def _has_visual_payload(element: Dict[str, Any]) -> bool:
+    metadata = element.get("metadata") if isinstance(element, dict) else None
+    if not isinstance(metadata, dict):
+        return False
+
+    if _extract_points(metadata):
+        return True
+
+    for key in (
+        "image_path",
+        "image_base64",
+        "image_mime_type",
+        "image_url",
+        "image_filename",
+    ):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+
+    return False
 
 
 def _flatten_column_label(label: Any, index: int) -> str:
@@ -436,6 +465,8 @@ def _build_fragment_indexes(
 def _is_nearby_text_candidate(element: Dict[str, Any]) -> bool:
     category = element_category(element)
     if category == "Table":
+        return False
+    if _is_image_category(category):
         return False
 
     clean_text = _normalized_text(element_text(element))
@@ -888,6 +919,7 @@ def _build_repeat_index(elements: Iterable[Dict[str, Any]]) -> Dict[str, Set[int
 
 def _discard_reason(
     *,
+    element: Dict[str, Any],
     category: str,
     text: str,
     repeat_page_count: int,
@@ -899,11 +931,18 @@ def _discard_reason(
     if category in DISCARD_CATEGORIES:
         return category or "Unknown"
 
-    if category in KEEP_CATEGORIES and len(clean_text) < MIN_TEXT_LENGTH:
-        return f"Too Short (<{MIN_TEXT_LENGTH} chars)"
-
     if _looks_like_image_placeholder(clean_text):
         return "Image Placeholder"
+
+    if _is_image_category(category):
+        if _has_visual_payload(element):
+            return None
+        if clean_text:
+            return None if len(clean_text) >= MIN_TEXT_LENGTH else f"Too Short (<{MIN_TEXT_LENGTH} chars)"
+        return "Empty Image / Figure"
+
+    if category in KEEP_CATEGORIES and len(clean_text) < MIN_TEXT_LENGTH:
+        return f"Too Short (<{MIN_TEXT_LENGTH} chars)"
 
     if _looks_like_page_marker(clean_text):
         return "Page Marker"
@@ -966,6 +1005,7 @@ def filter_element_dicts(elements: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         table_row_count, table_column_count = _table_dimensions(text, metadata) if category == "Table" else (0, 0)
 
         reason = _discard_reason(
+            element=element,
             category=category,
             text=text,
             repeat_page_count=repeat_page_count,
@@ -1022,6 +1062,11 @@ def filter_element_dicts(elements: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "discard_categories": list(DISCARD_CATEGORIES),
         "min_text_length": MIN_TEXT_LENGTH,
         "repeat_header_footer_min_pages": HEADER_FOOTER_REPEAT_MIN_PAGES,
+        "element_groups": build_stage_segregation_summary(
+            raw_elements=source_elements,
+            filtered_elements=filtered_elements,
+            removed_elements=removed_elements,
+        ),
     }
 
     return {

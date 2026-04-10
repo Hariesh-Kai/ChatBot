@@ -108,6 +108,8 @@ def _default_extraction_source(
 
     if preprocessor == "pymupdf4llm":
         return "pymupdf"
+    if preprocessor == "table_preprocessor":
+        return "table_preprocessor"
     if preprocessor == "docling":
         return "docling"
     if preprocessor == "pypdf_text":
@@ -529,7 +531,11 @@ def enrich_chunks(
         doc_id = str(base_meta.get("doc_id") or parent_id or "").strip() or None
         element_type = str(
             base_meta.get("element_type")
-            or ("Table" if chunk_type in {"parent", "child"} else "NarrativeText")
+            or (
+                "Table"
+                if chunk_type in {"parent", "child"}
+                else "Image" if chunk_type == "image" else "NarrativeText"
+            )
         ).strip() or "NarrativeText"
         extraction_source = str(
             base_meta.get("extraction_source")

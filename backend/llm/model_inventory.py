@@ -434,6 +434,16 @@ def build_model_inventory() -> Dict[str, Any]:
                 module_name="docling",
                 note=preprocessor_notes.get("docling", "Docling preprocessor."),
             ),
+            _package_entry(
+                asset_id="preprocessor_table_preprocessor",
+                component="table_preprocessor",
+                label="Table Preprocessor",
+                module_name="backend.rag.table_preprocessor",
+                note=preprocessor_notes.get(
+                    "table_preprocessor",
+                    "Docling-backed table-focused extraction and cleanup.",
+                ),
+            ),
         ]
     )
 

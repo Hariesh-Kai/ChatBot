@@ -52,6 +52,7 @@ interface RecentUploadJob {
   rag_preprocessor?: string | null;
   rag_ingest_mode?: string | null;
   rag_collection_name?: string | null;
+  segregation_summary?: Record<string, any> | null;
   preview_available?: boolean;
   artifact_only_preview?: boolean;
   preview_unavailable_reason?: string | null;
@@ -67,6 +68,12 @@ function canAccessDeveloperDashboard(role?: string) {
     normalized === "pipe_lead" ||
     normalized === "pipe_stress_engineer"
   );
+}
+
+function formatSegmentationSnapshot(summary?: Record<string, any> | null) {
+  const filtered = summary && typeof summary === "object" ? summary.filtered : null;
+  if (!filtered || typeof filtered !== "object") return null;
+  return `T ${Number(filtered.table || 0)} | Text ${Number(filtered.text || 0)} | Img ${Number(filtered.image || 0)} | Other ${Number(filtered.other || 0)}`;
 }
 
 export default function DashboardPage() {
@@ -1756,8 +1763,8 @@ export default function DashboardPage() {
             <Card title="Preview Loader">
               <div className="text-xs text-gray-400 mb-3">
                 Open a document preprocessing preview from a recent upload job. This shows OCR elements,
-                extracted tables, removed headers and footers, and the chunks that will be indexed.
-                The dashboard loads the full preview so you can inspect all detected tables for the selected upload.
+                extracted tables and figures, removed headers and footers, and the chunks that will be indexed.
+                The dashboard loads the full preview so you can inspect all detected tables and images for the selected upload.
               </div>
               <label className="block text-xs text-gray-400 mb-2">Upload Job ID</label>
               <div className="flex gap-2">
@@ -1779,7 +1786,7 @@ export default function DashboardPage() {
                   disabled={preprocessingPreviewLoading}
                   className="shrink-0 rounded bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
                 >
-                  Open All Tables
+                  Open Full Preview
                 </button>
               </div>
               {selectedPreprocessingJob ? (
@@ -1795,6 +1802,9 @@ export default function DashboardPage() {
                     <div>Preprocessor: {selectedPreprocessingJob.rag_preprocessor || "unknown"}</div>
                     <div>Ingest mode: {selectedPreprocessingJob.rag_ingest_mode || "unknown"}</div>
                     <div>Collection: {selectedPreprocessingJob.rag_collection_name || "rag_documents"}</div>
+                    {formatSegmentationSnapshot(selectedPreprocessingJob.segregation_summary) ? (
+                      <div>Filtered groups: {formatSegmentationSnapshot(selectedPreprocessingJob.segregation_summary)}</div>
+                    ) : null}
                   </div>
                 </div>
               ) : null}
@@ -1803,7 +1813,7 @@ export default function DashboardPage() {
             <Card title="Recent Upload Jobs" className="max-h-[75vh] overflow-hidden">
               <div className="flex items-center justify-between gap-3 mb-3">
                 <div className="text-xs text-gray-400">
-                  Pick a recent upload to inspect how table extraction and cleanup behaved.
+                  Pick a recent upload to inspect how table, figure, and cleanup extraction behaved.
                 </div>
                 <button
                   type="button"
@@ -1856,6 +1866,9 @@ export default function DashboardPage() {
                         <div className="mt-3 space-y-1 text-[11px] text-gray-400">
                           <div>Document: {job.company_document_id || "n/a"} / rev {job.revision_number || "n/a"}</div>
                           <div>Parser: {job.rag_preprocessor || "unknown"} / {job.rag_ingest_mode || "unknown"}</div>
+                          {formatSegmentationSnapshot(job.segregation_summary) ? (
+                            <div>Filtered groups: {formatSegmentationSnapshot(job.segregation_summary)}</div>
+                          ) : null}
                           <div>
                             Updated: {job.updated_at ? new Date(job.updated_at).toLocaleString() : "n/a"}
                           </div>
@@ -1883,7 +1896,7 @@ export default function DashboardPage() {
                             disabled={!job.preview_available || preprocessingPreviewLoading}
                             className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            Open all tables
+                            Open full preview
                           </button>
                         </div>
                       </div>
@@ -1896,13 +1909,14 @@ export default function DashboardPage() {
 
           <div className="lg:col-span-2 space-y-6">
             <Card title="What You Can Inspect">
-              <div className="text-gray-300 space-y-3 text-sm leading-relaxed">
-                <div><span className="text-white font-medium">Tables</span> show the OCR text, structured HTML, row and column counts, and a cropped image of the detected table area.</div>
-                <div><span className="text-white font-medium">OCR Metadata</span> shows the elements and evidence used for metadata extraction.</div>
-                <div><span className="text-white font-medium">Removed Elements</span> shows headers, footers, page markers, image placeholders, and repeated boilerplate that were filtered out before chunking.</div>
-                <div><span className="text-white font-medium">Chunks</span> shows the final text blocks that are prepared for indexing after preprocessing cleanup.</div>
-              </div>
-            </Card>
+                <div className="text-gray-300 space-y-3 text-sm leading-relaxed">
+                  <div><span className="text-white font-medium">Tables</span> show the OCR text, structured HTML, row and column counts, and a cropped image of the detected table area.</div>
+                  <div><span className="text-white font-medium">Images</span> show retained figure regions and figure captions that now flow into their own retrieval lane.</div>
+                  <div><span className="text-white font-medium">OCR Metadata</span> shows the elements and evidence used for metadata extraction.</div>
+                  <div><span className="text-white font-medium">Removed Elements</span> shows headers, footers, page markers, image placeholders, and repeated boilerplate that were filtered out before chunking.</div>
+                  <div><span className="text-white font-medium">Chunks</span> shows the final text, table, and image blocks that are prepared for indexing after preprocessing cleanup.</div>
+                </div>
+              </Card>
 
             {selectedPreprocessingJobId ? (
               <PreprocessingPreviewPanel
@@ -1925,7 +1939,7 @@ export default function DashboardPage() {
             ) : (
               <Card title="Preprocessing Preview">
                 <div className="text-gray-400">
-                  Select a recent upload job or paste a job ID to inspect table extraction and preprocessing output.
+                  Select a recent upload job or paste a job ID to inspect table, figure, and preprocessing output.
                 </div>
               </Card>
             )}

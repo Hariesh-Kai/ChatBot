@@ -358,6 +358,7 @@ class PreprocessingPreviewResponse(BaseModel):
     metadata_candidates: Dict[str, Dict[str, object]]
     metadata_evidence: List[Dict[str, object]]
     tables: List[Dict[str, object]]
+    images: List[Dict[str, object]]
     chunks: List[Dict[str, object]]
     removed_elements: List[Dict[str, object]]
     summary: Dict[str, object]

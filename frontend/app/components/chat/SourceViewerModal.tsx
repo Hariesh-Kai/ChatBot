@@ -102,6 +102,8 @@ function SourcePage({ source, zoom }: { source: RagSource, zoom: number }) {
             ? "Table"
             : source.chunk_type === "child"
                 ? "Table Row"
+                : source.chunk_type === "image"
+                    ? "Image"
                 : source.chunk_type === "text"
                     ? "Text"
                     : "";

@@ -317,6 +317,38 @@ class ChunkingTests(unittest.TestCase):
         self.assertIn("section", parent_chunks[0])
         self.assertIn("page_number", parent_chunks[0])
 
+    def test_image_elements_become_image_chunks_with_attached_figure_captions(self) -> None:
+        chunks = _run_chunker(
+            [
+                {
+                    "type": "Title",
+                    "text": "Process Overview",
+                    "metadata": {"page_number": 1},
+                },
+                {
+                    "type": "Image",
+                    "text": "",
+                    "metadata": {
+                        "page_number": 1,
+                        "bbox": [[0, 0], [120, 0], [120, 90], [0, 90]],
+                    },
+                },
+                {
+                    "type": "FigureCaption",
+                    "text": "Figure 1. Process flow diagram",
+                    "metadata": {"page_number": 1},
+                },
+            ]
+        )
+
+        image_chunks = [item for item in chunks if (item.get("metadata") or {}).get("type") == "image"]
+
+        self.assertEqual(len(image_chunks), 1)
+        self.assertEqual(image_chunks[0]["chunk_type"], "image")
+        self.assertEqual(image_chunks[0]["metadata"]["element_type"], "Image")
+        self.assertEqual(image_chunks[0]["metadata"]["section"], "Process Overview")
+        self.assertIn("Process flow diagram", image_chunks[0]["content"])
+
     def test_grouped_blocks_become_text_source_when_provided(self) -> None:
         payload = [
             {

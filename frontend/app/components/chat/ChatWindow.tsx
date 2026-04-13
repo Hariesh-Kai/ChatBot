@@ -136,6 +136,7 @@ interface ChatWindowProps {
   onModelChange?: (model: ChatUIModelId) => void;
   metadataActive?: boolean;
   uploadCancelState?: {
+    messageId: string;
     label: string;
     phase: "metadata" | "preprocessing" | "ingestion";
   } | null;
@@ -1213,10 +1214,10 @@ useEffect(() => {
                             const assistantLabel =
                               SAFE_MODELS.find((item) => item.id === assistantModel)?.label ??
                               modelLabel;
+                            const uploadMessageId = uploadCancelState?.messageId ?? null;
                             const uploadBubbleActive =
-                              Boolean(uploadCancelState) &&
-                              uploadCancelState.chatId === sessionId &&
-                              m.id === uploadProgressMsgIdRef.current;
+                              uploadMessageId !== null &&
+                              m.id === uploadMessageId;
                             return (
                                 <MessageBubble
                                   key={m.id}

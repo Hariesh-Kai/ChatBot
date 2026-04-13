@@ -2257,3 +2257,55 @@ def inspect_session(session_id: str):
         "active_topic": redis_topic,
         "used_chunk_ids_count": len(redis_chunks),
     }
+
+
+# ============================================================
+# NUCLEAR RESET HELPERS
+# ============================================================
+
+class SimpleConfirmRequest(BaseModel):
+    confirm: str
+
+
+@router.post('/reset/queue')
+def reset_queue(req: SimpleConfirmRequest, _: User = Depends(require_admin)):
+    _require_destructive_enabled()
+    _require_reset_confirm(req.confirm)
+    purged = 0
+    error = None
+    try:
+        from backend.queue.celery_app import celery_app as _celery_app
+        if _celery_app is not None:
+            result = _celery_app.control.purge()
+            purged = int(result or 0)
+    except Exception as exc:
+        error = str(exc)
+        logger.warning('Queue purge failed: %s', exc)
+    return {'ok': error is None, 'purged': purged, 'error': error}
+
+
+@router.post('/reset/tmp')
+def reset_tmp(req: SimpleConfirmRequest, _: User = Depends(require_admin)):
+    _require_destructive_enabled()
+    _require_reset_confirm(req.confirm)
+    project_root = Path(__file__).resolve().parents[2]
+    targets = [
+        project_root / 'backend' / 'tmp' / 'jobs',
+        project_root / 'backend' / 'storage' / 'uploads',
+    ]
+    deleted = 0
+    errors = []
+    for folder in targets:
+        if not folder.exists():
+            continue
+        for child in folder.iterdir():
+            try:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+                deleted += 1
+            except Exception as exc:
+                errors.append(f'{child.name}: {exc}')
+    return {'ok': len(errors) == 0, 'deleted': deleted, 'errors': errors}
+

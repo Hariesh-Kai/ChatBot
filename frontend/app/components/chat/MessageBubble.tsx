@@ -128,10 +128,11 @@ export default function MessageBubble({
         lower.includes("upload") || lower.includes("backing up")
           ? "uploading"
           : "processing";
+      const cancelPhase = uploadCancelState?.phase ?? null;
       const showStopAction =
         Boolean(onCancelUpload) &&
-        Boolean(uploadCancelState) &&
-        uploadCancelState.phase !== "metadata";
+        cancelPhase !== null &&
+        cancelPhase !== "metadata";
 
       return (
         <div className="w-full py-2">

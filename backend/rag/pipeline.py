@@ -413,19 +413,21 @@ def run_pipeline(
         f"{chunk_config.doc_type} size={chunk_config.chunk_size} overlap={chunk_config.chunk_overlap}"
     )
 
-    chunker = ContextAwareChunker(
-        chunk_size=chunk_config.chunk_size,
-        chunk_overlap=chunk_config.chunk_overlap,
-    )
-    _check_cancel(extra_metadata)
+    if not chunks_path.exists():
+        chunker = ContextAwareChunker(
+            chunk_size=chunk_config.chunk_size,
+            chunk_overlap=chunk_config.chunk_overlap,
+        )
+        _check_cancel(extra_metadata)
     yield  progress_event(value=30, label="Chunking document…")
 
-    chunker.process(
-        input_file=str(elements_path),
-        output_file=str(chunks_path),
-        grouped_blocks_file=str(grouped_blocks_path) if grouped_blocks_path.exists() else None,
-    )
-    _check_cancel(extra_metadata)
+    if not chunks_path.exists():
+        chunker.process(
+            input_file=str(elements_path),
+            output_file=str(chunks_path),
+            grouped_blocks_file=str(grouped_blocks_path) if grouped_blocks_path.exists() else None,
+        )
+        _check_cancel(extra_metadata)
 
     if not chunks_path.exists():
         raise RuntimeError("Chunking failed: chunks.json not created")
@@ -434,15 +436,18 @@ def run_pipeline(
     # 3️⃣ METADATA ENRICHMENT (AUTHORITATIVE)
     # --------------------------------------------------
     yield progress_event(value=45, label="Enriching chunks with metadata…")
-    _check_cancel(extra_metadata)
-    enrich_chunks(
-        chunks_file=str(chunks_path),
-        output_file=str(enriched_path),
-        pdf_path=pdf_path,
-        company_document_id=company_document_id,
-        extra_metadata=extra_metadata,
-    )
-    _check_cancel(extra_metadata)
+    if not enriched_path.exists():
+        _check_cancel(extra_metadata)
+        enrich_chunks(
+            chunks_file=str(chunks_path),
+            output_file=str(enriched_path),
+            pdf_path=pdf_path,
+            company_document_id=company_document_id,
+            extra_metadata=extra_metadata,
+        )
+        _check_cancel(extra_metadata)
+    else:
+        print(f"[PIPELINE] Reusing existing enriched chunks: {enriched_path}")
 
     if not enriched_path.exists():
         raise RuntimeError("Metadata enrichment failed")

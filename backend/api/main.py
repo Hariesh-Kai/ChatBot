@@ -66,6 +66,7 @@ from backend.storage.minio_outbox import (
     stop_outbox_worker,
 )
 from backend.queue.celery_app import is_celery_enabled, use_celery_for_outbox
+from backend.rag.commit_worker import recover_stale_commit_jobs
 from backend.runtime_status import get_rabbitmq_status
 
 
@@ -120,6 +121,18 @@ async def startup_event():
 
     if is_celery_enabled():
         print("[STARTUP] Celery mode enabled. Commit jobs will run on RabbitMQ workers.")
+
+    try:
+        recovery = recover_stale_commit_jobs()
+        if recovery.get("recovered"):
+            print(
+                "[STARTUP] Resumed stale commit jobs | "
+                f"recovered={recovery.get('recovered', 0)} "
+                f"skipped={recovery.get('skipped', 0)} "
+                f"failed={recovery.get('failed', 0)}"
+            )
+    except Exception as e:
+        print(f"[STARTUP] Commit recovery failed: {e}")
 
 
 @app.on_event("shutdown")

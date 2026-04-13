@@ -198,6 +198,58 @@ def get_latest_job_run_for_session(session_id: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def list_job_runs(
+    *,
+    status: Optional[str] = None,
+    older_than_seconds: Optional[int] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    init_job_runs_table()
+
+    safe_limit = max(1, int(limit or 50))
+    filters: List[str] = []
+    params: List[Any] = []
+
+    if status:
+        filters.append("status = %s")
+        params.append(str(status).strip().upper())
+
+    if older_than_seconds is not None:
+        safe_age = max(0, int(older_than_seconds))
+        filters.append("updated_at <= NOW() - (%s * INTERVAL '1 second')")
+        params.append(safe_age)
+
+    where_sql = ""
+    if filters:
+        where_sql = "WHERE " + " AND ".join(filters)
+
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    job_id,
+                    session_id,
+                    status,
+                    progress,
+                    progress_label,
+                    error,
+                    metadata,
+                    missing_fields,
+                    created_at,
+                    updated_at
+                FROM {_TABLE}
+                {where_sql}
+                ORDER BY updated_at DESC
+                LIMIT %s;
+                """,
+                (*params, safe_limit),
+            )
+            rows = cur.fetchall() or []
+
+    return [dict(row) for row in rows]
+
+
 def delete_job_run(job_id: str) -> None:
     init_job_runs_table()
     clean_job_id = (job_id or "").strip()

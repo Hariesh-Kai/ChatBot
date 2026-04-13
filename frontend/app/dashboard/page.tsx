@@ -155,6 +155,9 @@ export default function DashboardPage() {
   const [resetBusy, setResetBusy] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetResult, setResetResult] = useState<any>(null);
+  const [nuclearBusy, setNuclearBusy] = useState(false);
+  const [nuclearResult, setNuclearResult] = useState<string | null>(null);
+  const [nuclearError, setNuclearError] = useState<string | null>(null);
 
   // --- Users State ---
   const [usersData, setUsersData] = useState<any>(null);
@@ -1124,6 +1127,110 @@ export default function DashboardPage() {
       setResetError(e?.message || "Reset failed");
     } finally {
       setResetBusy(false);
+    }
+  }
+
+  async function runNuclearReset() {
+    if (!window.confirm(
+      "⚠️ NUCLEAR RESET\n\nThis will permanently delete:\n" +
+      "• All PostgreSQL data (RAG vectors, chat history, jobs, outbox)\n" +
+      "• All MinIO files\n" +
+      "• All Redis keys\n" +
+      "• All RabbitMQ queued tasks\n" +
+      "• All backend tmp/job cache files\n" +
+      "• Browser localStorage (chats, pending uploads)\n\n" +
+      "Type OK to confirm."
+    )) return;
+
+    setNuclearBusy(true);
+    setNuclearError(null);
+    setNuclearResult(null);
+    const log: string[] = [];
+
+    try {
+      // 1. Server-side: wipe all DB + MinIO + Redis via existing endpoint
+      try {
+        const res = await fetch(`${API_BASE}/devtools/reset/all`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            confirm: "DELETE_EVERYTHING",
+            wipe_redis_all: true,
+            minio_bucket: resetBucket || undefined,
+          }),
+        });
+        if (res.ok) {
+          log.push("✅ Server: PostgreSQL + MinIO + Redis wiped");
+        } else {
+          const detail = await res.text();
+          log.push(`⚠️ Server reset: ${detail.slice(0, 120)}`);
+        }
+      } catch (e: any) {
+        log.push(`❌ Server reset failed: ${e?.message}`);
+      }
+
+      // 2. Purge RabbitMQ queue via Celery purge endpoint
+      try {
+        const res = await fetch(`${API_BASE}/devtools/reset/queue`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ confirm: "DELETE_EVERYTHING" }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          log.push(`✅ RabbitMQ: ${data?.purged ?? 0} tasks purged`);
+        } else {
+          log.push("⚠️ RabbitMQ purge: endpoint not available (purge manually)");
+        }
+      } catch {
+        log.push("⚠️ RabbitMQ purge: endpoint not available (purge manually)");
+      }
+
+      // 3. Clear backend tmp/jobs via dedicated endpoint
+      try {
+        const res = await fetch(`${API_BASE}/devtools/reset/tmp`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ confirm: "DELETE_EVERYTHING" }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          log.push(`✅ Backend tmp: ${data?.deleted ?? 0} job folders removed`);
+        } else {
+          log.push("⚠️ Backend tmp: endpoint not available");
+        }
+      } catch {
+        log.push("⚠️ Backend tmp: endpoint not available");
+      }
+
+      // 4. Clear browser localStorage
+      try {
+        const localKeys = [
+          "chat-ui-chats",
+          "chat-ui-pending-ingestion",
+          "pml-ui-chats",
+          "chat-ui-active-id",
+        ];
+        localKeys.forEach((k) => {
+          try { localStorage.removeItem(k); } catch { /* ignore */ }
+        });
+        log.push("✅ Browser localStorage: cleared");
+      } catch {
+        log.push("⚠️ Browser localStorage: could not clear");
+      }
+
+      setNuclearResult(log.join("\n"));
+
+      // Reload after short delay so fresh state loads
+      setTimeout(() => { window.location.href = "/"; }, 2000);
+
+    } catch (e: any) {
+      setNuclearError(e?.message || "Nuclear reset failed");
+    } finally {
+      setNuclearBusy(false);
     }
   }
 
@@ -2899,6 +3006,32 @@ export default function DashboardPage() {
                 </div>
                 <div className="text-xs text-gray-200/80 mt-1">RAG DB + Chat DB + Redis + MinIO</div>
               </button>
+
+              {/* NUCLEAR RESET */}
+              <div className="mt-6 rounded-xl border-2 border-orange-500/50 bg-orange-500/5 p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-lg">☢️</span>
+                  <span className="text-orange-200 font-bold text-sm">Nuclear Reset</span>
+                  <span className="ml-auto rounded bg-orange-500/20 px-2 py-0.5 text-[11px] text-orange-300">One-Click Full Wipe</span>
+                </div>
+                <div className="text-xs text-gray-400 mb-3">
+                  Wipes <strong className="text-white">everything</strong> in one shot — PostgreSQL (all tables), MinIO files, Redis keys, RabbitMQ queued tasks, backend tmp/job cache, and browser localStorage. Redirects to home after completion.
+                </div>
+                {nuclearResult && (
+                  <pre className="mb-3 rounded border border-orange-500/20 bg-black/40 p-3 text-xs text-orange-200 whitespace-pre-wrap">{nuclearResult}</pre>
+                )}
+                {nuclearError && (
+                  <div className="mb-3 rounded border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">{nuclearError}</div>
+                )}
+                <button
+                  id="nuclear-reset-btn"
+                  disabled={nuclearBusy}
+                  onClick={runNuclearReset}
+                  className="w-full rounded-lg border border-orange-500/60 bg-orange-600/30 hover:bg-orange-600/50 px-4 py-3 text-center font-bold text-orange-100 disabled:opacity-50 transition-all duration-150 active:scale-95"
+                >
+                  {nuclearBusy ? "☢️ Wiping everything..." : "☢️ NUCLEAR RESET — Wipe All Data & Reload"}
+                </button>
+              </div>
             </Card>
 
             <Card title="Result" className="h-auto">

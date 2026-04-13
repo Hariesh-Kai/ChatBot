@@ -19,6 +19,14 @@ function normalizeMessage(raw: any): Message {
     rawModel === "lite" || rawModel === "base" || rawModel === "net"
       ? rawModel
       : undefined;
+  const safeProgress =
+    safeStatus === "progress" && typeof raw?.progress === "number"
+      ? Math.max(0, Math.min(100, Math.round(raw.progress)))
+      : undefined;
+  const safeProgressLabel =
+    safeStatus === "progress" && typeof raw?.progressLabel === "string"
+      ? raw.progressLabel
+      : undefined;
 
   return {
     id: raw?.id ?? crypto.randomUUID(),
@@ -29,8 +37,8 @@ function normalizeMessage(raw: any): Message {
     status: safeStatus,
     edited: Boolean(raw?.edited),
     regenerated: Boolean(raw?.regenerated),
-    // Ensure progress is cleared on load if it was stuck
-    progress: undefined, 
+    progress: safeProgress,
+    progressLabel: safeProgressLabel,
   };
 }
 

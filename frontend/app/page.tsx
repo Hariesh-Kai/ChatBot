@@ -16,6 +16,10 @@ import { ChatSession, Message } from "@/app/lib/types";
 import { ChatUIModelId } from "@/app/lib/chat-ui-models";
 import { loadChats, saveChats } from "@/app/lib/chat-store";
 import { loadPmlChats, savePmlChats } from "@/app/lib/pml-chat-store";
+import {
+  loadPendingIngestionItems,
+  savePendingIngestionItems,
+} from "@/app/lib/pending-ingestion-store";
 import { authLogout, authMe, cancelUploadJob, updateMetadata } from "@/app/lib/api";
 import type { AuthUser, UploadIngestionStatusResponse } from "@/app/lib/api";
 import {
@@ -445,6 +449,7 @@ function AuthedHome({
   const uploadProgressMsgIdRef = useRef<string | null>(null);
   const uploadFileNameRef = useRef<string | null>(null);
   const metadataSubmitControllerRef = useRef<AbortController | null>(null);
+  const pendingIngestionRestoredRef = useRef(false);
   
   
   const createNewChat = useCallback(() => {
@@ -512,6 +517,11 @@ function AuthedHome({
     if (!aiChatsLoaded) return;
     saveChats(chats);
   }, [chats, aiChatsLoaded]);
+
+  useEffect(() => {
+    if (!aiChatsLoaded || !pendingIngestionRestoredRef.current) return;
+    savePendingIngestionItems(pendingIngestion);
+  }, [pendingIngestion, aiChatsLoaded]);
 
   useEffect(() => {
     setPmlChatsLoaded(false);
@@ -663,6 +673,57 @@ function AuthedHome({
     });
   }, [chats]);
 
+  useEffect(() => {
+    if (!aiChatsLoaded || pendingIngestionRestoredRef.current) return;
+    pendingIngestionRestoredRef.current = true;
+
+    const restored = loadPendingIngestionItems();
+    if (restored.length === 0) return;
+
+    const chatIds = new Set(chats.map((chat) => chat.id));
+    const validItems = restored.filter((item) => chatIds.has(item.chatId));
+    if (validItems.length === 0) return;
+
+    setChats((prev) =>
+      prev.map((chat) => {
+        const chatItems = validItems.filter((item) => item.chatId === chat.id);
+        if (chatItems.length === 0) return chat;
+
+        let nextMessages = chat.messages;
+        let changed = false;
+
+        for (const item of chatItems) {
+          if (nextMessages.some((message) => message.id === item.messageId)) continue;
+          changed = true;
+          nextMessages = [
+            ...nextMessages,
+            {
+              id: item.messageId,
+              role: "assistant",
+              content: "",
+              createdAt: Date.now(),
+              status: "progress",
+              progressLabel: DOC_PROCESSING_BACKGROUND_TEXT,
+            },
+          ];
+        }
+
+        return changed ? { ...chat, messages: nextMessages } : chat;
+      })
+    );
+
+    setPendingIngestion((prev) => {
+      const seen = new Set(prev.map((item) => item.id));
+      const merged = [...prev];
+      for (const item of validItems) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        merged.push(item);
+      }
+      return merged;
+    });
+  }, [aiChatsLoaded, chats]);
+
   /* ================= DEV SETTINGS (ON-DEMAND) ================= */
   const loadDevSettings = useCallback(async () => {
     try {
@@ -684,6 +745,47 @@ function AuthedHome({
     const seen = window.localStorage.getItem("chat_ui_onboarding_seen");
     if (!seen) setShowGettingStarted(true);
   }, []);
+
+  useEffect(() => {
+    if (!aiChatsLoaded) return;
+
+    const preferredItem =
+      pendingIngestion.find((item) => item.chatId === activeId) ?? pendingIngestion[0];
+
+    if (!preferredItem?.jobId) {
+      setUploadCancelState((prev) =>
+        prev && prev.phase === "ingestion" ? null : prev
+      );
+      return;
+    }
+
+    const chat = chats.find((entry) => entry.id === preferredItem.chatId);
+    const message = chat?.messages.find((entry) => entry.id === preferredItem.messageId);
+    const preferredJobId = preferredItem.jobId;
+    const label =
+      (message?.progressLabel || "").trim() || DOC_PROCESSING_BACKGROUND_TEXT;
+
+    setUploadCancelState((prev) => {
+      if (
+        prev &&
+        prev.phase === "ingestion" &&
+        prev.chatId === preferredItem.chatId &&
+        prev.messageId === preferredItem.messageId &&
+        prev.jobId === preferredItem.jobId &&
+        prev.label === label
+      ) {
+        return prev;
+      }
+
+      return {
+        chatId: preferredItem.chatId,
+        messageId: preferredItem.messageId,
+        jobId: preferredJobId,
+        label,
+        phase: "ingestion",
+      };
+    });
+  }, [activeId, aiChatsLoaded, chats, pendingIngestion]);
 
   useEffect(() => {
     const handler = (e: StorageEvent) => {
@@ -2279,6 +2381,7 @@ useEffect(() => {
                 uploadCancelState={
                   uploadCancelState && uploadCancelState.chatId === activeChat.id
                     ? {
+                        messageId: uploadCancelState.messageId,
                         label: uploadCancelState.label,
                         phase: uploadCancelState.phase,
                       }

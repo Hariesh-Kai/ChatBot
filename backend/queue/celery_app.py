@@ -98,6 +98,17 @@ if Celery is not None:
         worker_concurrency=default_concurrency,
         task_default_queue=(os.getenv("CELERY_DEFAULT_QUEUE") or "chatui.default"),
         beat_schedule=_beat_schedule(),
+        # RabbitMQ connection resilience settings
+        broker_connection_retry_on_startup=True,
+        broker_connection_retry=True,
+        broker_connection_max_retries=5,
+        broker_connection_retry_delay=5,
+        broker_heartbeat=60,
+        broker_use_ssl=False,
+        task_soft_time_limit=3600,
+        task_time_limit=7200,
+        worker_disable_rate_limits=False,
+        task_reject_on_worker_lost=True,
     )
     celery_app.autodiscover_tasks(["backend.queue"])
 else:  # pragma: no cover

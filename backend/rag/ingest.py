@@ -2,6 +2,8 @@
 
 import os
 import json
+import threading
+import time
 from typing import List, Dict, Any, Callable, Optional
 
 import psycopg2
@@ -18,6 +20,8 @@ from backend.rag.collections import (
 from backend.rag.upload_cancellation import UploadCancellationError
 
 COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
+_EMBEDDINGS_LOCK = threading.Lock()
+_EMBEDDINGS_CLIENT: Optional[HuggingFaceEmbeddings] = None
 
 # ============================================================
 # INTERNAL HELPERS
@@ -28,14 +32,59 @@ def _normalize_conn(conn: str) -> str:
         raise RuntimeError("DB connection string is required")
     return conn.replace("postgresql+psycopg2://", "postgresql://")
 
+
+def _safe_int(value: str, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _resolve_embedding_device() -> str:
+    configured = str(os.getenv("RAG_EMBEDDING_DEVICE", "auto")).strip().lower()
+    if configured in {"cpu", "cuda"}:
+        return configured
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _resolve_embedding_batch_size(device: str) -> int:
+    # Conservative defaults to avoid OOM on large docs.
+    default = 32 if device == "cuda" else 8
+    return max(1, _safe_int(os.getenv("RAG_EMBEDDING_BATCH_SIZE", str(default)), default))
+
 def _get_embeddings() -> HuggingFaceEmbeddings:
-    # Matches backend/api/chat.py and forces local cache usage.
-    return HuggingFaceEmbeddings(
-        model_name=require_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3"),
-        cache_folder=str(HF_CACHE_DIR),
-        model_kwargs={"device": "cpu", "local_files_only": True},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    # Reuse a single embedding client process-wide.
+    # Re-initializing this for every commit causes large startup latency.
+    global _EMBEDDINGS_CLIENT
+    if _EMBEDDINGS_CLIENT is not None:
+        return _EMBEDDINGS_CLIENT
+
+    with _EMBEDDINGS_LOCK:
+        if _EMBEDDINGS_CLIENT is not None:
+            return _EMBEDDINGS_CLIENT
+
+        device = _resolve_embedding_device()
+        batch_size = _resolve_embedding_batch_size(device)
+        _EMBEDDINGS_CLIENT = HuggingFaceEmbeddings(
+            model_name=require_local_snapshot(HF_CACHE_DIR, "BAAI/bge-m3"),
+            cache_folder=str(HF_CACHE_DIR),
+            model_kwargs={"device": device, "local_files_only": True},
+            encode_kwargs={
+                "normalize_embeddings": True,
+                "batch_size": batch_size,
+            },
+        )
+        print(
+            f"[INGEST] Embeddings initialized | device={device} batch_size={batch_size}"
+        )
+        return _EMBEDDINGS_CLIENT
 
 
 def _get_vector_store(connection_string: str, *, collection_name: str = COLLECTION_NAME) -> PGVector:
@@ -227,6 +276,40 @@ def ingest_to_pgvector(
         raise RuntimeError("No documents provided for ingestion")
 
     resolved_collection_name = normalize_collection_name(collection_name)
+    total_docs = len(documents)
+    
+    # Check if chunks are already in the database (idempotency check)
+    try:
+        from langchain_postgres import PGVector
+        from psycopg2 import sql
+        
+        conn = psycopg2.connect(_normalize_conn(connection_string))
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("""
+                    SELECT COUNT(DISTINCT cmetadata->>'chunk_id')
+                    FROM langchain_pg_embedding
+                    WHERE cmetadata->>'company_document_id' = %s
+                    AND cmetadata->>'revision_number' = %s
+                    AND collection_id = (SELECT uuid FROM langchain_pg_collection WHERE name = %s)
+                """),
+                (company_document_id, str(revision_number), resolved_collection_name)
+            )
+            existing_count = cur.fetchone()[0] if cur.rowcount > 0 else 0
+        
+        if existing_count >= total_docs and not replace_existing:
+            print(
+                f"[INGEST] Skipping ingest - chunks already exist | "
+                f"collection={resolved_collection_name} existing={existing_count} required={total_docs}"
+            )
+            return
+    except Exception as e:
+        print(f"[INGEST] Could not check existing chunks, proceeding with ingest: {e}")
+    
+    print(
+        "[INGEST] Starting vector ingest | "
+        f"collection={resolved_collection_name} total_chunks={total_docs}"
+    )
     vector_store = _get_vector_store(
         connection_string,
         collection_name=resolved_collection_name,
@@ -269,16 +352,42 @@ def ingest_to_pgvector(
         )
 
     safe_batch_size = max(1, int(batch_size or 48))
+    total_batches = (total_docs + safe_batch_size - 1) // safe_batch_size
+    ingest_start_ts = time.perf_counter()
     for start in range(0, len(documents), safe_batch_size):
         if should_cancel and should_cancel():
             raise UploadCancellationError("Cancelled by user")
 
+        batch_start_ts = time.perf_counter()
         batch = documents[start : start + safe_batch_size]
+        batch_no = (start // safe_batch_size) + 1
+        range_start = start + 1
+        range_end = min(start + len(batch), total_docs)
+        print(
+            "[INGEST] Embedding batch started | "
+            f"batch={batch_no}/{total_batches} chunks={len(batch)} "
+            f"range={range_start}-{range_end}"
+        )
         vector_store.add_documents(batch)
+        batch_elapsed = time.perf_counter() - batch_start_ts
+        done = range_end
+        pct = int((done / max(total_docs, 1)) * 100)
+        print(
+            "[INGEST] Embedding batch completed | "
+            f"batch={batch_no}/{total_batches} "
+            f"progress={done}/{total_docs} ({pct}%) "
+            f"elapsed={batch_elapsed:.2f}s"
+        )
 
         if should_cancel and should_cancel():
             raise UploadCancellationError("Cancelled by user")
 
+    total_elapsed = time.perf_counter() - ingest_start_ts
+    print(
+        "[INGEST] Embedding + vector insert completed | "
+        f"total_chunks={total_docs} total_batches={total_batches} "
+        f"elapsed={total_elapsed:.2f}s"
+    )
     setup_keyword_search(connection_string)
 
 

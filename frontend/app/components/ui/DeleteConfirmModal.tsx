@@ -6,6 +6,7 @@ interface Props {
   description?: string;
   cancelLabel?: string;
   confirmLabel?: string;
+  showCascadeWarning?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }
@@ -16,6 +17,7 @@ export default function DeleteConfirmModal({
   description = "This will delete all messages in this chat permanently.",
   cancelLabel = "Cancel",
   confirmLabel = "Delete",
+  showCascadeWarning = false,
   onCancel,
   onConfirm,
 }: Props) {
@@ -56,6 +58,25 @@ export default function DeleteConfirmModal({
         >
           {description}
         </p>
+
+        {/* Cascade Warning */}
+        {showCascadeWarning && (
+          <div className="mt-4 rounded-lg bg-red-950/30 border border-red-900/50 p-3">
+            <p className="text-xs font-medium text-red-400 mb-2">
+              ⚠️ This will also delete:
+            </p>
+            <ul className="text-xs text-gray-400 space-y-1 list-disc list-inside">
+              <li>All chat messages and conversation history</li>
+              <li>Uploaded PDF files and preprocessing artifacts</li>
+              <li>Document chunks and embeddings</li>
+              <li>Session metadata and cache data</li>
+              <li>Upload jobs and processing data</li>
+            </ul>
+            <p className="text-xs text-red-400 mt-2">
+              This action cannot be undone.
+            </p>
+          </div>
+        )}
 
         {/* Actions */}
         <div className="mt-6 flex justify-end gap-3">

@@ -13,8 +13,39 @@ PHASE 2 FIXES:
 -  FIX: Explicit "detailed" trigger for follow-up requests
 """
 
+import re
 from dataclasses import dataclass
 from typing import Optional
+
+
+def _embedded_fact_lookup(q: str) -> bool:
+    """
+    Factual questions often do not start with 'what is the' (e.g. they start with
+    'In Section 4.4...' then ask 'what specific ...'). Without this, verbosity
+    stays 'short' and strict_factual is false — models ramble and mix in
+    unrelated table/context (common in Lite/GGUF).
+    """
+    if not q or q.startswith(
+        ("why ", "explain ", "compare ", "describe ", "summarize ", "how come ")
+    ):
+        return False
+    # "what specific factor/value/..." (matches user's Section 4.4 style questions)
+    if re.search(r"\bwhat\s+specific\b", q):
+        return True
+    if re.search(r"\bwhich\s+specific\b", q):
+        return True
+    # "In section X ... what / which ..."
+    if re.search(r"\bin\s+section\s+[\w.]+\b", q) and re.search(
+        r"\b(what|which)\s+", q
+    ):
+        return True
+    # "regarding X ... what ... is included / are reported"
+    if re.search(r"\b(regarding|concerning)\s+", q) and re.search(
+        r"\b(what|which)\s+.{0,120}?\b(is|are)\s+(included|reported|mentioned|stated)\b",
+        q,
+    ):
+        return True
+    return False
 
 
 # ============================================================
@@ -117,7 +148,8 @@ def infer_answer_policy(
         "maximum",
         "minimum",
         "how many",
-    ))
+        "where",
+    )) or _embedded_fact_lookup(q)
 
     is_reasoning = bool(
         q.startswith(("why", "explain", "compare", "describe", "detail"))

@@ -35,7 +35,14 @@ from backend.llm.intent_rules import detect_rule_intent
 from backend.llm.intent_classifier import classify_intent, is_referential_follow_up
 from backend.llm.text_normalizer import normalize_text
 from backend.llm.query_rewriter import rewrite_question
-from backend.llm.prompts import build_title_prompt, clean_model_output, strip_model_markup
+from backend.llm.prompts import (
+    build_prompt_hf,
+    build_prompt_gguf,
+    build_prompt_cot,
+    build_title_prompt,
+    clean_model_output,
+    strip_model_markup
+)
 from backend.llm.loader import get_llm
 from backend.llm.hf_cache_utils import require_local_snapshot
 from backend.llm.model_config_store import HF_CACHE_DIR
@@ -44,6 +51,7 @@ from backend.llm.model_config_store import HF_CACHE_DIR
 # ================================
 
 from backend.rag.retrieve import retrieve_rag_context
+from backend.rag.optimized_retrieve import retrieve_rag_context_optimized
 from backend.rag.confidence import compute_confidence
 
 # ================================
@@ -893,15 +901,41 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
             new_rag_chunks = cached
             cache_hit = True
         else:
-            new_rag_chunks = retrieve_rag_context(
-                question=augmented_query,
-                vector_store=rag_vector_store,
-                company_document_id=company_document_id,
-                revision_number=str(revision_number),
-                rag_mode=effective_rag_mode,
-                force_detailed=route_config["force_detailed"],
-                enable_hybrid_retrieval=feature_flags["enable_hybrid_retrieval"],
-            )
+            # Use optimized retrieval when available
+            use_optimized = bool(settings.get("enable_optimized_retrieval", True))
+            
+            if use_optimized and rag_vector_store is not None:
+                try:
+                    new_rag_chunks = retrieve_rag_context_optimized(
+                        question=augmented_query,
+                        company_document_id=company_document_id,
+                        revision_number=str(revision_number),
+                        rag_mode=effective_rag_mode,
+                        force_detailed=route_config["force_detailed"],
+                        enable_hybrid_retrieval=feature_flags["enable_hybrid_retrieval"],
+                    )
+                    print(f"[CHAT] Used optimized retrieval: {len(new_rag_chunks)} chunks")
+                except Exception as e:
+                    print(f"[CHAT] Optimized retrieval failed, falling back: {e}")
+                    new_rag_chunks = retrieve_rag_context(
+                        question=augmented_query,
+                        vector_store=rag_vector_store,
+                        company_document_id=company_document_id,
+                        revision_number=str(revision_number),
+                        rag_mode=effective_rag_mode,
+                        force_detailed=route_config["force_detailed"],
+                        enable_hybrid_retrieval=feature_flags["enable_hybrid_retrieval"],
+                    )
+            else:
+                new_rag_chunks = retrieve_rag_context(
+                    question=augmented_query,
+                    vector_store=rag_vector_store,
+                    company_document_id=company_document_id,
+                    revision_number=str(revision_number),
+                    rag_mode=effective_rag_mode,
+                    force_detailed=route_config["force_detailed"],
+                    enable_hybrid_retrieval=feature_flags["enable_hybrid_retrieval"],
+                )
             if feature_flags["enable_cache"]:
                 set_cached_chunks(
                     company_document_id,

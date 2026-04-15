@@ -59,6 +59,9 @@ _SETTINGS: Dict[str, Any] = {
     "rag_collection_name": DEFAULT_RAG_COLLECTION_NAME,
     # Legacy key retained for backward compatibility with older UI builds.
     "rag_mode": DEFAULT_RAG_MODE,  # deprecated
+    # Extractive RAG settings (hybrid approach)
+    "enable_extractive_rag": True,
+    "extractive_top_k": 5,
 }
 
 
@@ -66,14 +69,30 @@ def _materialize_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     resolved = dict(settings or {})
     fast_enabled = bool(resolved.get("enable_fast_document_processing", False))
 
-    if fast_enabled:
+    # Respect user's explicit rag_retrieval_mode setting if set
+    # Only override with defaults if not explicitly set
+    user_rag_retrieval_mode = resolved.get("rag_retrieval_mode")
+    if user_rag_retrieval_mode and user_rag_retrieval_mode != DEFAULT_RETRIEVAL_MODE_SETTING:
+        # User explicitly set a retrieval mode, respect it
+        effective_rag_mode = normalize_retrieval_mode_setting(user_rag_retrieval_mode)
+    elif fast_enabled:
         effective_rag_mode = normalize_rag_mode(DEFAULT_RAG_MODE)
+    else:
+        effective_rag_mode = "high_fidelity"
+
+    # Respect user's explicit rag_preprocessor setting if set
+    user_rag_preprocessor = resolved.get("rag_preprocessor")
+    if user_rag_preprocessor and user_rag_preprocessor != DEFAULT_RAG_PREPROCESSOR:
+        effective_preprocessor = normalize_rag_preprocessor(user_rag_preprocessor)
+    elif fast_enabled:
         effective_preprocessor = normalize_rag_preprocessor(DEFAULT_RAG_PREPROCESSOR)
+    else:
+        effective_preprocessor = "unstructured"
+
+    if fast_enabled:
         preview_scope = "auto"
         profile_label = "fast"
     else:
-        effective_rag_mode = "high_fidelity"
-        effective_preprocessor = "unstructured"
         preview_scope = "full"
         profile_label = "high_accuracy"
 

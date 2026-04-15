@@ -50,8 +50,10 @@ from backend.api.team import router as team_router
 # ============================================================
 from backend.api.feedback import router as feedback_router
 from backend.api.audit_log import router as audit_log_router
+from backend.api.agentic_feedback import router as agentic_feedback_router
 # ↑ ADDED: registers /feedback endpoint
 # ↑ ADDED: registers /audit endpoints (Phase 3 RAG audit log)
+# ↑ ADDED: registers /agentic_feedback endpoint (agentic learning)
 
 
 # ============================================================
@@ -121,6 +123,21 @@ async def startup_event():
 
     if is_celery_enabled():
         print("[STARTUP] Celery mode enabled. Commit jobs will run on RabbitMQ workers.")
+        try:
+            rabbit_status = get_rabbitmq_status()
+            if str(rabbit_status.get("status")) == "ok":
+                print(
+                    "[STARTUP] RabbitMQ reachable | "
+                    f"host={rabbit_status.get('host')} port={rabbit_status.get('port')}"
+                )
+            else:
+                print(
+                    "[STARTUP] RabbitMQ connectivity issue | "
+                    f"status={rabbit_status.get('status')} "
+                    f"error={rabbit_status.get('error')}"
+                )
+        except Exception as e:
+            print(f"[STARTUP] RabbitMQ status check failed: {e}")
 
     try:
         recovery = recover_stale_commit_jobs()
@@ -182,7 +199,9 @@ app.include_router(session_router, dependencies=_auth)              # /session/*
 # ============================================================
 app.include_router(feedback_router, dependencies=_auth)              # POST /feedback
 app.include_router(audit_log_router, dependencies=_auth)            # GET /audit/recent, /audit/stats
+app.include_router(agentic_feedback_router, dependencies=_auth)    # POST /agentic_feedback
 # ↑ ADDED: stores user feedback safely
+# ↑ ADDED: agentic feedback for learning
 
 # Debug & external services
 app.include_router(debug_router, dependencies=_auth)                # GET /debug/rag/{session_id}

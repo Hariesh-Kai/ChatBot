@@ -3,7 +3,7 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, FileClock, Users, X } from "lucide-react";
+import { Bell, FileClock, Users, X, Trash2 } from "lucide-react";
 import Sidebar from "@/app/components/sidebar/Sidebar";
 import ChatWindow from "@/app/components/chat/ChatWindow";
 import TemplateLibraryPanel from "@/app/components/pml/TemplateLibraryPanel";
@@ -20,7 +20,7 @@ import {
   loadPendingIngestionItems,
   savePendingIngestionItems,
 } from "@/app/lib/pending-ingestion-store";
-import { authLogout, authMe, cancelUploadJob, updateMetadata } from "@/app/lib/api";
+import { authLogout, authMe, cancelUploadJob, updateMetadata, deleteSession } from "@/app/lib/api";
 import type { AuthUser, UploadIngestionStatusResponse } from "@/app/lib/api";
 import {
   isProjectSystemTeamMessage,
@@ -1306,10 +1306,28 @@ useEffect(() => {
 
 
   /* ================= ACTIONS ================= */
+  const [deleteConfirmChatId, setDeleteConfirmChatId] = useState<string | null>(null);
+
   const handleDeleteChat = useCallback(
     (id: string) => {
-      setChats((prev) => prev.filter((c) => c.id !== id));
-      if (activeId === id) setActiveId(null);
+      setDeleteConfirmChatId(id);
+    },
+    []
+  );
+
+  const confirmDeleteChat = useCallback(
+    async (id: string) => {
+      try {
+        // Call backend cascade deletion API
+        await deleteSession(id);
+        // Remove from local state after successful backend deletion
+        setChats((prev) => prev.filter((c) => c.id !== id));
+        if (activeId === id) setActiveId(null);
+        setDeleteConfirmChatId(null);
+      } catch (error) {
+        console.error("Failed to delete chat:", error);
+        alert("Failed to delete chat. Please try again.");
+      }
     },
     [activeId]
   );
@@ -2273,6 +2291,63 @@ useEffect(() => {
             onClose={() => setShowShortcuts(false)}
             shortcuts={shortcuts}
           />
+          
+          {/* Floating Delete Confirmation Box */}
+          {deleteConfirmChatId && (
+            <div className="fixed inset-0 flex items-center justify-center z-50">
+              <div 
+                className="absolute inset-0 bg-black/60"
+                onClick={() => setDeleteConfirmChatId(null)}
+              />
+              <div className="relative rounded-xl border border-white/10 bg-[#1a1a1a] p-5 shadow-2xl max-w-md">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="flex items-center justify-center w-8 h-8 rounded-full bg-red-900/50">
+                    <Trash2 size={16} className="text-red-400" />
+                  </div>
+                  <h3 className="text-sm font-semibold text-white">Delete chat?</h3>
+                </div>
+                
+                <p className="text-xs text-gray-400 mb-4">
+                  This will delete all messages in this chat permanently.
+                </p>
+
+                {/* Cascade Warning */}
+                <div className="rounded-lg bg-red-950/30 border border-red-900/50 p-3 mb-4">
+                  <p className="text-xs font-medium text-red-400 mb-2">
+                    ⚠️ This will also delete:
+                  </p>
+                  <ul className="text-xs text-gray-400 space-y-1 list-disc list-inside">
+                    <li>All chat messages and conversation history</li>
+                    <li>Uploaded PDF files and preprocessing artifacts</li>
+                    <li>Document chunks and embeddings</li>
+                    <li>Session metadata and cache data</li>
+                    <li>Upload jobs and processing data</li>
+                  </ul>
+                  <p className="text-xs text-red-400 mt-2">
+                    This action cannot be undone.
+                  </p>
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirmChatId(null)}
+                    className="flex-1 rounded-lg px-4 py-2 text-xs text-gray-300 hover:bg-white/5"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteConfirmChatId && confirmDeleteChat(deleteConfirmChatId)}
+                    className="flex-1 rounded-lg px-4 py-2 text-xs bg-red-600 text-white hover:bg-red-500"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          
           <Sidebar
         chats={workspaceMode === "pml" ? pmlChats : chats}
         activeId={workspaceMode === "pml" ? pmlActiveId : activeId}

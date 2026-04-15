@@ -17,12 +17,38 @@ def rag_commit_task(
     final_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     from backend.rag.commit_worker import run_commit_payload_safe
+    from backend.state.job_state import get_job_state
+    from backend.state.job_persistence import get_job_run
 
-    run_commit_payload_safe(
-        job_id=str(job_id),
-        session_id=(session_id or "").strip() or None,
-        final_metadata=dict(final_metadata or {}),
+    clean_job_id = str(job_id)
+    clean_session_id = (session_id or "").strip() or None
+    payload = dict(final_metadata or {})
+    
+    # Check if job is already completed to prevent reprocessing after RabbitMQ connection loss
+    try:
+        job_state = get_job_state(clean_job_id)
+        if job_state and job_state.status == "READY":
+            print(f"[CELERY] Job already completed, skipping reprocessing | job_id={clean_job_id}")
+            return {"ok": True, "job_id": job_id, "skipped": True, "reason": "already_completed"}
+        
+        # Also check persisted job state
+        persisted_job = get_job_run(clean_job_id)
+        if persisted_job and persisted_job.get("status") == "READY":
+            print(f"[CELERY] Job already completed (persisted), skipping reprocessing | job_id={clean_job_id}")
+            return {"ok": True, "job_id": job_id, "skipped": True, "reason": "already_completed_persisted"}
+    except Exception as e:
+        print(f"[CELERY] Error checking job completion status, proceeding with processing | job_id={clean_job_id} error={e}")
+    
+    print(
+        "[CELERY] rag_commit_task started | "
+        f"job_id={clean_job_id} session_id={clean_session_id or '-'}"
     )
+    run_commit_payload_safe(
+        job_id=clean_job_id,
+        session_id=clean_session_id,
+        final_metadata=payload,
+    )
+    print(f"[CELERY] rag_commit_task finished | job_id={clean_job_id}")
     return {"ok": True, "job_id": job_id}
 
 

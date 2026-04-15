@@ -69,6 +69,13 @@ export type ModelStageEvent = {
   model?: string;         // lite | base | net
 };
 
+/* ---------- 🤖 Agentic Step (Post-Processing State) ---------- */
+
+export type AgenticStepEvent = {
+  type: "agentic_step";
+  step: string;           // e.g. "Splitting into sentences", "Analyzing word overlap"
+};
+
 /* ---------- Error ---------- */
 
 export type ErrorEvent = {
@@ -135,6 +142,7 @@ export function isLLMUIEvent(obj: unknown): obj is LLMUIEvent {
       case "METADATA_CONFIRMED":
       case "PROGRESS":
       case "MODEL_STAGE":
+      case "agentic_step":
       case "ERROR":
       case "NET_RATE_LIMITED":
       case "SOURCES": 

@@ -665,6 +665,48 @@ export async function generateChatTitle(question: string): Promise<string> {
 }
 
 /* =========================================================
+   SESSION DELETION (CASCADE)
+========================================================= */
+
+export interface DeleteSessionResponse {
+  status: string;
+  message: string;
+  summary: {
+    session_id: string;
+    deleted_items: {
+      chat_messages: number;
+      chat_session: boolean;
+      topic_hints: boolean;
+      active_documents: boolean;
+      session_summaries: boolean;
+      redis_cache: boolean;
+      upload_jobs: number;
+      preprocessing_artifacts: boolean;
+    };
+    warnings: string[];
+  };
+}
+
+export async function deleteSession(
+  sessionId: string
+): Promise<DeleteSessionResponse> {
+  if (!sessionId) {
+    throw new Error("sessionId is required");
+  }
+
+  const res = await fetch(`${API_BASE}/session/${sessionId}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+
+  if (!res.ok) {
+    throw new Error(await normalizeError(res));
+  }
+
+  return res.json();
+}
+
+/* =========================================================
    SAFE JSON
 ========================================================= */
 

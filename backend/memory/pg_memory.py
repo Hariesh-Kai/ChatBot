@@ -97,6 +97,30 @@ def _init_db():
             filename TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        """,
+        # 5. User State (Agentic Memory)
+        """
+        CREATE TABLE IF NOT EXISTS user_state (
+            user_id TEXT PRIMARY KEY,
+            expertise_level TEXT DEFAULT 'intermediate',
+            preferred_answer_style TEXT DEFAULT 'balanced',
+            preferred_detail_level TEXT DEFAULT 'medium',
+            interaction_count INTEGER DEFAULT 0,
+            last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            preferences JSONB DEFAULT '{}'
+        );
+        """,
+        # 6. User Feedback (Learning Mechanism)
+        """
+        CREATE TABLE IF NOT EXISTS user_feedback (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            message_id INTEGER NOT NULL,
+            feedback_type TEXT NOT NULL,
+            feedback_value INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         """
     ]
 
@@ -558,3 +582,354 @@ def _save_cached_summary(session_id: str, summary: str, message_count: int):
                 )
     except Exception as e:
         print(f"[MEMORY] _save_cached_summary failed (non-fatal): {e}")
+
+
+# =========================================================
+# 🤖 AGENTIC MEMORY: USER STATE MANAGEMENT
+# =========================================================
+
+def get_or_create_user_state(user_id: str) -> Dict[str, Any]:
+    """
+    Get user state, create default if not exists.
+    """
+    if not user_id:
+        return {
+            "expertise_level": "intermediate",
+            "preferred_answer_style": "balanced",
+            "preferred_detail_level": "medium",
+            "interaction_count": 0,
+            "preferences": {}
+        }
+    
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT * FROM user_state WHERE user_id = %s
+                    """,
+                    (user_id,),
+                )
+                row = cur.fetchone()
+                
+                if row:
+                    return dict(row)
+                else:
+                    # Create default user state
+                    cur.execute(
+                        """
+                        INSERT INTO user_state (user_id)
+                        VALUES (%s)
+                        """,
+                        (user_id,),
+                    )
+                    return {
+                        "user_id": user_id,
+                        "expertise_level": "intermediate",
+                        "preferred_answer_style": "balanced",
+                        "preferred_detail_level": "medium",
+                        "interaction_count": 0,
+                        "preferences": {}
+                    }
+    except Exception as e:
+        print(f"[MEMORY] get_or_create_user_state failed: {e}")
+        return {
+            "expertise_level": "intermediate",
+            "preferred_answer_style": "balanced",
+            "preferred_detail_level": "medium",
+            "interaction_count": 0,
+            "preferences": {}
+        }
+
+
+def update_user_state(user_id: str, updates: Dict[str, Any]):
+    """
+    Update user state with new values.
+    """
+    if not user_id or not updates:
+        return
+    
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Build dynamic update query
+                set_clauses = []
+                values = []
+                for key, value in updates.items():
+                    if key in ["expertise_level", "preferred_answer_style", "preferred_detail_level"]:
+                        set_clauses.append(f"{key} = %s")
+                        values.append(value)
+                    elif key == "preferences" and isinstance(value, dict):
+                        set_clauses.append("preferences = preferences || %s")
+                        values.append(value)
+                
+                if set_clauses:
+                    set_clauses.append("last_active = NOW()")
+                    values.append(user_id)
+                    
+                    cur.execute(
+                        f"""
+                        UPDATE user_state
+                        SET {', '.join(set_clauses)}
+                        WHERE user_id = %s
+                        """,
+                        values,
+                    )
+    except Exception as e:
+        print(f"[MEMORY] update_user_state failed: {e}")
+
+
+def increment_interaction_count(user_id: str):
+    """
+    Increment user interaction count for learning.
+    """
+    if not user_id:
+        return
+    
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE user_state
+                    SET interaction_count = interaction_count + 1,
+                        last_active = NOW()
+                    WHERE user_id = %s
+                    """,
+                    (user_id,),
+                )
+    except Exception as e:
+        print(f"[MEMORY] increment_interaction_count failed: {e}")
+
+
+# =========================================================
+# 🤖 AGENTIC MEMORY: FEEDBACK LEARNING
+# =========================================================
+
+def save_user_feedback(
+    user_id: str,
+    session_id: str,
+    message_id: int,
+    feedback_type: str,
+    feedback_value: int
+):
+    """
+    Save user feedback for learning.
+    feedback_type: 'thumbs_up', 'thumbs_down', 'quality', 'relevance'
+    feedback_value: 1-5 rating or binary (1/0)
+    """
+    if not user_id or not session_id:
+        return
+    
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO user_feedback (user_id, session_id, message_id, feedback_type, feedback_value)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (user_id, session_id, message_id, feedback_type, feedback_value),
+                )
+                
+                # Update user state based on feedback
+                if feedback_type == "thumbs_up" and feedback_value > 0:
+                    # Positive feedback - potentially adjust expertise level
+                    cur.execute(
+                        """
+                        UPDATE user_state
+                        SET interaction_count = interaction_count + 1
+                        WHERE user_id = %s
+                        """,
+                        (user_id,),
+                    )
+                    
+        print(f"[MEMORY] Saved feedback: user={user_id}, type={feedback_type}, value={feedback_value}")
+    except Exception as e:
+        print(f"[MEMORY] save_user_feedback failed: {e}")
+
+
+def get_user_feedback_summary(user_id: str) -> Dict[str, Any]:
+    """
+    Get summary of user feedback for learning.
+    """
+    if not user_id:
+        return {}
+    
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT 
+                        feedback_type,
+                        COUNT(*) as count,
+                        AVG(feedback_value) as avg_value
+                    FROM user_feedback
+                    WHERE user_id = %s
+                    GROUP BY feedback_type
+                    """,
+                    (user_id,),
+                )
+                rows = cur.fetchall() or []
+                
+                summary = {}
+                for row in rows:
+                    summary[row["feedback_type"]] = {
+                        "count": row["count"],
+                        "avg_value": row["avg_value"]
+                    }
+                
+                return summary
+    except Exception as e:
+        print(f"[MEMORY] get_user_feedback_summary failed: {e}")
+        return {}
+
+
+# =========================================================
+# 🤖 AGENTIC MEMORY: PROACTIVE SUGGESTIONS
+# =========================================================
+
+def save_proactive_suggestion(
+    session_id: str,
+    suggestion_type: str,
+    suggestion_text: str,
+    context: Optional[Dict[str, Any]] = None
+):
+    """
+    Save proactive suggestions for follow-up questions or actions.
+    """
+    if not session_id or not suggestion_text:
+        return
+    
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO session_topic_hints (session_id, topic_hint)
+                    VALUES (%s, %s)
+                    ON CONFLICT (session_id)
+                    DO UPDATE SET
+                        topic_hint = EXCLUDED.topic_hint,
+                        updated_at = NOW()
+                    """,
+                    (session_id, f"[{suggestion_type}] {suggestion_text}"),
+                )
+        print(f"[MEMORY] Saved proactive suggestion: {suggestion_type}")
+    except Exception as e:
+        print(f"[MEMORY] save_proactive_suggestion failed: {e}")
+
+
+def get_proactive_suggestions(session_id: str) -> List[str]:
+    """
+    Get proactive suggestions for a session.
+    """
+    if not session_id:
+        return []
+    
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT topic_hint
+                    FROM session_topic_hints
+                    WHERE session_id = %s
+                    """,
+                    (session_id,),
+                )
+                row = cur.fetchone()
+                
+                if row and row[0]:
+                    # Parse suggestions from topic hint
+                    hint = row[0]
+                    suggestions = []
+                    if "[" in hint and "]" in hint:
+                        # Extract suggestions in format [type] text
+                        parts = hint.split("[")
+                        for part in parts[1:]:  # Skip first empty part
+                            if "]" in part:
+                                type_end = part.index("]")
+                                suggestions.append(part[type_end + 1:].strip())
+                    else:
+                        suggestions.append(hint)
+                    return suggestions
+                return []
+    except Exception as e:
+        print(f"[MEMORY] get_proactive_suggestions failed: {e}")
+        return []
+
+
+# =========================================================
+# 🤖 AGENTIC MEMORY: SELF-CORRECTION LOGS
+# =========================================================
+
+def log_self_correction(
+    session_id: str,
+    correction_type: str,
+    original_text: str,
+    corrected_text: str,
+    reason: str
+):
+    """
+    Log self-correction actions for learning and debugging.
+    """
+    if not session_id:
+        return
+    
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Store as a system message with special prefix
+                correction_message = f"[SELF-CORRECTION:{correction_type}] {reason}"
+                cur.execute(
+                    """
+                    INSERT INTO chat_messages (session_id, role, content)
+                    VALUES (%s, 'system', %s)
+                    """,
+                    (session_id, correction_message),
+                )
+        print(f"[MEMORY] Logged self-correction: {correction_type}")
+    except Exception as e:
+        print(f"[MEMORY] log_self_correction failed: {e}")
+
+
+def get_self_corrections(session_id: str) -> List[Dict[str, str]]:
+    """
+    Get self-correction logs for a session.
+    """
+    if not session_id:
+        return []
+    
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT content, created_at
+                    FROM chat_messages
+                    WHERE session_id = %s AND role = 'system' AND content LIKE '[SELF-CORRECTION%'
+                    ORDER BY created_at DESC
+                    LIMIT 10
+                    """,
+                    (session_id,),
+                )
+                rows = cur.fetchall() or []
+                
+                corrections = []
+                for row in rows:
+                    content = row["content"]
+                    if content.startswith("[SELF-CORRECTION:"):
+                        type_end = content.index("]")
+                        correction_type = content[17:type_end]
+                        reason = content[type_end + 1:].strip()
+                        corrections.append({
+                            "type": correction_type,
+                            "reason": reason,
+                            "created_at": row["created_at"]
+                        })
+                return corrections
+    except Exception as e:
+        print(f"[MEMORY] get_self_corrections failed: {e}")
+        return []

@@ -397,9 +397,13 @@ def hf_stream_generate(
     PHASE-2 SAFE:
     - Short thread.join after abort
     - Never crashes streamer
+    - Timeout on streamer iteration to prevent hanging
     """
+    import queue
+    
     model, tokenizer = _load_hf(model_id)
 
+    # Increase timeout for CPU-based generation (slower than GPU)
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, timeout=300)
     inputs = tokenizer(prompt, return_tensors="pt")
 
@@ -433,10 +437,20 @@ def hf_stream_generate(
                     pass
                 break
             yield token
+    except queue.Empty:
+        # Streamer timeout - this is expected for slow CPU generation
+        print(f"[HF] Streamer timeout - generation may still be in progress")
+        yield ""
     except Exception:
         traceback.print_exc()
         yield ""
-        return
+    finally:
+        # Always try to clean up the thread
+        try:
+            if thread.is_alive():
+                thread.join(timeout=1.0)
+        except Exception:
+            pass
 
 
 # ============================================================

@@ -9,9 +9,10 @@ import ReactMarkdown from "react-markdown";
 import CodeBlock from "./CodeBlock";
 import ThinkingDisclosure from "./ThinkingDisclosure";
 import TypingIndicator from "./TypingIndicator";
-import { Copy, Trash2, RotateCcw, BookOpen, FileText } from "lucide-react"; 
+import { Copy, Trash2, RotateCcw, BookOpen, FileText, Check, ThumbsUp, ThumbsDown } from "lucide-react"; 
 import remarkGfm from "remark-gfm";
 import FeedbackBar from "./FeedbackBar";
+import { useState, useEffect } from "react";
 
 /* ================= PROPS ================= */
 
@@ -37,6 +38,8 @@ interface Props {
   sessionId?: string | null;
   companyDocumentId?: string;
   revisionNumber?: number;
+  agenticStep?: string | null; // 🤖 AGENTIC: Current processing step
+  onFeedback?: (feedback: "thumbs_up" | "thumbs_down") => void; // 🤖 AGENTIC: Feedback handler
 }
 
 
@@ -84,6 +87,7 @@ export default function MessageBubble({
   uploadCancelState = null,
   cancelUploadBusy = false,
   onCancelUpload,
+  agenticStep,
 }: Props) {
   const isAssistant = message.role === "assistant";
   const isUser = message.role === "user";
@@ -103,9 +107,56 @@ export default function MessageBubble({
     typeof message.content === "string" &&
     message.content.trim().length > 0;
 
+  // --- COPY NOTIFICATION STATE ---
+  const [showCopyNotification, setShowCopyNotification] = useState(false);
+
+  // 🤖 AGENTIC: Feedback state
+  const [feedbackGiven, setFeedbackGiven] = useState<"thumbs_up" | "thumbs_down" | null>(null);
+
+  // 🤖 AGENTIC: Proactive suggestions state
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+
   async function handleCopy() {
     if (!hasContent) return;
     await navigator.clipboard.writeText(message.content || "");
+    setShowCopyNotification(true);
+  }
+
+  // Auto-hide copy notification after 1.5 seconds
+  useEffect(() => {
+    if (showCopyNotification) {
+      const timer = setTimeout(() => {
+        setShowCopyNotification(false);
+      }, 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [showCopyNotification]);
+
+  // 🤖 AGENTIC: Load proactive suggestions
+  useEffect(() => {
+    if (isLastAssistant && sessionId && message.status === "done") {
+      // In a real implementation, you would fetch suggestions from backend
+      // For now, we'll use placeholder suggestions
+      setSuggestions([
+        "Ask for more details about the document",
+        "Request specific examples",
+        "Explore related topics"
+      ]);
+    }
+  }, [isLastAssistant, sessionId, message.status]);
+
+  // 🤖 AGENTIC: Handle feedback
+  function handleFeedback(feedback: "thumbs_up" | "thumbs_down") {
+    setFeedbackGiven(feedback);
+    onFeedback?.(feedback);
+  }
+
+  // 🤖 AGENTIC: Handle suggestion click
+  function handleSuggestionClick(suggestion: string) {
+    // This would trigger a new question based on the suggestion
+    console.log("[AGENTIC] Suggestion clicked:", suggestion);
+    // You would need to pass this up to the parent component
   }
 
   /* ================= 1. SYSTEM MESSAGE (CENTERED PILL) ================= */
@@ -340,10 +391,16 @@ export default function MessageBubble({
                 </div>
               )
             ) : showTypingPlaceholder ? (
-              <div className="flex items-center gap-1" aria-hidden="true">
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:0ms]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:150ms]" />
-                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:300ms]" />
+              <div className="flex items-center gap-2">
+                {agenticStep ? (
+                  <span className="text-xs text-blue-400 animate-pulse">{agenticStep}</span>
+                ) : (
+                  <>
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:0ms]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:150ms]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:300ms]" />
+                  </>
+                )}
               </div>
             ) : (
                <span className="italic text-gray-500">No content generated.</span>
@@ -373,17 +430,72 @@ export default function MessageBubble({
               </div>
             )}
 
+            {/* 🤖 AGENTIC: Proactive Suggestions */}
+            {isAssistant && isLastAssistant && message.status === "done" && suggestions.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-white/10">
+                <button
+                  onClick={() => setShowSuggestions(!showSuggestions)}
+                  className="flex items-center gap-2 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                >
+                  <BookOpen size={12} />
+                  <span>{showSuggestions ? "Hide suggestions" : "Show suggestions"}</span>
+                </button>
+                {showSuggestions && (
+                  <div className="mt-2 space-y-1">
+                    {suggestions.map((suggestion, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => handleSuggestionClick(suggestion)}
+                        className="block w-full text-left px-2 py-1.5 text-xs text-gray-300 hover:bg-white/5 hover:text-white rounded transition-colors"
+                      >
+                        • {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* ================= ACTION BAR ================= */}
             {!isEditing && !isProgress && (
               <div className="absolute -bottom-6 right-0 hidden gap-2 group-hover:flex text-gray-500 bg-[#111] px-2 py-1 rounded-md border border-white/5 shadow-sm z-10">
                 {hasContent && (
-                  <button
-                    onClick={handleCopy}
-                    className="hover:text-white p-1 transition-colors"
-                    title="Copy"
-                  >
-                    <Copy size={13} />
-                  </button>
+                  <div className="relative">
+                    <button
+                      onClick={handleCopy}
+                      className="hover:text-white p-1 transition-colors"
+                      title="Copy"
+                    >
+                      <Copy size={13} />
+                    </button>
+                    {/* Copy Notification Popup */}
+                    {showCopyNotification && (
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded-md shadow-lg flex items-center gap-1.5 animate-in fade-in zoom-in-95 duration-200 whitespace-nowrap">
+                        <Check size={12} />
+                        <span>Copied</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 🤖 AGENTIC: Feedback buttons */}
+                {isAssistant && isLastAssistant && onFeedback && (
+                  <>
+                    <button
+                      onClick={() => handleFeedback("thumbs_up")}
+                      className={`p-1 transition-colors ${feedbackGiven === "thumbs_up" ? "text-green-400" : "hover:text-green-400"}`}
+                      title="Helpful"
+                    >
+                      <ThumbsUp size={13} />
+                    </button>
+                    <button
+                      onClick={() => handleFeedback("thumbs_down")}
+                      className={`p-1 transition-colors ${feedbackGiven === "thumbs_down" ? "text-red-400" : "hover:text-red-400"}`}
+                      title="Not helpful"
+                    >
+                      <ThumbsDown size={13} />
+                    </button>
+                  </>
                 )}
 
                 {isAssistant && isLastAssistant && onRetry && (

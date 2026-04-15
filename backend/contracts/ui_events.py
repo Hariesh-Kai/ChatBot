@@ -8,6 +8,7 @@ Frontend must react ONLY to these events.
 """
 
 from typing import List, Dict, Any, Optional
+from backend.contracts.ui_constants import UI_EVENT_PREFIX
 
 
 # ==========================================================

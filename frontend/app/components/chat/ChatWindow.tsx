@@ -236,6 +236,7 @@ export default function ChatWindow({
     const [input, setInput] = useState("");
     const [inlineMetadataFields, setInlineMetadataFields] =
       useState<MetadataRequestField[] | null>(null);
+    const [agenticStep, setAgenticStep] = useState<string | null>(null); // 🤖 AGENTIC: Current processing step
 
     const hasStarted = messages.length > 0 || Boolean(inlineMetadataFields) || Boolean(uploadPipeline);
     const ragVisualizationEnabled = devSettings?.emit_model_stage_events ?? true;
@@ -265,6 +266,15 @@ export default function ChatWindow({
 
   // --- Live Model Stage ---
   const [currentStage, setCurrentStage] = useState<string>("");
+  
+  // 🤖 AGENTIC: Reset agentic step when message status changes
+  useEffect(() => {
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg && lastMsg.status === "done") {
+      setAgenticStep(null);
+    }
+  }, [messages]);
+  
   const { startUpload: startDroppedUpload } = useSmartUpload();
 
   // --- Refs ---
@@ -547,6 +557,36 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
     generateAIResponse(text);
   }
 
+  // 🤖 AGENTIC: Handle feedback
+  const handleFeedback = useCallback(async (feedback: "thumbs_up" | "thumbs_down") => {
+    if (!sessionId) return;
+    const lastAssistant = messages.filter(m => m.role === "assistant").pop();
+    if (!lastAssistant) return;
+
+    try {
+      const response = await fetch("/api/agentic_feedback", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_id: sessionId,
+          message_id: lastAssistant.id,
+          feedback_type: feedback,
+          feedback_value: feedback === "thumbs_up" ? 1 : 0,
+        }),
+      });
+
+      if (response.ok) {
+        console.log("[AGENTIC] Feedback saved successfully");
+      } else {
+        console.error("[AGENTIC] Failed to save feedback");
+      }
+    } catch (error) {
+      console.error("[AGENTIC] Error sending feedback:", error);
+    }
+  }, [sessionId, messages]);
+
   //  FIX: CLEANUP FUNCTION MUST RESET REF IMMEDIATELY
   const finalizeAssistant = useCallback((opts?: FinalizeOptions) => {
     if (finalizedRef.current) return;
@@ -576,6 +616,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
     //  THEN unlock UI
     assistantIdRef.current = null;
     setCurrentStage("");
+    setAgenticStep(null); // 🤖 AGENTIC: Reset agentic step when done
     if (!jobFinishedRef.current) {
       jobFinishedRef.current = true;
       finishJob();
@@ -692,21 +733,28 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
             m.id === cid
               ? {
                   ...m,
-                  progressLabel: ui.label,
+                  meta: { ...m.meta, currentStage: ui.label }
                 }
               : m
           )
         );
       }
       if (ragVisualizationEnabled) {
-        setRagSteps((prev) => {
-          const last = prev[prev.length - 1];
-          if (last && last.stage === ui.step) return prev;
-          return [...prev, { stage: ui.step, message: ui.label, ts: Date.now() }];
-        });
+        setRagSteps((prev) => [
+          ...prev,
+          { stage: ui.step, message: ui.label, ts: Date.now() },
+        ]);
       }
+
       return;
     }
+
+    // 🤖 AGENTIC: Handle agentic_step events
+    if (event.type === "agentic_step") {
+      setAgenticStep(event.step);
+      return;
+    }
+
     if (event.type === "ANSWER_CONFIDENCE") {
       const cid = assistantIdRef.current || lastAssistantIdRef.current;
       if (!cid) return;
@@ -1251,6 +1299,8 @@ useEffect(() => {
                                         }
                                       : undefined
                                   }
+                                  agenticStep={m.role === "assistant" && (m.status === "typing" || m.status === "streaming") ? agenticStep : null}
+                                  onFeedback={m.role === "assistant" && isLastAssistant ? handleFeedback : undefined}
                                 />
                             );
                         })}

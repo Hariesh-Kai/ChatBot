@@ -51,6 +51,8 @@ def clean_model_output(text: str) -> str:
     stop_markers = INTERNAL_MODEL_MARKERS + (
         "REFINED ANSWER:",
         "END OF RESPONSE",
+        "**END**",
+        "\nEND",
     )
 
     for marker in stop_markers:
@@ -422,7 +424,7 @@ PASSAGES:
 {extractive_passages}
 
 FORMATTED ANSWER:
-<|eot_id|><|start_header_id|>assistant<|end_header_id|
+<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 """
 
 
@@ -436,7 +438,9 @@ def build_prompt_base_citation(
     """
     Prompt for Base mode: hybrid extractive + generative with citations (50% each).
     """
-    # Build context with extractive passages included
+    # Build context with extractive passages included. When we already have a
+    # strong extractive block, avoid prefacing it with "No document context
+    # available." because that adds contradictory noise for the model.
     if context_chunks:
         context_lines = []
         for c in context_chunks:
@@ -446,12 +450,17 @@ def build_prompt_base_citation(
             content = c.get("content", "")
             context_lines.append(f"[Page {page} | Section: {section}]\n{content}")
         context_text = "\n\n".join(context_lines)
+    elif extractive_passages:
+        context_text = ""
     else:
         context_text = "No document context available."
     
     # Add extractive passages if available
     if extractive_passages:
-        context_text = f"{context_text}\n\nEXTRACTED PASSAGES:\n{extractive_passages}"
+        if context_text:
+            context_text = f"{context_text}\n\nEXTRACTED PASSAGES:\n{extractive_passages}"
+        else:
+            context_text = f"EXTRACTED PASSAGES:\n{extractive_passages}"
     
     # Style
     style_key = getattr(answer_style, "verbosity", "short")
@@ -472,7 +481,7 @@ CONTEXT:
 {context_text}
 
 QUESTION:
-{question}<|eot_id|><|start_header_id|>assistant<|end_header_id|
+{question}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 """)
     
     return "".join(messages)

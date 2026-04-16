@@ -198,3 +198,62 @@ def generate_multi_queries(question: str) -> List[str]:
 
     return unique[:3]
 
+
+
+# ============================================================
+# LLM-POWERED QUERY REWRITER
+# ============================================================
+
+def llm_rewrite_question(question: str, recent_user_messages: List[str]) -> str:
+    """
+    Uses the Lite model to rewrite vague queries into standalone
+    semantic search queries. Falls back to deterministic rewrite
+    if the model is disabled or fails.
+    """
+    from backend.state.dev_settings import get_dev_settings
+    settings = get_dev_settings()
+    
+    if not settings.get("enable_query_rewrite", False):
+        return rewrite_question(question, recent_user_messages)
+        
+    if not is_vague_question(question) and len(question.split()) > 4:
+        return question
+
+    try:
+        from backend.llm.orchestrator import _run_model_once
+        from backend.llm.model_selector import resolve_model_id
+        
+        model_id = resolve_model_id("lite")
+        history_text = "\n".join(f"- {msg}" for msg in recent_user_messages[-4:])
+        prompt = f"""You are a search query optimizer.
+The user asked a vague follow-up question. Use the Chat History to rewrite the question into a fully standalone, highly specific search query.
+Do NOT answer the question. Only output the rewritten question.
+
+Chat History:
+{history_text}
+
+Vague Question:
+{question}
+
+Rewritten Standalone Query:"""
+
+        result = _run_model_once(
+            model_id=model_id,
+            prompt=prompt,
+            session_id=None,
+            max_tokens=64,
+            role="rewriter"
+        )
+        
+        result_clean = result.strip().split("\n")[0].strip('"\'')
+        
+        if len(result_clean) > 5 and not result_clean.lower().startswith("rewrite"):
+            print(f"[REWRITER] LLM Rewrote: '{question}' -> '{result_clean}'")
+            return result_clean
+            
+    except Exception as e:
+        print(f"[REWRITER] LLM rewrite failed: {e}")
+        
+    # Fallback to standard deterministic
+    return rewrite_question(question, recent_user_messages)
+

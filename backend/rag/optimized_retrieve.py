@@ -86,7 +86,7 @@ class OptimizedRetriever:
         # Try cache first
         if use_cache and self.cache:
             cached_results = self.cache.get(
-                question=question,
+                query=question,
                 company_document_id=company_document_id,
                 revision_number=revision_number,
                 rag_mode=rag_mode

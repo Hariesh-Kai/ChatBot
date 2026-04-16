@@ -26,6 +26,7 @@ _LOW_MEMORY_AVOID_MODEL_IDS = {
     "lite_qwen_q4",
     "lite_llama_8b",
     "base_qwen_7b",
+    "base_qwen_7b_q4",
 }
 
 

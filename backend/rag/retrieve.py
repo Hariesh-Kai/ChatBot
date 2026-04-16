@@ -71,6 +71,14 @@ _TABLE_QUERY_TERMS = (
     "design pressure",
 )
 
+_REVISION_LIST_QUERY_TERMS = (
+    "revision list",
+    "revision history",
+    "technical change",
+    "change made",
+    "what changed",
+)
+
 _IMAGE_QUERY_TERMS = (
     "image",
     "figure",
@@ -237,6 +245,24 @@ def classify_query_profile(question: str) -> Dict[str, Any]:
                 "UncategorizedText": 0.1,
             },
             "lane_multipliers": {"parent": 0.2, "text": 0.95, "image": 1.35, "child": 0.1},
+            "top_k": MAX_CONTEXT_CHUNKS,
+        }
+
+    if any(term in q for term in _REVISION_LIST_QUERY_TERMS):
+        return {
+            "name": "revision_table",
+            "allow_element_types": {"Table", "NarrativeText", "ListItem"},
+            "exclude_element_types": {"UncategorizedText"},
+            "exclude_ocr": False,
+            "element_multipliers": {
+                "Title": 0.55,
+                "NarrativeText": 1.0,
+                "ListItem": 0.9,
+                "Table": 1.45,
+                "Image": 0.2,
+                "UncategorizedText": 0.2,
+            },
+            "lane_multipliers": {"parent": 1.35, "text": 0.85, "image": 0.1, "child": 0.95},
             "top_k": MAX_CONTEXT_CHUNKS,
         }
 
@@ -1304,6 +1330,20 @@ def retrieve_rag_context(
                     "quality_score": metadata.get("quality_score"),
                 },
             }
+        )
+
+    # CRAG LOOP
+    from backend.rag.corrective_loop import run_corrective_retrieval
+    from backend.state.dev_settings import get_dev_settings
+    settings = get_dev_settings()
+    
+    if settings.get("enable_agent_pipeline", True):
+        # We invoke the loop if enabled. (Using agent_pipeline flag)
+        rag_chunks = run_corrective_retrieval(
+            question=question,
+            initial_chunks=rag_chunks,
+            vector_store=vector_store,
+            metadata_filter=metadata_filter
         )
 
     return rag_chunks

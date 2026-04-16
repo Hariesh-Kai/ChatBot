@@ -4,6 +4,7 @@ import os
 import json
 import threading
 import time
+from contextlib import closing
 from typing import List, Dict, Any, Callable, Optional
 
 import psycopg2
@@ -22,6 +23,8 @@ from backend.rag.upload_cancellation import UploadCancellationError
 COLLECTION_NAME = DEFAULT_RAG_COLLECTION_NAME
 _EMBEDDINGS_LOCK = threading.Lock()
 _EMBEDDINGS_CLIENT: Optional[HuggingFaceEmbeddings] = None
+_KEYWORD_SEARCH_LOCK = threading.Lock()
+_KEYWORD_SEARCH_READY = False
 
 # ============================================================
 # INTERNAL HELPERS
@@ -95,6 +98,66 @@ def _get_vector_store(connection_string: str, *, collection_name: str = COLLECTI
     )
 
 
+def _count_existing_chunks(
+    *,
+    connection_string: str,
+    company_document_id: str,
+    revision_number: str,
+    collection_name: str,
+) -> int:
+    from psycopg2 import sql
+
+    with closing(psycopg2.connect(_normalize_conn(connection_string))) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    SELECT COUNT(DISTINCT cmetadata->>'chunk_id')
+                    FROM langchain_pg_embedding
+                    WHERE cmetadata->>'company_document_id' = %s
+                      AND cmetadata->>'revision_number' = %s
+                      AND collection_id = (
+                          SELECT uuid
+                          FROM langchain_pg_collection
+                          WHERE name = %s
+                      )
+                    """
+                ),
+                (
+                    company_document_id,
+                    str(revision_number),
+                    normalize_collection_name(collection_name),
+                ),
+            )
+            row = cur.fetchone()
+
+    return int((row or [0])[0] or 0)
+
+
+def _keyword_search_schema_exists(cur) -> bool:
+    cur.execute(
+        """
+        SELECT
+            EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'langchain_pg_embedding'
+                  AND column_name = 'content_tsv'
+            ),
+            EXISTS (
+                SELECT 1
+                FROM pg_indexes
+                WHERE schemaname = current_schema()
+                  AND tablename = 'langchain_pg_embedding'
+                  AND indexname = 'langchain_pg_embedding_content_tsv_idx'
+            );
+        """
+    )
+    row = cur.fetchone() or (False, False)
+    return bool(row[0]) and bool(row[1])
+
+
 def delete_document_revision(
     *,
     connection_string: str,
@@ -108,28 +171,25 @@ def delete_document_revision(
     This is mainly used by benchmark runs so repeated indexing does not create
     duplicate chunks inside the same isolated test collection.
     """
-    conn = psycopg2.connect(_normalize_conn(connection_string))
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        DELETE FROM langchain_pg_embedding AS e
-        USING langchain_pg_collection AS c
-        WHERE e.collection_id = c.uuid
-          AND c.name = %s
-          AND e.cmetadata->>'company_document_id' = %s
-          AND e.cmetadata->>'revision_number' = %s
-        """,
-        (
-            normalize_collection_name(collection_name),
-            company_document_id,
-            str(revision_number),
-        ),
-    )
-    deleted_rows = int(cur.rowcount or 0)
-    conn.commit()
-    cur.close()
-    conn.close()
+    with closing(psycopg2.connect(_normalize_conn(connection_string))) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM langchain_pg_embedding AS e
+                USING langchain_pg_collection AS c
+                WHERE e.collection_id = c.uuid
+                  AND c.name = %s
+                  AND e.cmetadata->>'company_document_id' = %s
+                  AND e.cmetadata->>'revision_number' = %s
+                """,
+                (
+                    normalize_collection_name(collection_name),
+                    company_document_id,
+                    str(revision_number),
+                ),
+            )
+            deleted_rows = int(cur.rowcount or 0)
+        conn.commit()
     return deleted_rows
 
 # ============================================================
@@ -280,23 +340,13 @@ def ingest_to_pgvector(
     
     # Check if chunks are already in the database (idempotency check)
     try:
-        from langchain_postgres import PGVector
-        from psycopg2 import sql
-        
-        conn = psycopg2.connect(_normalize_conn(connection_string))
-        with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL("""
-                    SELECT COUNT(DISTINCT cmetadata->>'chunk_id')
-                    FROM langchain_pg_embedding
-                    WHERE cmetadata->>'company_document_id' = %s
-                    AND cmetadata->>'revision_number' = %s
-                    AND collection_id = (SELECT uuid FROM langchain_pg_collection WHERE name = %s)
-                """),
-                (company_document_id, str(revision_number), resolved_collection_name)
-            )
-            existing_count = cur.fetchone()[0] if cur.rowcount > 0 else 0
-        
+        existing_count = _count_existing_chunks(
+            connection_string=connection_string,
+            company_document_id=company_document_id,
+            revision_number=revision_number,
+            collection_name=resolved_collection_name,
+        )
+
         if existing_count >= total_docs and not replace_existing:
             print(
                 f"[INGEST] Skipping ingest - chunks already exist | "
@@ -409,26 +459,22 @@ def update_vector_metadata(
     if not updated_metadata:
         return
 
-    conn = psycopg2.connect(_normalize_conn(connection_string))
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        UPDATE langchain_pg_embedding
-        SET cmetadata = cmetadata || %s::jsonb
-        WHERE cmetadata->>'company_document_id' = %s
-          AND cmetadata->>'revision_number' = %s
-        """,
-        (
-            json.dumps(updated_metadata),
-            company_document_id,
-            str(revision_number),
-        ),
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
+    with closing(psycopg2.connect(_normalize_conn(connection_string))) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE langchain_pg_embedding
+                SET cmetadata = cmetadata || %s::jsonb
+                WHERE cmetadata->>'company_document_id' = %s
+                  AND cmetadata->>'revision_number' = %s
+                """,
+                (
+                    json.dumps(updated_metadata),
+                    company_document_id,
+                    str(revision_number),
+                ),
+            )
+        conn.commit()
 
 
 # ============================================================
@@ -447,28 +493,24 @@ def metadata_exists(
     if not metadata:
         return False
 
-    conn = psycopg2.connect(_normalize_conn(connection_string))
-    cur = conn.cursor()
+    with closing(psycopg2.connect(_normalize_conn(connection_string))) as conn:
+        with conn.cursor() as cur:
+            conditions = []
+            values = []
 
-    conditions = []
-    values = []
+            for k, v in metadata.items():
+                conditions.append("cmetadata->>%s = %s")
+                values.extend([k, str(v)])
 
-    for k, v in metadata.items():
-        conditions.append("cmetadata->>%s = %s")
-        values.extend([k, str(v)])
+            query = f"""
+                SELECT 1
+                FROM langchain_pg_embedding
+                WHERE {' AND '.join(conditions)}
+                LIMIT 1
+            """
 
-    query = f"""
-        SELECT 1
-        FROM langchain_pg_embedding
-        WHERE {' AND '.join(conditions)}
-        LIMIT 1
-    """
-
-    cur.execute(query, values)
-    exists = cur.fetchone() is not None
-
-    cur.close()
-    conn.close()
+            cur.execute(query, values)
+            exists = cur.fetchone() is not None
 
     return exists
 
@@ -479,31 +521,69 @@ def metadata_exists(
 
 def setup_keyword_search(connection_string: str) -> None:
     """
-    Create keyword search index (idempotent).
+    Create keyword search schema and index when possible.
+
+    This is best-effort. Retrieval already falls back to ILIKE when the
+    full-text objects are unavailable, so uploads should never hang here.
     """
+    global _KEYWORD_SEARCH_READY
 
-    conn = psycopg2.connect(_normalize_conn(connection_string))
-    cur = conn.cursor()
+    if _KEYWORD_SEARCH_READY:
+        return
 
-    cur.execute(
-        """
-        ALTER TABLE langchain_pg_embedding
-        ADD COLUMN IF NOT EXISTS content_tsv tsvector
-        GENERATED ALWAYS AS (
-            to_tsvector('english', document)
-        ) STORED;
-        """
-    )
+    with _KEYWORD_SEARCH_LOCK:
+        if _KEYWORD_SEARCH_READY:
+            return
 
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS
-        langchain_pg_embedding_content_tsv_idx
-        ON langchain_pg_embedding
-        USING GIN (content_tsv);
-        """
-    )
+        lock_timeout_ms = max(
+            0,
+            _safe_int(
+                os.getenv("RAG_KEYWORD_SEARCH_LOCK_TIMEOUT_MS", "3000"),
+                3000,
+            ),
+        )
+        statement_timeout_ms = max(
+            0,
+            _safe_int(
+                os.getenv("RAG_KEYWORD_SEARCH_STATEMENT_TIMEOUT_MS", "15000"),
+                15000,
+            ),
+        )
 
-    conn.commit()
-    cur.close()
-    conn.close()
+        try:
+            with closing(psycopg2.connect(_normalize_conn(connection_string))) as conn:
+                with conn.cursor() as cur:
+                    if _keyword_search_schema_exists(cur):
+                        _KEYWORD_SEARCH_READY = True
+                        return
+
+                    if lock_timeout_ms > 0:
+                        cur.execute("SET lock_timeout = %s", (f"{lock_timeout_ms}ms",))
+                    if statement_timeout_ms > 0:
+                        cur.execute(
+                            "SET statement_timeout = %s",
+                            (f"{statement_timeout_ms}ms",),
+                        )
+
+                    cur.execute(
+                        """
+                        ALTER TABLE langchain_pg_embedding
+                        ADD COLUMN IF NOT EXISTS content_tsv tsvector
+                        GENERATED ALWAYS AS (
+                            to_tsvector('english', document)
+                        ) STORED;
+                        """
+                    )
+
+                    cur.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS
+                        langchain_pg_embedding_content_tsv_idx
+                        ON langchain_pg_embedding
+                        USING GIN (content_tsv);
+                        """
+                    )
+                conn.commit()
+            _KEYWORD_SEARCH_READY = True
+        except Exception as e:
+            print(f"[INGEST] Keyword search setup skipped (non-fatal): {e}")

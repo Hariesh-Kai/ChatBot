@@ -12,6 +12,7 @@ PHASE 2 GUARANTEES:
 
 import os
 import threading
+import time
 import traceback
 from typing import Dict, Any, Generator, Tuple, Optional, Iterable
 
@@ -64,6 +65,8 @@ def _detect_device() -> str:
 
 DEVICE = _detect_device()
 DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
+HF_FIRST_TOKEN_TIMEOUT_CPU_SEC = 75.0
+HF_FIRST_TOKEN_TIMEOUT_ACCEL_SEC = 30.0
 
 print(f"LLM device detected: {DEVICE}")
 
@@ -86,6 +89,15 @@ _BUILTIN_GGUF_FILE_CANDIDATES: Dict[str, tuple[str, ...]] = {
     "agent_qwen_0_5b_q4": (
         "qwen2.5-0.5b-instruct-q4_k_m.gguf",
         "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+    ),
+    # base_qwen_3b_q4: GGUF-quantised base model – 5-8x faster than HF float32 on CPU.
+    "base_qwen_7b_q4": (
+        "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        "qwen2.5-7b-instruct-q4_k_m.gguf",
+    ),
+    "base_qwen_3b_q4": (
+        "qwen2.5-3b-instruct-q4_k_m.gguf",
+        "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
     ),
     "lite_qwen_3b_q4": (
         "qwen2.5-3b-instruct-q4_k_m.gguf",
@@ -277,16 +289,34 @@ def _load_gguf(model_id: str) -> Any:
         print(f"Loading GGUF model [{model_id}] …")
         gpu_layers = -1 if DEVICE in ("cuda", "mps") else 0
 
+        # CPU threading: use physical cores only.
+        # Hyperthreading doubles logical count but hurts LLM matrix-ops
+        # (memory-bound, not compute-bound). floor(logical/2) is the
+        # sweet spot on most Intel i-series CPUs.
+        logical_cores = os.cpu_count() or 4
+        n_threads = max(2, logical_cores // 2) if DEVICE == "cpu" else logical_cores
+
+        # n_ctx=4096 covers all RAG context (max ~2800 chars) and
+        # halves KV-cache memory vs 8192 -> more free RAM for generation.
+        # n_batch=512 amortises per-batch overhead on long prompts.
+        # use_mmap lets the OS page weights from disk on first call
+        # instead of eagerly copying them -> faster cold start.
         llm = Llama(
             model_path=model_path,
-            n_ctx=8192,
-            n_threads=os.cpu_count() or 4,
+            n_ctx=4096,
+            n_threads=n_threads,
+            n_batch=512,
             n_gpu_layers=gpu_layers,
+            use_mmap=True,
+            flash_attn=True,
             verbose=False,
         )
 
         _llama_cache[model_id] = llm
-        print(f"GGUF model loaded [{model_id}] | gpu_layers={gpu_layers}")
+        print(
+            f"GGUF model loaded [{model_id}] | gpu_layers={gpu_layers}"
+            f" | n_threads={n_threads} | n_ctx=4096 | n_batch=512"
+        )
         return llm
 
 
@@ -297,6 +327,7 @@ def _gguf_stream_wrapper(
     stream: bool = True,
     stop: Optional[Iterable[str]] = None,
     session_id: Optional[str] = None,
+    temperature: float = 0.0,
 ) -> Generator[Dict[str, Any], None, None]:
     """
     PHASE-2 SAFE:
@@ -307,9 +338,9 @@ def _gguf_stream_wrapper(
 
     try:
         try:
-            gen = llm_instance(prompt, max_tokens=max_tokens, stream=stream, stop=stop)
+            gen = llm_instance(prompt, max_tokens=max_tokens, stream=stream, stop=stop, temperature=temperature)
         except TypeError:
-            gen = llm_instance.generate(prompt, max_tokens=max_tokens, stream=stream, stop=stop)
+            gen = llm_instance.generate(prompt, max_tokens=max_tokens, stream=stream, stop=stop, temperature=temperature)
     except Exception as e:
         yield {"choices": [{"text": "GGUF generation failed."}]}
         return
@@ -367,16 +398,33 @@ def _load_hf(model_id: str) -> Tuple[Any, Any]:
             local_files_only=True,
         )
 
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            cache_dir=HF_CACHE_DIR,
-            torch_dtype=DTYPE,
-            device_map="auto" if DEVICE == "cuda" else None,
-            local_files_only=True,
-        )
+        model_load_kwargs = {
+            "cache_dir": HF_CACHE_DIR,
+            "device_map": "auto" if DEVICE == "cuda" else None,
+            "local_files_only": True,
+        }
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                dtype=DTYPE,
+                **model_load_kwargs,
+            )
+        except TypeError:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=DTYPE,
+                **model_load_kwargs,
+            )
 
         if model.config.pad_token_id is None:
             model.config.pad_token_id = tokenizer.eos_token_id
+        try:
+            model.generation_config.do_sample = False
+            model.generation_config.temperature = None
+            model.generation_config.top_p = None
+            model.generation_config.top_k = None
+        except Exception:
+            pass
 
         model.eval()
 
@@ -392,6 +440,7 @@ def hf_stream_generate(
     prompt: str,
     max_new_tokens: int = 512,
     session_id: Optional[str] = None,
+    temperature: float = 0.0,
 ) -> Generator[str, None, None]:
     """
     PHASE-2 SAFE:
@@ -403,9 +452,15 @@ def hf_stream_generate(
     
     model, tokenizer = _load_hf(model_id)
 
-    # Increase timeout for CPU-based generation (slower than GPU)
-    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, timeout=300)
+    # Keep timeout modest so we can surface progress messages while the model is
+    # still in long CPU prefill instead of looking completely idle.
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, timeout=15)
     inputs = tokenizer(prompt, return_tensors="pt")
+    prompt_token_count = 0
+    try:
+        prompt_token_count = int(inputs["input_ids"].shape[-1])
+    except Exception:
+        prompt_token_count = 0
 
     try:
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
@@ -417,7 +472,9 @@ def hf_stream_generate(
         streamer=streamer,
         max_new_tokens=max_new_tokens,
         do_sample=False,
+        use_cache=True,
         pad_token_id=tokenizer.eos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
     )
 
     thread = threading.Thread(
@@ -425,23 +482,68 @@ def hf_stream_generate(
         kwargs=kwargs,
         daemon=True,
     )
+    print(
+        f"[HF] Starting generation | model={model_id} | device={getattr(model, 'device', DEVICE)} "
+        f"| prompt_tokens={prompt_token_count} | max_new_tokens={max_new_tokens}"
+    )
+    start_time = time.perf_counter()
     thread.start()
 
+    token_count = 0
+    first_token_elapsed: Optional[float] = None
+    streamer_iter = iter(streamer)
+    first_token_timeout_sec = (
+        HF_FIRST_TOKEN_TIMEOUT_ACCEL_SEC if DEVICE in ("cuda", "mps") else HF_FIRST_TOKEN_TIMEOUT_CPU_SEC
+    )
+    termination_reason = "completed"
+
     try:
-        for token in streamer:
+        while True:
             if session_id and is_aborted(session_id):
                 print(f"[HF] Abort detected for session {session_id}")
+                termination_reason = "aborted"
                 try:
                     thread.join(timeout=0.2)
                 except Exception:
                     pass
                 break
+            try:
+                token = next(streamer_iter)
+            except StopIteration:
+                break
+            except queue.Empty:
+                elapsed = time.perf_counter() - start_time
+                if first_token_elapsed is None and elapsed >= first_token_timeout_sec:
+                    print(
+                        f"[HF] First-token timeout | model={model_id} | "
+                        f"elapsed={elapsed:.2f}s | limit={first_token_timeout_sec:.2f}s"
+                    )
+                    termination_reason = "first_token_timeout"
+                    break
+                if thread.is_alive():
+                    print(
+                        f"[HF] Waiting for next token | model={model_id} | elapsed={elapsed:.2f}s"
+                    )
+                    continue
+                print(
+                    f"[HF] Generation thread finished without queued token | "
+                    f"model={model_id} | elapsed={elapsed:.2f}s"
+                )
+                termination_reason = "generation_thread_finished_no_token"
+                break
+            if not token:
+                continue
+            token_count += 1
+            if first_token_elapsed is None:
+                first_token_elapsed = time.perf_counter() - start_time
+                print(
+                    f"[HF] First token ready | model={model_id} | "
+                    f"after={first_token_elapsed:.2f}s"
+                )
+            print(f"[HF TOKEN][{model_id}] {token!r}")
             yield token
-    except queue.Empty:
-        # Streamer timeout - this is expected for slow CPU generation
-        print(f"[HF] Streamer timeout - generation may still be in progress")
-        yield ""
     except Exception:
+        termination_reason = "exception"
         traceback.print_exc()
         yield ""
     finally:
@@ -451,6 +553,11 @@ def hf_stream_generate(
                 thread.join(timeout=1.0)
         except Exception:
             pass
+        total_elapsed = time.perf_counter() - start_time
+        print(
+            f"[HF] Generation finished | model={model_id} | tokens={token_count} "
+            f"| elapsed={total_elapsed:.2f}s | reason={termination_reason}"
+        )
 
 
 # ============================================================

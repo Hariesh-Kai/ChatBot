@@ -15,9 +15,9 @@ _BUILTIN_MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "type": "gguf",
     },
     "base": {
-        "default": "base_qwen_7b",
-        "cpu_fallback": "base_qwen_3b",
-        "type": "hf",
+        "default": "base_qwen_7b_q4",
+        "cpu_fallback": "base_qwen_3b_q4",
+        "type": "gguf",
     },
     "net": {
         "default": "groq",

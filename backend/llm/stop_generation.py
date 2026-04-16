@@ -50,16 +50,13 @@ ANSWER_COMPLETION_MARKERS = (
 )
 
 # Redundancy and repetition markers
+# Only true repetition/wrap-up phrases that are NEVER mid-answer.
+# "Therefore,", "Thus,", "In summary," etc. are valid answer phrases and
+# must NOT be used as stop signals.
 REDUNDANCY_MARKERS = (
-    "In summary,",
-    "To summarize,",
-    "In conclusion,",
-    "Therefore,",
-    "Thus,",
     "As mentioned earlier,",
     "As previously stated,",
     "As I said before,",
-    "Again,",
     "Once again,",
 )
 
@@ -146,24 +143,7 @@ class StopGenerationManager:
             if marker.lower() in text_lower:
                 return True
         
-        # Check for immediate character/word repetition (e.g., "STBLPDSTBLPD")
-        words = text.split()
-        if len(words) >= 2:
-            # Check if the last word is repeated
-            if words[-1] == words[-2]:
-                return True
-            
-            # Check for partial word repetition (common in abbreviations)
-            last_word = words[-1]
-            if len(last_word) >= 4:
-                # Check if the word contains a repeated pattern
-                half_len = len(last_word) // 2
-                first_half = last_word[:half_len]
-                second_half = last_word[half_len:]
-                if first_half == second_half and len(first_half) >= 3:
-                    return True
-        
-        # Check for sentence repetition
+        # Check for sentence repetition instead of word repetition
         sentences = [s.strip() for s in text.split('.') if s.strip()]
         if len(sentences) > 5:
             # Check if last few sentences are similar
@@ -205,43 +185,31 @@ class StopGenerationManager:
     def detect_short_answer_completion(self, text: str) -> bool:
         """
         Detect if a short factual answer appears complete and should stop immediately.
-        This prevents duplication issues like "STBLPDSTBLPD"
+        This prevents duplication issues like "STBLPDSTBLPD".
+
+        IMPORTANT: The buffer accumulates ALL tokens so far.  We must NOT fire
+        on a short buffer that is simply the first few tokens of a longer answer.
+        Minimum 80 chars ensures at least one full sentence has been seen before
+        we consider stopping on punctuation alone.
         """
         if not self.config.enable_aggressive_short_answer_stop:
             return False
-            
+
         text = text.strip()
         text_length = len(text)
-        
-        # For very short answers (abbreviations, single words, numbers)
-        if 2 <= text_length <= 20:
-            # Check if it ends with punctuation (indicates completion)
-            if text.endswith(('.', '!', '?', ',')):
-                return True
-            
-            # Check if it's all uppercase (common for abbreviations)
-            if text.isupper() and not text.endswith('.'):
-                return True
-            
-            # Check if it's a number
-            if text.isdigit():
-                return True
-            
-            # Check if it's a mixed alphanumeric abbreviation
-            if any(c.isalpha() for c in text) and any(c.isdigit() for c in text):
-                return True
-        
-        # For short phrases (2-3 words)
-        words = text.split()
-        if 2 <= len(words) <= 3:
-            # Check if it looks like a complete answer
-            if any(text.endswith(punct) for punct in ('.', '!', '?')):
-                return True
-            
-            # Check if it's a definition-style answer
-            if ':' in text or '-' in text:
-                return True
-        
+        if not text:
+            return False
+
+        # Never stop on a heading — it is the START of the answer, not the end.
+        if text.endswith(":"):
+            return False
+
+        # Do NOT trigger on very short buffers — too early in streaming to know
+        # whether the answer is really done.  Previous threshold of 2-20 chars
+        # was stopping generation after the very first token pair.
+        if text_length < 80:
+            return False
+
         return False
     
     def check_length_constraints(self, text: str) -> Tuple[bool, str]:
@@ -317,17 +285,10 @@ class StopGenerationManager:
         # Remove trailing whitespace and common artifacts
         text = text.strip()
         
-        # Remove incomplete sentences at the end
-        if text and not text.endswith(('.', '!', '?')):
-            # Try to find the last complete sentence
-            last_period = text.rfind('.')
-            last_exclamation = text.rfind('!')
-            last_question = text.rfind('?')
-            
-            last_sentence_end = max(last_period, last_exclamation, last_question)
-            if last_sentence_end > 0:
-                text = text[:last_sentence_end + 1]
-        
+        # NOTE: Do NOT truncate incomplete sentences here.
+        # The LLM often ends its answer with a line that has no trailing period
+        # (e.g. after a list item or a number).  Truncating it silently drops
+        # the last — often most relevant — part of the answer.
         return text
     
     def validate_response_quality(self, text: str) -> Dict[str, Any]:
@@ -401,27 +362,8 @@ class StreamingStopDetector:
                 cleaned = self.manager.clean_response(self.buffer)
                 return True, f"Stop marker detected: {marker}", cleaned
         
-        # Check for immediate repetition (e.g., "STBLPDSTBLPD")
-        words = self.buffer.split()
-        if len(words) >= 2:
-            # Check if the last word is exactly repeated
-            if words[-1] == words[-2]:
-                # Remove the duplicate and stop
-                cleaned = " ".join(words[:-1])
-                return True, "Immediate word repetition detected", cleaned
-            
-            # Check for partial word repetition (common in abbreviations)
-            last_word = words[-1]
-            if len(last_word) >= 4:
-                half_len = len(last_word) // 2
-                first_half = last_word[:half_len]
-                second_half = last_word[half_len:]
-                if first_half == second_half and len(first_half) >= 3:
-                    # Remove the duplicate part and stop
-                    cleaned_word = first_half
-                    words[-1] = cleaned_word
-                    cleaned = " ".join(words)
-                    return True, "Partial word repetition detected", cleaned
+        # Word-level repetition checks (like 'that that') have been removed
+        # here because they shouldn't instantly abort the entire generation stream.
         
         # Check for stop conditions
         should_stop, reason = self.manager.detect_stop_condition(

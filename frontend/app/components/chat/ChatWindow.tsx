@@ -632,6 +632,24 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
     }
   }, [onUpdateMessages, onRenameSession, title, generateTitleOverride]);
 
+  const commitBufferedAssistantText = useCallback((targetId?: string | null) => {
+    const resolvedId = targetId ?? assistantIdRef.current ?? lastAssistantIdRef.current;
+    const nextText = textBufferRef.current;
+    if (!resolvedId || !nextText) return;
+
+    onUpdateMessages((prev) =>
+      prev.map((m) =>
+        m.id === resolvedId
+          ? {
+              ...m,
+              content: nextText,
+              status: m.status === "typing" ? "streaming" : m.status,
+            }
+          : m
+      )
+    );
+  }, [onUpdateMessages]);
+
   const handleUIEvent = useCallback((event: LLMUIEvent) => {
     if (event.type === "REQUEST_METADATA") {
       if (disableMetadataWorkflow) return;
@@ -641,6 +659,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
       // Convert the placeholder assistant bubble into a helpful message instead of
       // showing "No content generated."
       const cid = assistantIdRef.current;
+      commitBufferedAssistantText(cid);
       if (cid) {
         onUpdateMessages((prev) =>
           prev.map((m) =>
@@ -776,7 +795,23 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
     if (event.type === "ERROR") {
       const msg = event.message || "Something went wrong.";
       if (assistantIdRef.current) {
-        finalizeAssistant({ status: "error", content: msg });
+        const bufferedText = textBufferRef.current.trim();
+        commitBufferedAssistantText(assistantIdRef.current);
+        if (bufferedText) {
+          finalizeAssistant();
+          onUpdateMessages((prev) => [
+            ...prev,
+            {
+              id: uuidv4(),
+              role: "system",
+              content: msg,
+              createdAt: Date.now(),
+              status: "done",
+            },
+          ]);
+        } else {
+          finalizeAssistant({ status: "error", content: msg });
+        }
       } else {
         setCurrentStage("");
         onUpdateMessages((prev) => [
@@ -826,7 +861,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
         prev.map(m => m.id === cid ? { ...m, sources: sourceData } : m)
       );
     }
-  }, [inlineMetadataFields, onUpdateMessages, sessionId, ragVisualizationEnabled, finalizeAssistant, disableMetadataWorkflow]);
+  }, [inlineMetadataFields, onUpdateMessages, sessionId, ragVisualizationEnabled, finalizeAssistant, disableMetadataWorkflow, commitBufferedAssistantText]);
 
   const generateAIResponse = useCallback(async (question: string) => {
     if (!sessionId) return;
@@ -960,6 +995,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
         }
       }
 
+      commitBufferedAssistantText(assistantId);
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
       }
@@ -982,6 +1018,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
       }
 
       if (assistantIdRef.current) {
+        commitBufferedAssistantText(assistantIdRef.current);
         finalizeAssistant({
           status: "error",
           content: msg || "Request failed.",
@@ -1004,7 +1041,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
       }
     } 
    
-  }, [sessionId, isNetBlocked, model, ragVisualizationEnabled, onUpdateMessages, handleUIEvent, finalizeAssistant, streamChatOverride]);
+  }, [sessionId, isNetBlocked, model, ragVisualizationEnabled, onUpdateMessages, handleUIEvent, finalizeAssistant, streamChatOverride, commitBufferedAssistantText]);
 
 
   useEffect(() => {
@@ -1034,6 +1071,7 @@ async function handleInlineMetadataSubmit(values: Record<string, string>) {
     // 🔥 Force finalize even if ref is missing
     const currentId = assistantIdRef.current;
     if (currentId) {
+        commitBufferedAssistantText(currentId);
         finalizeAssistant();
     } else {
         // Fallback: If ref is missing but we are "typing", find the last typing message and kill it
@@ -1266,6 +1304,9 @@ useEffect(() => {
                             const uploadBubbleActive =
                               uploadMessageId !== null &&
                               m.id === uploadMessageId;
+                            const isLastAssistant =
+                              m.role === "assistant" &&
+                              index === messages.map((x) => x.role).lastIndexOf("assistant");
                             return (
                                 <MessageBubble
                                   key={m.id}
@@ -1284,10 +1325,7 @@ useEffect(() => {
                                   cancelUploadBusy={cancelUploadBusy}
                                   onCancelUpload={uploadBubbleActive ? requestUploadCancel : undefined}
                                   userLabel={userLabel}
-                                  isLastAssistant={
-                                    m.role === "assistant" &&
-                                    index === messages.map((x) => x.role).lastIndexOf("assistant")
-                                  }
+                                  isLastAssistant={isLastAssistant}
                                   sessionId={sessionId}
                                   companyDocumentId={m.sources?.[0]?.company_document_id}
                                   revisionNumber={m.sources?.[0]?.revision_number}

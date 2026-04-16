@@ -51,7 +51,7 @@ def abort_reset(req: AbortRequest):
     if not sid:
         raise HTTPException(status_code=400, detail="session_id required")
 
-    reset_abort_signal(sid)
+    reset_abort_signal(sid, source="abort_endpoint")
     return {"ok": True, "session_id": sid, "aborted": False}
 
 

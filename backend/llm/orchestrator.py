@@ -440,8 +440,14 @@ def _chunk_priority(
         if token and token in lowered:
             score += 2.0
 
+    question_type = str(router_output.get("question_type") or "").strip().lower()
     if "revision list" in lowered:
-        score -= 1.5
+        if question_type == "fact_lookup":
+            score += 6.0
+        else:
+            score -= 1.5
+    if question_type == "fact_lookup" and "revision" in lowered and "change" in lowered:
+        score += 3.0
 
     return score
 
@@ -862,6 +868,7 @@ def _maybe_force_one_line(text: str, max_sentences: int) -> str:
 _STRICT_FACT_STOPWORDS = {
     "a",
     "an",
+    "according",
     "and",
     "are",
     "be",
@@ -877,6 +884,7 @@ _STRICT_FACT_STOPWORDS = {
     "of",
     "on",
     "or",
+    "specific",
     "that",
     "the",
     "this",
@@ -886,6 +894,9 @@ _STRICT_FACT_STOPWORDS = {
     "who",
     "will",
     "with",
+    "made",
+    "was",
+    "were",
 }
 _STRICT_FACT_NEGATIONS = (
     "not specified",
@@ -895,6 +906,45 @@ _STRICT_FACT_NEGATIONS = (
     "cannot be determined",
     "no information available",
 )
+_TABLE_QUESTION_TERMS = (
+    "table",
+    "row",
+    "column",
+    "revision list",
+    "revision history",
+    "schedule",
+    "matrix",
+    "datasheet",
+    "technical change",
+    "change made",
+)
+_TABLE_ANCHOR_STOPWORDS = _STRICT_FACT_STOPWORDS | {
+    "change",
+    "changes",
+    "column",
+    "content",
+    "history",
+    "list",
+    "previous",
+    "question",
+    "revision",
+    "row",
+    "table",
+    "technical",
+}
+_GENERIC_TABLE_VALUE_TOKENS = {
+    "context",
+    "date",
+    "index",
+    "item",
+    "items",
+    "no",
+    "number",
+    "rev",
+    "revision",
+    "row",
+    "status",
+}
 
 
 def _extract_retrieved_pages(chunks: List[Dict[str, Any]]) -> List[int]:
@@ -937,6 +987,437 @@ def _strict_fact_question_tokens(question: str) -> set[str]:
     return tokens - _STRICT_FACT_STOPWORDS
 
 
+def _is_table_focus_question(question: str) -> bool:
+    q = str(question or "").strip().lower()
+    if not q:
+        return False
+    if any(term in q for term in _TABLE_QUESTION_TERMS):
+        return True
+    if q.startswith("according to") and re.search(
+        r"\b(what|which|where|when|how much|how many)\b",
+        q,
+    ):
+        return True
+    return False
+
+
+def _table_anchor_tokens(question: str) -> set[str]:
+    tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]{2,}", str(question or "").lower())
+        if token not in _TABLE_ANCHOR_STOPWORDS and not token.isdigit()
+    }
+    return tokens or _strict_fact_question_tokens(question)
+
+
+def _table_anchor_phrases(question: str) -> List[str]:
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9]{2,}", str(question or "").lower())
+        if token not in _TABLE_ANCHOR_STOPWORDS and not token.isdigit()
+    ]
+    phrases: List[str] = []
+    seen: set[str] = set()
+    for size in range(4, 1, -1):
+        for index in range(len(tokens) - size + 1):
+            phrase = " ".join(tokens[index : index + size]).strip()
+            if len(phrase) < 8 or phrase in seen:
+                continue
+            seen.add(phrase)
+            phrases.append(phrase)
+    return phrases[:12]
+
+
+def _extract_revision_targets(question: str) -> List[str]:
+    targets: List[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\brev(?:ision)?\s+([a-z0-9.]+)\b", str(question or "").lower()):
+        value = str(match.group(1) or "").strip().strip(".")
+        if value in {"history", "list", "no", "number"}:
+            continue
+        if value and value not in seen:
+            seen.add(value)
+            targets.append(value)
+    return targets
+
+
+def _load_json_list(raw: str) -> List[str]:
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, list):
+        return [str(item).strip() for item in parsed if str(item).strip()]
+    cleaned = str(raw or "").strip().strip("[]")
+    return [cleaned] if cleaned else []
+
+
+def _table_cell_record(column_path: List[str], value: str) -> Dict[str, Any]:
+    return {
+        "column_path": [str(part).strip() for part in list(column_path or []) if str(part).strip()],
+        "value": str(value or "").strip(),
+    }
+
+
+def _parse_child_table_row(chunk: Dict[str, Any]) -> List[Dict[str, Any]]:
+    content = str(chunk.get("content") or "")
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if not lines or "row values:" not in content.lower():
+        return []
+
+    row_index = 0
+    row_cells: List[Dict[str, Any]] = []
+    collecting = False
+    for line in lines:
+        row_match = re.match(r"^row index:\s*(\d+)\s*$", line, re.IGNORECASE)
+        if row_match:
+            row_index = int(row_match.group(1))
+            continue
+        if line.lower() == "row values:":
+            collecting = True
+            continue
+        if not collecting:
+            continue
+        if line.lower().startswith("original row:"):
+            break
+        if line.lower().startswith("column path "):
+            payload = line[len("Column Path ") :]
+            split_idx = payload.find("]:")
+            if split_idx >= 0:
+                path_json = payload[: split_idx + 1]
+                value = payload[split_idx + 2 :].strip()
+                row_cells.append(_table_cell_record(_load_json_list(path_json), value))
+                continue
+        if ":" in line:
+            label, value = line.split(":", 1)
+            row_cells.append(_table_cell_record([label.strip()], value.strip()))
+
+    if not row_cells:
+        return []
+
+    metadata = chunk.get("metadata") or {}
+    page = int(metadata.get("page_number") or chunk.get("page") or 1)
+    return [
+        {
+            "chunk_id": str(chunk.get("id") or ""),
+            "page": page,
+            "chunk_score": float(chunk.get("score") or 0.0),
+            "section": str(chunk.get("section") or metadata.get("section") or ""),
+            "table_context": "",
+            "row_index": int(row_index or 0),
+            "cells": row_cells,
+        }
+    ]
+
+
+def _parse_parent_table_rows(chunk: Dict[str, Any]) -> List[Dict[str, Any]]:
+    content = str(chunk.get("content") or "")
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if not lines or "rows:" not in content.lower():
+        return []
+
+    context_parts: List[str] = []
+    rows: List[Dict[str, Any]] = []
+    current_row: Optional[Dict[str, Any]] = None
+    in_rows = False
+
+    for line in lines:
+        lowered = line.lower()
+        if lowered.startswith("caption:") or lowered.startswith("context:"):
+            context_parts.append(line)
+            continue
+        if lowered == "rows:":
+            in_rows = True
+            continue
+        if not in_rows:
+            continue
+
+        row_match = re.match(r"^row\s+(\d+)\s*:\s*$", line, re.IGNORECASE)
+        if row_match:
+            if current_row and current_row.get("cells"):
+                rows.append(current_row)
+            current_row = {
+                "row_index": int(row_match.group(1)),
+                "cells": [],
+            }
+            continue
+
+        if not current_row or not line.startswith("-"):
+            continue
+
+        body = line[1:].strip()
+        if body.startswith("["):
+            split_idx = body.find("]:")
+            if split_idx >= 0:
+                path_json = body[: split_idx + 1]
+                value = body[split_idx + 2 :].strip()
+                current_row["cells"].append(_table_cell_record(_load_json_list(path_json), value))
+                continue
+        if ":" in body:
+            label, value = body.split(":", 1)
+            current_row["cells"].append(_table_cell_record([label.strip()], value.strip()))
+
+    if current_row and current_row.get("cells"):
+        rows.append(current_row)
+
+    if not rows:
+        return []
+
+    metadata = chunk.get("metadata") or {}
+    page = int(metadata.get("page_number") or chunk.get("page") or 1)
+    table_context = " | ".join(part for part in context_parts if part)
+    results: List[Dict[str, Any]] = []
+    for row in rows:
+        results.append(
+            {
+                "chunk_id": str(chunk.get("id") or ""),
+                "page": page,
+                "chunk_score": float(chunk.get("score") or 0.0),
+                "section": str(chunk.get("section") or metadata.get("section") or ""),
+                "table_context": table_context,
+                "row_index": int(row.get("row_index") or 0),
+                "cells": list(row.get("cells") or []),
+            }
+        )
+    return results
+
+
+def _extract_table_rows(chunk: Dict[str, Any]) -> List[Dict[str, Any]]:
+    metadata = chunk.get("metadata") or {}
+    chunk_type = str(metadata.get("chunk_type") or chunk.get("chunk_type") or "").strip().lower()
+    if chunk_type == "child":
+        rows = _parse_child_table_row(chunk)
+        if rows:
+            return rows
+    if chunk_type == "parent" or "rows:" in str(chunk.get("content") or "").lower():
+        rows = _parse_parent_table_rows(chunk)
+        if rows:
+            return rows
+    return []
+
+
+def _compose_table_row_text(row: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    table_context = str(row.get("table_context") or "").strip()
+    section = str(row.get("section") or "").strip()
+    if table_context:
+        parts.append(table_context)
+    elif section:
+        parts.append(f"Section: {section}")
+    for cell in list(row.get("cells") or []):
+        path = [str(part).strip() for part in list(cell.get("column_path") or []) if str(part).strip()]
+        label = " > ".join(path)
+        value = str(cell.get("value") or "").strip()
+        if label and value:
+            parts.append(f"{label}: {value}")
+        elif value:
+            parts.append(value)
+    return " | ".join(part for part in parts if part)
+
+
+def _table_cell_score(
+    *,
+    question: str,
+    anchor_tokens: set[str],
+    anchor_phrases: List[str],
+    revision_targets: List[str],
+    cell: Dict[str, Any],
+) -> float:
+    path_text = " ".join(str(part).strip() for part in list(cell.get("column_path") or []) if str(part).strip())
+    value_text = str(cell.get("value") or "").strip()
+    combined = _normalize_search_content(f"{path_text} {value_text}").lower()
+    if not combined:
+        return 0.0
+
+    combined_tokens = set(re.findall(r"[a-z0-9]{2,}", combined))
+    overlap = anchor_tokens.intersection(combined_tokens)
+    score = float(len(overlap) * 1.8)
+
+    for phrase in anchor_phrases:
+        if phrase and phrase in combined:
+            score += 2.4 + (0.25 * min(len(phrase.split()), 4))
+
+    for target in revision_targets:
+        if re.search(rf"\brev(?:ision)?\s*{re.escape(target)}\b", combined):
+            score += 2.5
+
+    path_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]{2,}", path_text.lower())
+        if token not in _GENERIC_TABLE_VALUE_TOKENS
+    }
+    if path_tokens and anchor_tokens.intersection(path_tokens):
+        score += 1.2
+
+    if not overlap and not any(phrase in combined for phrase in anchor_phrases):
+        generic_path_tokens = {
+            token
+            for token in re.findall(r"[a-z0-9]{2,}", path_text.lower())
+        }
+        if generic_path_tokens and generic_path_tokens.issubset(_GENERIC_TABLE_VALUE_TOKENS):
+            score -= 1.2
+
+    return round(score, 3)
+
+
+def _score_table_row(
+    *,
+    question: str,
+    anchor_tokens: set[str],
+    anchor_phrases: List[str],
+    revision_targets: List[str],
+    row: Dict[str, Any],
+) -> Dict[str, Any]:
+    row_text = _compose_table_row_text(row)
+    normalized_row = _normalize_search_content(row_text).lower()
+    row_tokens = set(re.findall(r"[a-z0-9]{2,}", normalized_row))
+    overlap = anchor_tokens.intersection(row_tokens)
+    score = float(len(overlap) * 1.5)
+    if anchor_tokens:
+        score += len(overlap) / max(len(anchor_tokens), 1)
+
+    for phrase in anchor_phrases:
+        if phrase and phrase in normalized_row:
+            score += 3.2 + (0.3 * min(len(phrase.split()), 4))
+
+    for target in revision_targets:
+        if re.search(rf"\brev(?:ision)?\s*{re.escape(target)}\b", normalized_row):
+            score += 5.0
+        elif re.search(rf"\b{re.escape(target)}\b", normalized_row):
+            score += 1.4
+
+    question_lower = str(question or "").lower()
+    if "revision list" in question_lower and ("revision list" in normalized_row or "modifications from previous revision" in normalized_row):
+        score += 2.2
+
+    best_cell: Optional[Dict[str, Any]] = None
+    best_cell_score = float("-inf")
+    for cell in list(row.get("cells") or []):
+        cell_score = _table_cell_score(
+            question=question,
+            anchor_tokens=anchor_tokens,
+            anchor_phrases=anchor_phrases,
+            revision_targets=revision_targets,
+            cell=cell,
+        )
+        if cell_score > best_cell_score:
+            best_cell = dict(cell)
+            best_cell["cell_score"] = cell_score
+            best_cell_score = cell_score
+
+    if best_cell:
+        score += max(float(best_cell.get("cell_score") or 0.0), 0.0)
+
+    score += min(float(row.get("chunk_score") or 0.0), 1.5)
+    return {
+        "score": round(score, 3),
+        "row_text": row_text,
+        "best_cell": best_cell,
+        "anchor_overlap": sorted(overlap),
+    }
+
+
+def _format_table_answer_text(question: str, support_text: str) -> str:
+    cleaned = _clean_support_unit(support_text).rstrip(" .")
+    if not cleaned:
+        return ""
+
+    lowered = cleaned.lower()
+    if lowered.startswith(("the ", "a ", "an ")):
+        prefixed_body = cleaned[0].lower() + cleaned[1:]
+    else:
+        prefixed_body = cleaned
+
+    question_lower = str(question or "").lower()
+    if "change" in question_lower:
+        if cleaned.lower().startswith(("updated", "update", "changed", "change to", "change in")):
+            body = cleaned
+            if body and body[0].isupper() and body[:2] != body[:2].upper():
+                body = body[0].lower() + body[1:]
+            prefix = "According to the revision list" if "revision" in question_lower else "According to the table"
+            return f"{prefix}, the change was {body.rstrip('.')}."
+        prefix = "According to the revision list" if "revision" in question_lower else "According to the table"
+        return f"{prefix}, {prefixed_body}."
+
+    prefix = "According to the revision list" if "revision" in question_lower else "According to the table"
+    return f"{prefix}, {prefixed_body}."
+
+
+def _build_table_fact_answer(question: str, retrieval_chunks: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not _is_table_focus_question(question):
+        return None
+
+    anchor_tokens = _table_anchor_tokens(question)
+    anchor_phrases = _table_anchor_phrases(question)
+    revision_targets = _extract_revision_targets(question)
+    if not anchor_tokens and not revision_targets:
+        return None
+
+    candidates: List[Dict[str, Any]] = []
+    for chunk in retrieval_chunks:
+        for row in _extract_table_rows(chunk):
+            scored = _score_table_row(
+                question=question,
+                anchor_tokens=anchor_tokens,
+                anchor_phrases=anchor_phrases,
+                revision_targets=revision_targets,
+                row=row,
+            )
+            if float(scored.get("score") or 0.0) <= 0:
+                continue
+            candidates.append({**row, **scored})
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("score") or 0.0),
+            float(item.get("chunk_score") or 0.0),
+            len(str(item.get("row_text") or "")),
+        ),
+        reverse=True,
+    )
+    top = candidates[0]
+    if float(top.get("score") or 0.0) < 4.0 and not top.get("anchor_overlap"):
+        return None
+
+    best_cell = top.get("best_cell") if isinstance(top.get("best_cell"), dict) else {}
+    best_cell_value = str(best_cell.get("value") or "").strip()
+    support_source = best_cell_value if len(best_cell_value) >= 12 else str(top.get("row_text") or "")
+    support_text = _extract_best_support_snippet(
+        question,
+        support_source,
+        best_cell_value,
+    )
+    if best_cell_value and (
+        "context:" in support_text.lower()
+        or "description:" in support_text.lower()
+        or " > " in support_text
+        or "|" in support_text
+    ):
+        support_text = best_cell_value
+    if not support_text or any(phrase in support_text.lower() for phrase in _STRICT_FACT_NEGATIONS):
+        return None
+
+    answer = _format_table_answer_text(question, support_text)
+    if not answer:
+        return None
+
+    print(
+        "[TABLE QA] Selected row "
+        f"chunk={top.get('chunk_id')} page={top.get('page')} row={top.get('row_index')} "
+        f"score={top.get('score')} overlap={top.get('anchor_overlap')}"
+    )
+    return {
+        "answer": answer,
+        "pages": [int(top.get("page") or 1)],
+        "chunk_id": str(top.get("chunk_id") or ""),
+        "row_index": int(top.get("row_index") or 0),
+        "score": float(top.get("score") or 0.0),
+    }
+
+
 def _clean_support_unit(text: str) -> str:
     cleaned = str(text or "").strip()
     cleaned = re.sub(r"^(?:#{1,6}\s*)?(?:section|table):\s*", "", cleaned, flags=re.IGNORECASE)
@@ -973,6 +1454,11 @@ def _question_expects_numeric(question: str) -> bool:
 
 def _question_expects_list(question: str) -> bool:
     q = str(question or "").lower()
+    if ("revision list" in q or "revision history" in q) and re.search(
+        r"\b(what|which)\b.{0,160}\b(change|factor|value|pressure|temperature|material|capacity|flow)\b",
+        q,
+    ):
+        return False
     return any(phrase in q for phrase in ("list", "what are", "which are", "categories"))
 
 
@@ -1222,6 +1708,43 @@ def resolve_strict_factual_answer(
     planner_output = _default_planner_output(router_output, len(compact_chunks))
     prioritized_chunks = _prioritize_chunks(compact_chunks, router_output, planner_output)
     planned_chunks = prioritized_chunks[: max(1, int(planner_output.get("top_k") or 1))]
+
+    table_source_chunks: List[Dict[str, Any]] = []
+    for chunk in list(context_chunks or []):
+        enriched = dict(chunk)
+        meta = dict(enriched.get("metadata") or {})
+        if "page" not in enriched:
+            enriched["page"] = int(meta.get("page_number") or chunk.get("page") or 1)
+        if "section" not in enriched:
+            enriched["section"] = str(meta.get("section") or chunk.get("section") or "")
+        if "chunk_type" not in enriched:
+            enriched["chunk_type"] = str(meta.get("chunk_type") or chunk.get("chunk_type") or "")
+        table_source_chunks.append(enriched)
+
+    prioritized_table_chunks = _prioritize_chunks(table_source_chunks, router_output, planner_output)
+    planned_table_chunks = prioritized_table_chunks[: max(1, int(planner_output.get("top_k") or 1))]
+    table_candidate = _build_table_fact_answer(question, planned_table_chunks)
+    if table_candidate:
+        table_answer = clean_model_output(str(table_candidate.get("answer") or "")).strip()
+        table_review = _deterministic_review(
+            question,
+            table_answer,
+            router_output,
+            {"facts": [], "conflicts": [], "missing_fields": [], "overall_confidence": "high"},
+            list(context_chunks or []),
+        )
+        if table_review.get("verdict") == "pass":
+            final_answer = _finalize_strict_factual_output(
+                question=question,
+                answer=table_answer,
+                pages=[int(page) for page in list(table_candidate.get("pages") or [])],
+                verbosity=verbosity,
+                max_sentences=int(router_output.get("max_sentences") or 1),
+                context_chunks=list(context_chunks or []),
+            )
+            if final_answer:
+                return {"final_answer": final_answer, "mode": "table_structured"}
+
     extractor_output = _heuristic_extract_facts(
         question,
         planned_chunks,

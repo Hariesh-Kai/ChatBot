@@ -391,7 +391,7 @@ def clear_job_for_session(session_id: str) -> None:
         # Active doc is cleared only when replaced by a new upload or explicitly cleared.
 
     # 🔥 Abort reset happens ONLY here
-    reset_abort_signal(session_id)
+    reset_abort_signal(session_id, source="stream_cleanup")
 
 
 def set_job_progress(

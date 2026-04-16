@@ -70,7 +70,12 @@ class OptimizedPGVector(PGVector):
     
     def __init__(self, *args, **kwargs):
         # Extract connection string for pooling
-        self._connection_string = kwargs.get('connection') or args[0] if args else None
+        self._connection_string = kwargs.get("connection")
+        if not self._connection_string:
+            for arg in args:
+                if isinstance(arg, str) and "://" in arg:
+                    self._connection_string = arg
+                    break
         
         # Initialize parent class
         super().__init__(*args, **kwargs)
@@ -241,17 +246,23 @@ def create_optimized_vector_store(
         max_overflow=max_overflow
     )
     
-    # Create optimized PGVector instance
-    # Note: embedding parameter is not passed to __init__ in newer langchain_postgres versions
-    # It should be set separately via the embedding_function property
+    # Create optimized PGVector instance with the embedding function attached.
+    # The currently installed langchain_postgres build requires `embeddings`
+    # during construction; omitting it causes the optimized path to fail and
+    # forces every request through a slower fallback.
     vector_store = OptimizedPGVector(
+        embeddings=embedding_model,
         collection_name=collection_name,
         connection=connection_string,
     )
     
-    # Set embedding function separately if supported
+    # Keep compatibility with helper methods that access different attributes.
     try:
         vector_store.embedding_function = embedding_model
+    except Exception:
+        pass
+    try:
+        vector_store._embedding = embedding_model
     except Exception:
         pass
     

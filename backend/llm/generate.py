@@ -11,6 +11,8 @@ CRITICAL GUARANTEES:
 """
 
 import os
+import re
+import time
 from typing import List, Dict, Optional, Literal, Generator, Any
 
 import torch
@@ -44,6 +46,7 @@ from backend.contracts.ui_constants import UI_EVENT_PREFIX
 from backend.rag.grounding import check_grounding
 from backend.state.dev_settings import get_dev_settings
 from backend.rag.extractive_rag import extract_relevant_passages, format_passages_for_display
+from backend.llm.hardware_profile import get_hardware_profile
 from backend.memory.pg_memory import (
     get_or_create_user_state,
     update_user_state,
@@ -75,7 +78,7 @@ LITE_RANK_1 = "lite_llama_8b"
 LITE_RANK_2 = "lite_qwen_q4"
 
 BASE_RANK_GPU = "base_qwen_7b"
-BASE_RANK_CPU = "base_qwen_3b"
+BASE_RANK_CPU = "base_qwen_7b_q4"  # GGUF: 5-8x faster than HF on CPU
 BASE_RANK = BASE_RANK_GPU if HAS_GPU else BASE_RANK_CPU
 
 # Markers that usually mean the model has started echoing the internal prompt.
@@ -88,6 +91,34 @@ _PROMPT_ECHO_STOP_MARKERS = (
     "\nQUESTION:\n",
 )
 _PROMPT_ECHO_TAIL = max(len(m) for m in _PROMPT_ECHO_STOP_MARKERS)
+
+_BASE_PROMPT_MAX_CHUNKS = 4
+_BASE_PROMPT_PER_CHUNK_CHARS = 900
+_BASE_PROMPT_TOTAL_CONTEXT_CHARS = 2800
+_BASE_EXTRACTIVE_TOP_K = 3
+_BASE_EXTRACTIVE_PER_PASSAGE_CHARS = 650
+_BASE_EXTRACTIVE_TOTAL_CHARS = 2200
+
+# Hardware-adaptive context limits (override static values on CPU)
+def _get_base_context_limits() -> Dict[str, int]:
+    """Get hardware-adaptive context limits for Base mode prompt."""
+    try:
+        hw = get_hardware_profile()
+        hw_gen = hw.get("generation", {})
+        max_chars = hw_gen.get("base_context_max_chars", _BASE_PROMPT_TOTAL_CONTEXT_CHARS)
+    except Exception:
+        max_chars = _BASE_PROMPT_TOTAL_CONTEXT_CHARS
+
+    # Scale chunk count and per-chunk budget proportionally
+    ratio = max_chars / _BASE_PROMPT_TOTAL_CONTEXT_CHARS
+    max_chunks = max(2, min(6, int(_BASE_PROMPT_MAX_CHUNKS * ratio)))
+    per_chunk = max(400, min(1200, int(_BASE_PROMPT_PER_CHUNK_CHARS * ratio)))
+
+    return {
+        "max_chunks": max_chunks,
+        "per_chunk_chars": per_chunk,
+        "total_chars": max_chars,
+    }
 
 
 # ============================================================
@@ -161,22 +192,30 @@ def _context_to_text(chunks: Optional[List[Dict[str, str]]]) -> str:
 
 def _get_mode_generation_config(mode: str) -> Dict[str, Any]:
     """
-    Get mode-specific generation configuration.
+    Get mode-specific generation configuration, adapted to hardware.
     
     Lite: 80% extractive context + 20% generation (no token limit, relies on prompt stopping)
-    Base: 50% extractive context + 50% generation
+    Base: 50-75% extractive context + 25-50% generation (hardware-adaptive)
     Net: 100% generative
     """
+    # Get hardware-adaptive generation config
+    try:
+        hw = get_hardware_profile()
+        hw_gen = hw.get("generation", {})
+    except Exception:
+        hw_gen = {}
+
     configs = {
         "lite": {
-            "max_tokens": 2048,  # Very high limit, relies on prompt instructions for stopping
+            "max_tokens": hw_gen.get("lite_max_tokens", 512),
             "temperature": 0.0,
             "extractive_ratio": 0.8,
         },
         "base": {
-            "max_tokens": 512,
+            # Hardware-adaptive: fewer tokens + higher extractive ratio on CPU
+            "max_tokens": hw_gen.get("base_max_tokens", 256),
             "temperature": 0.0,
-            "extractive_ratio": 0.5,
+            "extractive_ratio": hw_gen.get("base_extractive_ratio", 0.5),
         },
         "net": {
             "max_tokens": 1024,
@@ -185,6 +224,66 @@ def _get_mode_generation_config(mode: str) -> Dict[str, Any]:
         },
     }
     return configs.get(mode, configs["base"])
+
+
+def _truncate_prompt_text(text: str, max_chars: int) -> str:
+    if not text or max_chars <= 0:
+        return ""
+
+    cleaned = str(text).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+
+    if len(cleaned) <= max_chars:
+        return cleaned
+
+    cutoff = cleaned[:max_chars]
+    natural_breaks = [
+        cutoff.rfind("\n\n"),
+        cutoff.rfind("\n"),
+        cutoff.rfind(". "),
+        cutoff.rfind("; "),
+        cutoff.rfind(", "),
+        cutoff.rfind(" "),
+    ]
+    best_break = max(natural_breaks)
+    if best_break >= int(max_chars * 0.6):
+        cutoff = cutoff[:best_break]
+
+    return cutoff.rstrip() + " ..."
+
+
+def _compact_context_chunks_for_base(
+    chunks: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    if not chunks:
+        return []
+
+    # Use hardware-adaptive limits
+    limits = _get_base_context_limits()
+    max_chunks = limits["max_chunks"]
+    per_chunk_chars = limits["per_chunk_chars"]
+    total_context_chars = limits["total_chars"]
+
+    compacted: List[Dict[str, Any]] = []
+    total_chars = 0
+
+    for chunk in chunks[:max_chunks]:
+        remaining = total_context_chars - total_chars
+        if remaining <= 0:
+            break
+
+        per_chunk_budget = min(per_chunk_chars, remaining)
+        trimmed_content = _truncate_prompt_text(chunk.get("content", ""), per_chunk_budget)
+        if not trimmed_content:
+            continue
+
+        trimmed_chunk = dict(chunk)
+        trimmed_chunk["content"] = trimmed_content
+        compacted.append(trimmed_chunk)
+        total_chars += len(trimmed_content)
+
+    return compacted
 
 
 def _format_extractive_passages(
@@ -205,10 +304,14 @@ def _format_extractive_passages(
         return ""
     
     # Extract relevant passages
+    passage_top_k = 5
+    if mode == "base":
+        passage_top_k = _BASE_EXTRACTIVE_TOP_K
+
     passages = extract_relevant_passages(
         chunks=chunks,
         question=question,
-        top_k=5,
+        top_k=passage_top_k,
         min_length=50,
     )
     
@@ -222,14 +325,35 @@ def _format_extractive_passages(
             include_highlights=False,
             question=question,
         )
-        return formatted
+        return _truncate_prompt_text(formatted, 4000)
     elif mode == "base":
-        # Base mode: Format with citation markers for LLM
+        # Base mode: keep the extractive block compact so CPU prefill stays
+        # responsive even when retrieved chunks contain large tables.
         formatted_passages = []
+        total_chars = 0
         for idx, passage in enumerate(passages, 1):
-            content = passage["content"]
+            metadata = passage.get("metadata", {}) or {}
+            page = metadata.get("page_number", "?")
+            section = str(metadata.get("section") or "").strip()
+            content = _truncate_prompt_text(
+                passage["content"],
+                _BASE_EXTRACTIVE_PER_PASSAGE_CHARS,
+            )
             chunk_id = passage["chunk_id"]
-            formatted_passages.append(f"[Source {idx}: {chunk_id}]\n{content}")
+            header = f"[Source {idx}: {chunk_id} | Page {page}"
+            if section:
+                header += f" | Section: {section}"
+            header += "]\n"
+            block = f"{header}{content}"
+            remaining = _BASE_EXTRACTIVE_TOTAL_CHARS - total_chars
+            if remaining <= 0:
+                break
+            if len(block) > remaining:
+                available_for_content = max(80, remaining - len(header))
+                content = _truncate_prompt_text(content, available_for_content)
+                block = f"{header}{content}"
+            formatted_passages.append(block)
+            total_chars += len(block)
         return "\n\n".join(formatted_passages)
     
     return ""
@@ -647,18 +771,21 @@ def _finalize_fact_answer(
     raw = clean_model_output("".join(parts or []))
     compact = apply_response_policy(raw, verbosity=verbosity)
     final = (compact or raw or "").strip()
+    print(
+        f"[FACT FINALIZE] raw_chars={len(raw)} | compact_chars={len(compact)} | "
+        f"final_chars={len(final)} | verbosity={verbosity}"
+    )
     if not final:
         return ""
 
+    strict_factual = bool(question and infer_answer_policy(question).strict_factual)
     try:
         settings = get_dev_settings()
     except Exception:
         settings = {}
 
-    if (
-        bool(settings.get("enable_eval_gate", False))
-        and question
-        and context_chunks
+    if question and context_chunks and (
+        strict_factual or bool(settings.get("enable_eval_gate", False))
     ):
         try:
             from backend.llm.orchestrator import release_strict_factual_answer
@@ -736,8 +863,14 @@ def generate_answer_stream(
     policy = infer_answer_policy(question)
     style = decide_answer_style(question, context_chunks)
     context_text = _context_to_text(context_chunks)
+    # Dynamic temperature based on intent policy
+    dynamic_temp = 0.0 if policy.strict_factual else 0.4
+    
     enforce_compact_fact_answer = bool(
-        enable_eval_gate and policy.strict_factual and context_chunks
+        policy.strict_factual
+        and context_chunks
+        and style.verbosity == "one_line"
+        and model != "net"
     )
 
     # Rephrase question using intent policy for better LLM understanding
@@ -758,11 +891,68 @@ def generate_answer_stream(
         if extractive_text:
             context_text = f"{context_text}\n\nEXTRACTED PASSAGES:\n{extractive_text}"
 
+    prompt_context_chunks = context_chunks
+    if model == "base" and context_chunks:
+        prompt_context_chunks = _compact_context_chunks_for_base(context_chunks)
+        raw_context_chars = sum(len(str(chunk.get("content") or "")) for chunk in context_chunks)
+        compact_context_chars = sum(
+            len(str(chunk.get("content") or "")) for chunk in (prompt_context_chunks or [])
+        )
+        print(
+            f"[BASE PROMPT] Context compacted | chunks={len(context_chunks)}->{len(prompt_context_chunks)} "
+            f"| chars={raw_context_chars}->{compact_context_chars} | extractive_chars={len(extractive_text)}"
+        )
+
+    if model in ("lite", "base") and policy.strict_factual and context_chunks:
+        try:
+            from backend.llm.orchestrator import resolve_strict_factual_answer
+
+            deterministic = resolve_strict_factual_answer(
+                question=question,
+                context_chunks=context_chunks,
+                verbosity=style.verbosity,
+            )
+            if deterministic and deterministic.get("final_answer"):
+                resolved_mode = str(deterministic.get("mode") or "support_passage")
+                print(
+                    f"[{model.upper()} FACT] Deterministic factual answer resolved before model generation "
+                    f"| mode={resolved_mode}"
+                )
+                yield str(deterministic["final_answer"])
+                return
+        except Exception as exc:
+            print(f"[{model.upper()} FACT] Deterministic factual fallback failed: {exc}")
+
+    # Hardware-adaptive extractive-only decision for Base mode
+    # On CPU (medium/low tier), prefer extractive-only for short answers to skip LLM generation
+    try:
+        hw_prefer_extractive = get_hardware_profile().get("generation", {}).get("prefer_extractive_only", False)
+    except Exception:
+        hw_prefer_extractive = not HAS_GPU
+
+    base_use_extractive_only = bool(
+        model == "base"
+        and extractive_text
+        and (
+            policy.strict_factual
+            or (hw_prefer_extractive and style.verbosity in ("one_line", "short"))
+        )
+    )
+    base_prompt_context_chunks = prompt_context_chunks
+    if base_use_extractive_only:
+        base_prompt_context_chunks = None
+        print(
+            f"[BASE PROMPT] Using extractive-only prompt | strict_factual={policy.strict_factual} "
+            f"| hw_prefer_extractive={hw_prefer_extractive}"
+        )
+
     # Targeted factual questions (e.g. "In Section 4.4, what specific factor...")
     # now resolve to one_line + strict_factual. Without a tight cap, Lite/GGUF often
     # continues with unrelated table/pressure context.
     if policy.strict_factual and style.verbosity == "one_line" and context_chunks:
         mode_max_tokens = min(mode_max_tokens, 160)
+    if model == "base" and policy.strict_factual and not HAS_GPU:
+        mode_max_tokens = min(mode_max_tokens, 96)
 
     if enable_eval_gate and enforce_compact_fact_answer:
         mode_max_tokens = min(mode_max_tokens, 96)
@@ -787,7 +977,7 @@ def generate_answer_stream(
             reviewed = run_agentic_review_pipeline(
                 question=question,
                 requested_model_id=model_id,
-                context_chunks=context_chunks,
+                context_chunks=base_prompt_context_chunks if model == "base" else prompt_context_chunks,
                 chat_history=chat_history,
                 verbosity=style.verbosity,
                 session_id=session_id,
@@ -813,7 +1003,11 @@ def generate_answer_stream(
                 model_id = "lite_llama_8b"
         else:
             if enable_agent_pipeline and not enforce_compact_fact_answer:
-                prompt = build_prompt_cot(question, context_chunks, chat_history)
+                prompt = build_prompt_cot(
+                    question,
+                    base_prompt_context_chunks if model == "base" else prompt_context_chunks,
+                    chat_history,
+                )
             else:
                 # Use specialized prompt builders for extractive RAG modes
                 if enable_extractive_rag and extractive_text and model == "lite":
@@ -821,7 +1015,7 @@ def generate_answer_stream(
                 elif enable_extractive_rag and extractive_text and model == "base":
                     prompt = build_prompt_base_citation(
                         question,
-                        context_chunks,
+                        base_prompt_context_chunks,
                         extractive_text,
                         chat_history,
                         style,
@@ -829,7 +1023,7 @@ def generate_answer_stream(
                 else:
                     prompt = build_prompt_hf(
                         question,
-                        context_chunks,
+                        base_prompt_context_chunks if model == "base" else prompt_context_chunks,
                         chat_history,
                         answer_style=style,
                     )
@@ -981,7 +1175,14 @@ def generate_answer_stream(
                 return
 
             if not yielded_anything:
-                yield "No answer could be generated from the documents."
+                if model == "base":
+                    yield UI_EVENT_PREFIX + json.dumps(
+                        text_event(
+                            "Base mode took too long to start on this machine. Try Lite or ask a narrower document question."
+                        )
+                    ) + "\n"
+                else:
+                    yield "No answer could be generated from the documents."
                 return
 
             # --- Grounding check (soft warning, non-blocking) ---
@@ -1071,9 +1272,18 @@ def generate_answer_stream(
         prompt = _build_prompt(rephrased_question, model, context_chunks, chat_history)
     
     # Post-processing flag for Lite mode
-    use_post_processing = (model == "lite" and enable_extractive_rag and context_chunks)
+    use_post_processing = bool(
+        model == "lite"
+        and enable_extractive_rag
+        and context_chunks
+        and not enforce_compact_fact_answer
+    )
     
     prompt = prompt.rstrip() + "\n"
+    print(
+        f"[PROMPT DEBUG] model={model} | prompt_chars={len(prompt)} | "
+        f"context_chunks_for_prompt={len(prompt_context_chunks or []) if 'prompt_context_chunks' in locals() else len(context_chunks or [])}"
+    )
 
     
     if not prompt:
@@ -1109,6 +1319,32 @@ def generate_answer_stream(
 
     try:
         if llm["type"] == "gguf":
+            gguf_started_at = time.time()
+            gguf_piece_count = 0
+            gguf_char_count = 0
+            gguf_finish_reason = "completed"
+            gguf_finish_logged = False
+
+            def _log_gguf_finish(reason: Optional[str] = None) -> None:
+                nonlocal gguf_finish_reason, gguf_finish_logged
+                if gguf_finish_logged:
+                    return
+                if reason:
+                    gguf_finish_reason = reason
+                elapsed = time.time() - gguf_started_at
+                print(
+                    f"[GGUF] Generation finished | model={model_id} | "
+                    f"pieces={gguf_piece_count} | chars={gguf_char_count} | "
+                    f"elapsed={elapsed:.2f}s | reason={gguf_finish_reason}"
+                )
+                gguf_finish_logged = True
+
+            print(
+                f"[GGUF] Starting generation | model={model_id} | "
+                f"prompt_chars={len(prompt)} | max_tokens={mode_max_tokens} | "
+                f"post_process={use_post_processing} | compact_fact={enforce_compact_fact_answer}"
+            )
+
             # Use comprehensive stop tokens from new stop generation system
             comprehensive_stop_tokens = get_stop_tokens_for_model("gguf")
             
@@ -1126,6 +1362,7 @@ def generate_answer_stream(
                     stop=comprehensive_stop_tokens,
                 ):
                     if session_id and is_aborted(session_id):
+                        _log_gguf_finish("aborted")
                         yield ""
                         return
                     text = ""
@@ -1136,6 +1373,8 @@ def generate_answer_stream(
 
                     if text:
                         print("TOKEN:", repr(text))
+                        gguf_piece_count += 1
+                        gguf_char_count += len(text)
                         full_answer_parts.append(text)
                 
                 # Combine full answer
@@ -1155,7 +1394,11 @@ def generate_answer_stream(
                 
                 # Split user question into words and store in memory
                 question_words = set(re.findall(r'\b\w+\b', rephrased_question.lower()))
-                stop_words = {"where", "what", "how", "when", "why", "is", "are", "the", "a", "an", "in", "at", "on", "to", "for", "of", "with"}
+                stop_words = {
+                    "where", "what", "how", "when", "why", "is", "are", "the", "a", "an",
+                    "in", "at", "on", "to", "for", "of", "with", "according", "specific",
+                    "technical", "made", "was", "were", "list", "change",
+                }
                 question_words = question_words - stop_words
                 print(f"[WORD-LEVEL] User question words: {question_words}")
                 
@@ -1171,17 +1414,42 @@ def generate_answer_stream(
                     sentence_overlap_info.append((idx, sentence, matching_words, overlap_ratio))
                     print(f"[SENTENCE {idx + 1}] Word overlap: {len(matching_words)}/{len(question_words)} ({overlap_ratio:.2f}) - {sentence[:50]}...")
                 
-                # Use threshold-based selection (LLM selection was selecting all sentences)
+                # Use threshold-based selection, but never allow the filter to
+                # erase the whole answer. That empty-output failure surfaced as
+                # a fake "How can I help you?" fallback in the UI.
                 relevant_sentences = []
                 removed_sentences = []
                 for idx, sentence, matching_words, overlap_ratio in sentence_overlap_info:
-                    # Keep sentence if it has significant word overlap (at least 60%)
-                    if overlap_ratio >= 0.6:
+                    # Keep sentence if it has decent lexical overlap or enough
+                    # direct term hits. This is intentionally more forgiving
+                    # than the previous 60% threshold.
+                    if overlap_ratio >= 0.3 or len(matching_words) >= 2:
                         relevant_sentences.append((idx, sentence))
                         print(f"[SENTENCE {idx + 1}] MATCHING (keeping) - {sentence[:50]}...")
                     else:
                         removed_sentences.append(sentence)
                         print(f"[SENTENCE {idx + 1}] NOT MATCHING (removing) - {sentence[:50]}...")
+
+                if not relevant_sentences:
+                    fallback_scored: List[tuple[float, int, str]] = []
+                    for idx, sentence, matching_words, overlap_ratio in sentence_overlap_info:
+                        sentence_lower = sentence.lower()
+                        score = overlap_ratio
+                        if "according to the document" in sentence_lower:
+                            score += 0.2
+                        if any(ch.isdigit() for ch in sentence):
+                            score += 0.1
+                        if len(sentence.split()) >= 4:
+                            score += 0.05
+                        fallback_scored.append((score, idx, sentence))
+
+                    fallback_scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+                    best_fallback = fallback_scored[:1]
+                    relevant_sentences = [(idx, sentence) for _, idx, sentence in best_fallback if sentence.strip()]
+                    print(
+                        f"[POST-PROCESSING] No sentences passed overlap filter; "
+                        f"falling back to top-scored sentence count={len(relevant_sentences)}"
+                    )
                 
                 # 🤖 AGENTIC: Log self-correction for removed sentences (with error handling)
                 if removed_sentences and session_id:
@@ -1207,6 +1475,8 @@ def generate_answer_stream(
                 
                 # Combine relevant sentences
                 combined_answer = ' '.join([s[1] for s in relevant_sentences])
+                if not combined_answer.strip():
+                    combined_answer = full_answer.strip()
                 
                 # 🤖 AGENTIC: Send step update to frontend
                 yield UI_EVENT_PREFIX + json.dumps(agentic_step_event("Fixing grammar")) + "\n"
@@ -1249,6 +1519,7 @@ def generate_answer_stream(
                 # Stream final answer character by character for UI consistency
                 for char in grammar_fixed:
                     if session_id and is_aborted(session_id):
+                        _log_gguf_finish("aborted")
                         yield ""
                         return
                     collected.append(char)
@@ -1261,6 +1532,7 @@ def generate_answer_stream(
                     stop=comprehensive_stop_tokens,
                 ):
                     if session_id and is_aborted(session_id):
+                        _log_gguf_finish("aborted")
                         yield ""
                         return
                     text = ""
@@ -1271,12 +1543,15 @@ def generate_answer_stream(
 
                     if text:
                         print("TOKEN:", repr(text))  # ✅ NOW SAFE
+                        gguf_piece_count += 1
+                        gguf_char_count += len(text)
                         
                         # Process through stop detector
                         should_stop, stop_reason, cleaned_text = stop_detector.process_token(text)
                         
                         if should_stop:
                             print(f"[STOP] Generation stopped: {stop_reason}")
+                            gguf_finish_reason = f"stop_detector:{stop_reason}"
                             # Emit any remaining cleaned text
                             if cleaned_text and not enforce_compact_fact_answer:
                                 remaining = cleaned_text[len("".join(collected)):]
@@ -1300,6 +1575,8 @@ def generate_answer_stream(
                 if final:
                     collected.append(final)
                     yield final
+
+            _log_gguf_finish()
 
         else:
             # Initialize streaming stop detector for HF models
@@ -1378,13 +1655,31 @@ def generate_answer_stream(
                     yield final
 
 
-    except Exception:
+    except Exception as exc:
+        if llm and llm.get("type") == "gguf":
+            print(f"[GGUF] Generation finished | model={model_id} | reason=exception | error={exc}")
         yield UI_EVENT_PREFIX + json.dumps(
             text_event("Generation failed.")
         ) + "\n"
         return
 
     if not collected or not "".join(collected).strip():
+        if policy.strict_factual and context_chunks:
+            try:
+                from backend.llm.orchestrator import release_strict_factual_answer
+
+                fallback = release_strict_factual_answer(
+                    question=question,
+                    answer="",
+                    context_chunks=context_chunks,
+                    verbosity=style.verbosity,
+                )
+                if fallback:
+                    yield fallback
+                    return
+            except Exception as exc:
+                print(f"[STRICT FACT] Empty-output fallback failed: {exc}")
+
         yield UI_EVENT_PREFIX + json.dumps(
             text_event("How can I help you?")
         ) + "\n"

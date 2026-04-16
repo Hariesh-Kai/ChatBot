@@ -291,6 +291,28 @@ def text_event(text: str) -> Dict[str, Any]:
     }
 
 # ==========================================================
+# 🤖 AGENTIC STEP EVENT (POST-PROCESSING STATE)
+# ==========================================================
+
+def agentic_step_event(step: str) -> Dict[str, Any]:
+    """
+    Create an agentic step update event for the frontend.
+    
+    Used to display specific agentic process steps instead of
+    generic dot animation during Lite mode post-processing.
+    
+    Examples:
+    - step="Splitting into sentences"
+    - step="Analyzing word overlap"
+    - step="Combining relevant sentences"
+    - step="Fixing grammar"
+    """
+    return {
+        "type": "agentic_step",
+        "step": step,
+    }
+
+# ==========================================================
 # PUBLIC EXPORTS (CONTRACT GUARANTEE)
 # ==========================================================
 
@@ -304,4 +326,5 @@ __all__ = [
     "answer_confidence_event",
     "error_event",
     "text_event",
+    "agentic_step_event",  # 🤖 AGENTIC: Added for agentic step display
 ]

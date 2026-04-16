@@ -45,6 +45,61 @@ def _embedded_fact_lookup(q: str) -> bool:
         q,
     ):
         return True
+    # "according to the revision list ... what specific change ..."
+    if "revision list" in q and re.search(r"\b(what|which)\b", q):
+        return True
+    if any(term in q for term in ("table", "revision history", "row", "column")) and re.search(
+        r"\b(what|which|where|when|how much|how many)\b",
+        q,
+    ):
+        return True
+    if q.startswith("according to") and re.search(
+        r"\b(what|which|where|when|how much|how many)\b.{0,160}\b(table|row|column|change|revision|factor|value|pressure|temperature|material|capacity|flow)\b",
+        q,
+    ):
+        return True
+    return False
+
+
+def _multi_item_fact_lookup(q: str) -> bool:
+    """
+    Detect factual questions that still need a short multi-item answer instead of a
+    single compact line. These were being over-classified as exact one-line lookups,
+    which made Lite/Base/Net all feel like they stopped abruptly after the update.
+    """
+    if not q:
+        return False
+
+    if q.startswith(("what are the", "which are the", "what are ", "which are ")):
+        return True
+
+    if any(phrase in q for phrase in (
+        " range ",
+        " ranges ",
+        "depth range",
+        "depth ranges",
+        "water depth",
+        "temperature range",
+        "pressure range",
+        "values for",
+    )) and " and " in q:
+        return True
+
+    if re.search(r"\b(for|of)\b.{0,120}\band\b.{0,120}\b", q) and any(
+        term in q for term in (
+            "range",
+            "ranges",
+            "depth",
+            "temperature",
+            "pressure",
+            "value",
+            "values",
+            "field",
+            "discovery",
+        )
+    ):
+        return True
+
     return False
 
 
@@ -175,17 +230,21 @@ def infer_answer_policy(
     # 4️⃣ VERBOSITY CONTROL (UPDATED)
     # --------------------------------------------------------
 
+    multi_item_fact = _multi_item_fact_lookup(q)
+
     # 🔥 Conversational ALWAYS wins
     if is_conversational:
         verbosity = "one_line"
-    elif is_vague:
-        verbosity = "one_line"
-    elif is_fact_lookup:
-        verbosity = "one_line"
-    elif is_definition:
-        verbosity = "short"
     elif is_reasoning or is_follow_up:
         verbosity = "normal"
+    elif is_definition:
+        verbosity = "short"
+    elif is_fact_lookup and not multi_item_fact:
+        verbosity = "one_line"
+    elif is_fact_lookup and multi_item_fact:
+        verbosity = "short"
+    elif is_vague:
+        verbosity = "short"
     else:
         verbosity = "short"
 

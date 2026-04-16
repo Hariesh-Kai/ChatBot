@@ -10,7 +10,7 @@ from backend.llm.model_config_store import HF_CACHE_DIR
 
 logger = logging.getLogger(__name__)
 
-_RERANK_MODEL_NAME = "ms-marco-MiniLM-L-12-v2"
+_RERANK_MODEL_NAME = "bge-reranker-v2-m3"
 _RERANK_CACHE_DIR = str(Path(HF_CACHE_DIR) / "flashrank")
 _ranker: Optional[Ranker] = None
 _ranker_unavailable = False

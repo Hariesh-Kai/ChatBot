@@ -137,6 +137,7 @@ def get_retrieval_profile(
 ) -> Dict[str, Any]:
     """
     Controls retrieval depth vs latency per RAG mode.
+    Hardware-adaptive: reduces candidate_k and final_k on lower-tier systems.
     """
     profile: Dict[str, Any]
 
@@ -176,5 +177,28 @@ def get_retrieval_profile(
         profile["candidate_k"] = int(profile["candidate_k"]) + 10
         profile["final_k"] = int(profile["final_k"]) + 2
         profile["keyword_limit"] = int(profile["keyword_limit"]) + 6
+
+    # Hardware-adaptive cap: reduce retrieval depth on medium/low tier systems
+    try:
+        from backend.llm.hardware_profile import get_hardware_profile
+        hw = get_hardware_profile()
+        tier = hw.get("tier", "medium")
+        hw_ret = hw.get("retrieval", {})
+
+        if tier != "high":
+            # Map rag_mode to hardware-adaptive values
+            mode_key = f"{rag_mode}_candidate_k"
+            mode_final_key = f"{rag_mode}_final_k"
+            if mode_key in hw_ret:
+                profile["candidate_k"] = min(int(profile["candidate_k"]), hw_ret[mode_key])
+            if mode_final_key in hw_ret:
+                profile["final_k"] = min(int(profile["final_k"]), hw_ret[mode_final_key])
+
+            # Disable rerank on low tier to save latency
+            if tier == "low":
+                profile["use_rerank"] = False
+                profile["use_parent_resolution"] = False
+    except Exception:
+        pass  # Hardware profile is optional; never block retrieval
 
     return profile

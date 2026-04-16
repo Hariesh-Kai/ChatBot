@@ -70,15 +70,30 @@ class SemanticCache:
         self.max_memory_entries = 1000
         self.semantic_prefix = "semantic_cache:"
         
+    def _normalize_query(self, query: str) -> str:
+        return " ".join(str(query or "").lower().split())
+
     def _generate_semantic_hash(self, query: str) -> str:
-        """Generate semantic hash for query"""
-        # Combine normalized query with embedding for semantic hash
-        normalized = " ".join(query.lower().split())
-        embedding = self.embedding_model.embed_query(normalized)
-        
-        # Create hash from normalized query + embedding signature
-        content = normalized + str(hash(tuple(embedding[:10])))  # First 10 dims for signature
-        return hashlib.sha256(content.encode()).hexdigest()[:16]
+        """
+        Generate a stable exact-match hash for query lookup.
+
+        Important:
+        - Do NOT embed here. Exact cache hits should be O(1) and cheap.
+        - Semantic similarity, when needed, is handled separately.
+        """
+        normalized = self._normalize_query(query)
+        return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+    def _is_semantic_candidate(self, query1: str, query2: str) -> bool:
+        """
+        Cheap lexical guard before expensive embedding similarity.
+        """
+        q1_terms = set(self._normalize_query(query1).split())
+        q2_terms = set(self._normalize_query(query2).split())
+        if not q1_terms or not q2_terms:
+            return False
+        overlap = q1_terms.intersection(q2_terms)
+        return len(overlap) >= max(1, min(len(q1_terms), len(q2_terms)) // 4)
     
     def _calculate_similarity(self, query1: str, query2: str) -> float:
         """Calculate semantic similarity between two queries"""
@@ -187,7 +202,8 @@ class SemanticCache:
                     
                     if (cached_doc_id == company_document_id and 
                         cached_rev == revision_number):
-                        
+                        if not self._is_semantic_candidate(query, entry.query):
+                            continue
                         similarity = self._calculate_similarity(query, entry.query)
                         if similarity >= self.similarity_threshold:
                             entry.hit_count += 1

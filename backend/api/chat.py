@@ -34,7 +34,7 @@ from backend.llm.generate import generate_answer_stream
 from backend.llm.intent_rules import detect_rule_intent
 from backend.llm.intent_classifier import classify_intent, is_referential_follow_up
 from backend.llm.text_normalizer import normalize_text
-from backend.llm.query_rewriter import rewrite_question
+from backend.llm.query_rewriter import rewrite_question, llm_rewrite_question
 from backend.llm.prompts import (
     build_prompt_hf,
     build_prompt_gguf,
@@ -546,6 +546,10 @@ def safe_stream_response(
         collected.append(flushed)
 
     final_answer = clean_model_output("".join(collected)).strip()
+    print(
+        f"[STREAM] Final answer chars={len(final_answer)} | "
+        f"preview={final_answer[:160]!r}"
+    )
 
     if not final_answer:
         if saw_error_event:
@@ -576,7 +580,7 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
         raise HTTPException(400, "session_id and question required")
 
     session_id = req.session_id.strip()
-    reset_abort_signal(session_id)
+    reset_abort_signal(session_id, source="chat_start")
 
     start_time = time.time()
     original_question = normalize_text(req.question)
@@ -787,7 +791,7 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
 
     if feature_flags["enable_query_rewrite"]:
         history = get_recent_user_messages(session_id)
-        rewritten = rewrite_question(original_question, history)
+        rewritten = llm_rewrite_question(original_question, history)
         intent = classify_intent(rewritten)
         referential_follow_up = is_referential_follow_up(rewritten)
         if intent == "follow_up" and not referential_follow_up:
@@ -882,11 +886,7 @@ def chat(req: ChatRequest, user: User = Depends(require_user)):
     # genuinely referential follow-ups; otherwise it pollutes short factual
     # lookups with stale keywords from previous turns.
     conv_history = get_recent_user_messages(session_id) if feature_flags["enable_query_rewrite"] else []
-    augmented_query = (
-        augment_query_with_context(rewritten, conv_history)
-        if feature_flags["enable_query_rewrite"] and intent == "follow_up" and referential_follow_up
-        else rewritten
-    )
+    augmented_query = rewritten
     retrieval_cache_key = f"[rag_mode:{effective_rag_mode}] {augmented_query}"
 
     if not rag_disabled:

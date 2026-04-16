@@ -124,6 +124,11 @@ def _question_expects_numeric(question: str) -> bool:
 
 def _question_expects_list(question: str) -> bool:
     q = str(question or "").lower()
+    if ("revision list" in q or "revision history" in q) and re.search(
+        r"\b(what|which)\b.{0,160}\b(change|factor|value|pressure|temperature|material|capacity|flow)\b",
+        q,
+    ):
+        return False
     return any(
         phrase in q
         for phrase in ("what categories", "which categories", "what are", "which are", "list")

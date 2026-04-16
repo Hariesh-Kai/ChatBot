@@ -113,10 +113,52 @@ def _calculate_relevance_score(chunk: Dict[str, Any], question: str) -> float:
         # Additional bonus for chunks that are concise (more likely to be entity lists)
         if len(content) < 300:
             entity_bonus += 0.1
+
+    table_bonus = 0.0
+    chunk_meta = chunk.get("metadata", {}) or {}
+    chunk_type = str(
+        chunk_meta.get("chunk_type")
+        or chunk.get("chunk_type")
+        or chunk_meta.get("type")
+        or ""
+    ).strip().lower()
+    if any(
+        phrase in question_lower
+        for phrase in (
+            "table",
+            "row",
+            "column",
+            "revision list",
+            "revision history",
+            "schedule",
+            "matrix",
+            "datasheet",
+        )
+    ):
+        if chunk_type == "parent":
+            table_bonus += 0.25
+        elif chunk_type == "child":
+            table_bonus += 0.35
+        if "row index:" in content or "column path" in content:
+            table_bonus += 0.15
+        if "rows:" in content and "context:" in content:
+            table_bonus += 0.1
+
+    revision_bonus = 0.0
+    if any(phrase in question_lower for phrase in ["revision list", "revision history", "technical change", "change made"]):
+        if "revision list" in content or "revision history" in content:
+            revision_bonus += 0.35
+        revision_match = re.search(r"\brevision\s+(\d+)\b", question_lower)
+        if revision_match and revision_match.group(1) in content:
+            revision_bonus += 0.2
+        if "injection water" in question_lower and "injection water" in content:
+            revision_bonus += 0.2
+        if "design temperature" in content:
+            revision_bonus += 0.1
     
-    # Combined score (60% retrieval, 30% keyword overlap, 10% entity bonus)
-    combined_score = (0.6 * base_score) + (0.3 * overlap_score) + entity_bonus
-    
+    # Combined score (60% retrieval, 30% keyword overlap, bonuses for query-specific matches)
+    combined_score = (0.6 * base_score) + (0.3 * overlap_score) + entity_bonus + table_bonus + revision_bonus
+
     return combined_score
 
 

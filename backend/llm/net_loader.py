@@ -35,6 +35,8 @@ from backend.secrets.net_keys import get_net_api_key
 _request_timestamps: list[float] = []
 _active_streams: int = 0
 _lock = threading.Lock()
+_NET_CONNECT_TIMEOUT_SEC = 15
+_NET_READ_TIMEOUT_SEC = 300
 
 
 # ============================================================
@@ -120,7 +122,7 @@ def _groq_stream(
         headers=headers,
         json=payload,
         stream=True,
-        timeout=60,
+        timeout=(_NET_CONNECT_TIMEOUT_SEC, _NET_READ_TIMEOUT_SEC),
     )
 
     if response.status_code == 401:
@@ -197,7 +199,7 @@ def _xai_stream(
         headers=headers,
         json=payload,
         stream=True,
-        timeout=60,
+        timeout=(_NET_CONNECT_TIMEOUT_SEC, _NET_READ_TIMEOUT_SEC),
     )
 
     if response.status_code == 401:
@@ -266,23 +268,34 @@ def generate_net_answer_stream(
     )
 
     _acquire_stream_slot()
+    token_count = 0
+    termination_reason = "completed"
 
     try:
         if provider == "groq":
-            yield from _groq_stream(prompt, model_id, max_tokens)
+            for token in _groq_stream(prompt, model_id, max_tokens):
+                if token:
+                    token_count += 1
+                    yield token
 
         elif provider == "xai":
-            yield from _xai_stream(prompt, model_id, max_tokens)
+            for token in _xai_stream(prompt, model_id, max_tokens):
+                if token:
+                    token_count += 1
+                    yield token
 
         else:
             raise NetProviderError(
                 f"Unsupported Net provider '{provider}'"
             )
 
+    except Exception:
+        termination_reason = "exception"
+        raise
     finally:
         _release_stream_slot()
         elapsed = round(time.time() - start, 2)
         print(
             f"🌐 [NET END] provider={provider} | "
-            f"model={model_id} | {elapsed}s"
+            f"model={model_id} | {elapsed}s | tokens={token_count} | reason={termination_reason}"
         )

@@ -68,26 +68,24 @@ function stripLeakedSpecialTokens(value: string): string {
   return next;
 }
 
-/* ================= COMPONENT ================= */
-
 export default function MessageBubble({
   message,
-  modelLabel = "AI",
-  isLastAssistant = false,
-  isEditing = false,
+  modelLabel,
+  isLastAssistant,
+  isEditing,
   onRetry,
   onDelete,
-  onViewSources,
+  showConfidence,
+  uploadCancelState,
+  cancelUploadBusy,
+  onCancelUpload,
+  userLabel,
+  assistantModel,
   sessionId,
   companyDocumentId,
   revisionNumber,
-  userLabel,
-  assistantModel,
-  showConfidence = true,
-  uploadCancelState = null,
-  cancelUploadBusy = false,
-  onCancelUpload,
   agenticStep,
+  onFeedback,
 }: Props) {
   const isAssistant = message.role === "assistant";
   const isUser = message.role === "user";

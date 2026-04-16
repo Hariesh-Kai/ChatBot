@@ -143,7 +143,7 @@ def signal_abort(session_id: str) -> None:
     print(f"[ABORT] session={session_id}")
 
 
-def reset_abort_signal(session_id: str) -> None:
+def reset_abort_signal(session_id: str, *, source: str = "unspecified") -> None:
     """
     Clear abort state safely.
 
@@ -170,7 +170,7 @@ def reset_abort_signal(session_id: str) -> None:
         if ev:
             ev.clear()
 
-    print(f"[ABORT RESET] session={session_id}")
+    print(f"[ABORT RESET] session={session_id} source={source}")
 
 
 def is_aborted(session_id: str) -> bool:

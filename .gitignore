@@ -144,6 +144,58 @@ postgres-data/
 PDF/
 
 # =======================================
+# PROJECT-SPECIFIC GENERATED FILES
+# =======================================
+
+# Presentations (generated, not source)
+*.pptx
+*.ppt
+
+# Generated graphs/diagrams
+*.png
+*.jpg
+*.jpeg
+*.svg
+Ingestion_Pipeline_Graph.png
+Query_Pipeline_Graph.png
+System_Architecture_Graph.png
+
+# Local development scripts (not part of core codebase)
+add_devtools_slides*.py
+analyze_ppt.py
+capture_screens.py
+check_*.py
+check_*.bat
+collect_code.py
+debug_*.py
+fix_*.py
+full_reset.py
+generate_*.py
+insert_devtools*.py
+install_*.bat
+reset_system.py
+scan_yields.py
+set_*.bat
+verify_*.py
+
+# Batch files for local development
+*.bat
+*.vbs
+stop_chat_ui_hidden.ps1
+
+# Debug/analysis text files
+*.txt
+!requirements.txt
+!checklist.txt
+!readme
+stash_diff.txt
+
+# Celery beat files
+celerybeat-schedule.bak
+celerybeat-schedule.dat
+celerybeat-schedule.dir
+
+# =======================================
 # IDE & SYSTEM FILES
 # =======================================
 
